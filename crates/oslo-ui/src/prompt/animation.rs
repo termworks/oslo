@@ -58,6 +58,22 @@ thread_local! {
 /// wait is shortened to the nearest of everything asking, so several animated segments at different
 /// speeds cost one timer between them.
 pub fn animate_in(after: Duration) {
+    // **A frame nobody can see is work nobody asked for**, and for an external prompt it is a
+    // *process* nobody asked for: `oslo.prompt.left = { command = …, every = 150 }` is a spawn per
+    // frame, for as long as the shell is open, whether or not anything is on the screen.
+    //
+    // That is the whole of a bug found by a program driving oslo over a pty as a command channel.
+    // It looked like a per-keystroke render — two `git status` per character typed — and it was
+    // not: it was this clock, ticking six times a second into a terminal that draws nothing.
+    // Measured on a 0×0 pty with `TERM=dumb`: 53 spawns in eight seconds, against one with this
+    // check in place.
+    //
+    // The deadline is simply never armed. `tick_due` is therefore never due, the wait goes back to
+    // blocking on a key, and the prompt is rendered once per prompt — which is what a terminal that
+    // cannot draw wanted from the start.
+    if !crate::term::draws() {
+        return;
+    }
     let want = Instant::now() + after;
     NEXT.with(|next| match next.get() {
         // Somebody already wants a turn sooner. Theirs is the deadline; this one comes round on the

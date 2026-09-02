@@ -53,6 +53,11 @@ pub struct Spec {
     /// means rebuilding all of it somewhere else to gain one turning glyph.
     ///
     /// So the tool draws the frame. oslo only decides when to ask again.
+    ///
+    /// **The clock does not run where nothing can be drawn.** On `TERM=dumb` — a program driving
+    /// oslo over a pty, a serial console — a frame has no product, so asking for one would be a
+    /// process spawned six times a second for a picture that never appears. See
+    /// `oslo_ui::prompt::animation::animate_in`.
     pub every: Option<Duration>,
 
     /// `frames = <ms>` — ask the tool for every frame of the next `<ms>` at once, and animate from
