@@ -154,6 +154,31 @@ fn produce(piece: &Piece, query: &Query, out: &mut Resolved) {
                     ..Paths::default()
                 },
             ),
+            // **The machines this one already knows about** — see [`super::hosts`].
+            //
+            // A source rather than a spec, because the answer is a property of *this machine* and
+            // not of the command: `scp`, `ssh`, `sftp` and `rsync` all want the same list, and no
+            // amount of describing `scp` produces it.
+            // **`user@` is carried through.** A candidate has to match the whole word or nothing
+            // does, and `ci@ga` is the word — so an offer of the bare `gate.example.com` matches
+            // nothing and the menu stays shut, which is what `scp f.txt ci@ga<Tab>` did. Whatever
+            // was typed up to the last `@` is put back on the front of every host, so the word the
+            // menu matches against is the word on the line.
+            "hosts" => {
+                let user = query
+                    .value
+                    .rfind('@')
+                    .map(|at| &query.value[..=at])
+                    .unwrap_or_default();
+                out.offers
+                    .extend(super::hosts::all().iter().map(|host| Offer {
+                        value: format!("{user}{}", host.name),
+                        description: Some(host.source.to_string()),
+                        // Every other spec offer is labelled `value`, which says nothing here: the
+                        // rows are machines, and the menu has a column that can say so.
+                        tag: Some("host".to_string()),
+                    }));
+            }
             // A row saying why there is nothing to offer. oslo's dropdown has no such row: every
             // line in it is something the Tab key will insert, and a message is not.
             "message" => {}

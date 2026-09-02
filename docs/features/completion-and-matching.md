@@ -295,6 +295,7 @@ how the menu tells a branch from a file.
 | `$files([.go, go.mod])` | files, optionally filtered by suffix |
 | `$directories` | directories only |
 | `$executables` | things that run |
+| `$hosts` | machines this one knows — see below; `user@` is kept |
 | `$(git branch)` | run it here and read what it printed, one offer per line |
 | `$bash(…)`, `$zsh(…)`, `$fish(…)`, `$nu(…)`, … | run it in that shell, if it is installed |
 
@@ -426,6 +427,40 @@ is worse than either.
 second feature, and carapace-spec ships a separate binary for it. `exclusiveflags`, `group`,
 `documentation` and `examples` are read past without complaint, because real spec files have them
 and a reader that stopped at one would read almost nothing. `$spec(other.yaml)` is not read yet.
+
+### Hostnames, for the ssh family
+
+```text
+scp report.pdf ci@ga⇥
+  ci@gate.example.com   host   known host
+  ci@ga-build-01        host   ssh config
+```
+
+`$hosts` is a source rather than a spec, because **the answer is a property of this machine and not
+of the command**: `ssh`, `scp`, `sftp` and `rsync` all want the same list, and no amount of
+describing `scp` produces it. Four files, read once per session on the first Tab that asks:
+
+| | |
+|---|---|
+| `~/.ssh/config` | `Host` lines — the names you chose |
+| `~/.ssh/known_hosts` | machines actually connected to |
+| `/etc/ssh/ssh_known_hosts` | the same, system-wide |
+| `/etc/hosts` | names this machine resolves without asking anyone |
+
+Each row says which, so a name you do not recognise tells you whether you invented it, connected to
+it once, or merely have it in `/etc/hosts`. The order decides that credit, not the position in the
+menu — the dropdown still ranks by what you have actually run.
+
+**`user@` is carried through.** A candidate has to match the whole word or nothing does, and
+`ci@ga` *is* the word — so an offer of the bare `gate.example.com` matches nothing and the menu
+stays shut. Whatever was typed up to the last `@` is put back on the front of every host.
+
+Not offered: wildcards (`Host *` is a pattern, not a machine), hashed `known_hosts` entries
+(`HashKnownHosts yes` stores `|1|…`, which is a hash and not a name), and bare addresses — `127.0.0.1`
+is in `/etc/hosts` on every machine and is never what somebody is half way through typing.
+
+zsh asks `getent hosts` and NIS as well. Both are a process, or a network round trip, **on the Tab
+key**; the four files are a `read` each and cover what a person actually types.
 
 ### From a man page, for everything nobody wrote a spec for
 

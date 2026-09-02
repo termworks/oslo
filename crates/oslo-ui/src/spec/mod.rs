@@ -30,6 +30,8 @@ pub mod custom;
 pub mod definitions;
 pub mod flag;
 pub mod frecency;
+/// The machines this one already knows about, for the ssh family.
+pub mod hosts;
 pub mod resolve;
 pub mod vars;
 

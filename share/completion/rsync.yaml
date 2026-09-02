@@ -162,3 +162,5 @@ completion:
     write-batch: ["$files"]
     only-write-batch: ["$files"]
     read-batch: ["$files"]
+  # As scp: source and destination are each a local path or a remote `host:path`.
+  positionalany: ["$hosts", "$files", "$directories"]
