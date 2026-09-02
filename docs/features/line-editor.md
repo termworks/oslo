@@ -329,6 +329,16 @@ the whole row on every key, and this is what a repaint consults:
 * **Edit at all without a terminal.** `read_line` falls back to a plain `stdin` read with no
   editing, and writes the prompt only under `TERM=dumb` — down a pipe the shell is driven by a
   script, and a prompt would be noise in the data.
+* **Edit on a terminal that says it cannot draw.** `TERM=dumb` takes the same road, and readline
+  answers that variable the same way. A dumb terminal cannot address a cursor, and every keystroke
+  the editor answers is answered by redrawing a row *in place* — so the mechanism has nothing to
+  write to, and what it produces instead is noise. Measured against a program driving oslo over a
+  pty: **~7 KB of cursor movement and repainting per command**, into a stream being read as output;
+  336 bytes with the editor off.
+
+  Nothing is lost that the terminal could have shown — history recall, completion, the vi keymap and
+  the ghost suggestion are all *drawn*, and a terminal that says it cannot draw has said it cannot
+  have them. What is left is what a dumb terminal has always had: a prompt, a line, and Enter.
 
 ## Where it lives
 
