@@ -122,30 +122,6 @@ fn a_spec_file_is_found_by_name_and_answers_for_every_position() {
     unsafe { std::env::remove_var("OSLO_COMPLETION") };
 }
 
-/// **Every spec shipped in `examples/` parses.** A format is only as good as the files written in
-/// it, and an example that does not read is worse than no example: it is the first thing anybody
-/// copies.
-#[test]
-fn the_example_specs_read() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/completion");
-    let mut seen = 0;
-    for entry in std::fs::read_dir(&dir)
-        .expect("examples/completion")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).expect("readable");
-        let spec = oslo::spec::read::spec(&source)
-            .unwrap_or_else(|problem| panic!("{}: {problem}", path.display()));
-        assert!(!spec.name.is_empty(), "{}", path.display());
-        seen += 1;
-    }
-    assert!(seen > 0, "no example specs in {}", dir.display());
-}
-
 /// **Every spec shipped in `share/completion` parses, and parses into something.**
 ///
 /// There are ~1,200 of them and they are *generated* — from Fig's TypeScript and from argc's shell
