@@ -124,12 +124,12 @@ impl WatchSet {
     }
 
     fn install(&mut self, path: &Path) -> io::Result<()> {
-        if self.installed.insert(path.to_path_buf()) {
-            if let Err(error) = self.source.add(path) {
-                self.installed.remove(path);
-                if error.kind() != io::ErrorKind::NotFound {
-                    return Err(error);
-                }
+        if self.installed.insert(path.to_path_buf())
+            && let Err(error) = self.source.add(path)
+        {
+            self.installed.remove(path);
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
             }
         }
         Ok(())
