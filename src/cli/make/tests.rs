@@ -37,6 +37,9 @@ fn the_help_lists_every_flag_the_runner_parses() {
         "--force",
         "--keep-going",
         "--quiet",
+        "--watch",
+        "--postpone",
+        "--restart",
         "--help",
     ] {
         assert!(
