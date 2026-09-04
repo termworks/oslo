@@ -56,10 +56,13 @@ impl WatchSet {
         ) {
             return Ok(false);
         }
-        if event.is_directory && matches!(event.kind, EventKind::Create | EventKind::MoveTo) {
-            self.install_new_tree(&path)?;
-        }
-        Ok(self.patterns.matches(&path))
+        let discovered =
+            if event.is_directory && matches!(event.kind, EventKind::Create | EventKind::MoveTo) {
+                self.install_new_tree(&path)?
+            } else {
+                false
+            };
+        Ok(discovered || self.patterns.matches(&path))
     }
 
     fn rebuild(&mut self) -> io::Result<()> {
@@ -76,7 +79,7 @@ impl WatchSet {
             }
             self.install_nearest(&root.path)?;
             if root.recursive && root.path.is_dir() {
-                self.install_tree(&root.path)?;
+                let _ = self.install_tree(&root.path)?;
             }
         }
         Ok(())
@@ -93,23 +96,25 @@ impl WatchSet {
         self.install(current)
     }
 
-    fn install_new_tree(&mut self, path: &Path) -> io::Result<()> {
+    fn install_new_tree(&mut self, path: &Path) -> io::Result<bool> {
+        let mut matched = false;
         let roots: Vec<_> = self.patterns.roots().cloned().collect();
         for root in roots {
             if path == root.path {
                 self.install(path)?;
             }
             if root.recursive && path.starts_with(&root.path) {
-                self.install_tree(path)?;
+                matched |= self.install_tree(path)?;
             }
         }
-        Ok(())
+        Ok(matched)
     }
 
-    fn install_tree(&mut self, root: &Path) -> io::Result<()> {
+    fn install_tree(&mut self, root: &Path) -> io::Result<bool> {
+        let mut matched = false;
         self.install(root)?;
         let Ok(entries) = std::fs::read_dir(root) else {
-            return Ok(());
+            return Ok(false);
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -117,10 +122,12 @@ impl WatchSet {
                 continue;
             };
             if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-                self.install_tree(&path)?;
+                matched |= self.install_tree(&path)?;
+            } else if self.patterns.matches(&path) {
+                matched = true;
             }
         }
-        Ok(())
+        Ok(matched)
     }
 
     fn install(&mut self, path: &Path) -> io::Result<()> {
