@@ -136,9 +136,9 @@ value means.
 
 ## Tools
 
-Twelve of them — `macros`, `config`, `profile`, `history`, `direnv`, `make`, `hook`, `lua-api`,
-`plugin`, `scratch`, `userin`, `secret` — each with its own help. A script of the same name always
-wins.
+Fourteen of them — `macros`, `config`, `profile`, `history`, `direnv`, `make`, `watch`, `hook`,
+`fmt`, `lua-api`, `plugin`, `scratch`, `userin`, `secret` — each with its own help. A script of the
+same name always wins.
 
 ## Building
 
