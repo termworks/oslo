@@ -179,6 +179,8 @@ fn without_shebang(source: &str) -> String {
 ///
 /// `name` is what a diagnostic calls the source — a path, or `-c`/`stdin` when there is no file.
 pub fn run_lua_source(source: &str, name: &str, args: &[String]) -> i32 {
+    #[cfg(feature = "watch")]
+    let _watch_cleanup = WatchCleanup;
     let env = Arc::new(Mutex::new(Environment::new()));
     let lua = match LuaEngine::new() {
         Ok(lua) => lua,
@@ -210,6 +212,16 @@ pub fn run_lua_source(source: &str, name: &str, args: &[String]) -> i32 {
         return 1;
     }
     env.lock().map(|guard| guard.last_status).unwrap_or(1)
+}
+
+#[cfg(feature = "watch")]
+struct WatchCleanup;
+
+#[cfg(feature = "watch")]
+impl Drop for WatchCleanup {
+    fn drop(&mut self) {
+        crate::lua::api::watch_service::stop_all();
+    }
 }
 
 #[cfg(test)]

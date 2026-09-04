@@ -26,12 +26,7 @@ pub struct PathPattern {
 
 impl PathPattern {
     pub fn compile(root: &Path, text: &str) -> std::io::Result<Self> {
-        let path = if Path::new(text).is_absolute() {
-            PathBuf::from(text)
-        } else {
-            root.join(text)
-        };
-        let path = lexical(&path);
+        let path = normalize(root, text);
         let words = components(&path)?;
         let first_pattern = words.iter().position(|part| has_pattern(part));
         let literal = first_pattern.is_none();
@@ -160,6 +155,15 @@ fn lexical(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+pub fn normalize(root: &Path, text: &str) -> PathBuf {
+    let path = if Path::new(text).is_absolute() {
+        PathBuf::from(text)
+    } else {
+        root.join(text)
+    };
+    lexical(&path)
 }
 
 #[cfg(test)]

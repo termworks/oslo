@@ -512,6 +512,8 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
                         let mut env_guard = env_struct.lock().unwrap();
                         let code = run_exit_trap(&mut env_guard, code);
                         drop(env_guard);
+                        #[cfg(feature = "watch")]
+                        crate::lua::api::watch_service::stop_all();
                         std::process::exit(code);
                     }
                     Err(err) => {
@@ -538,6 +540,8 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     let mut env_guard = env_struct.lock().unwrap();
     let last_status = run_exit_trap(&mut env_guard, last_status);
     drop(env_guard);
+    #[cfg(feature = "watch")]
+    crate::lua::api::watch_service::stop_all();
     std::process::exit(last_status);
 }
 

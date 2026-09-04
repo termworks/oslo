@@ -6,7 +6,7 @@ mod process;
 mod runner;
 mod set;
 
-pub use pattern::{PathPattern, PatternSet, WatchRoot};
+pub use pattern::{PathPattern, PatternSet, WatchRoot, normalize};
 pub use runner::run;
 
 use std::path::PathBuf;

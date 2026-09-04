@@ -32,6 +32,8 @@ pub fn build(env: &Arc<Mutex<Environment>>) -> Value {
     path_add(&mut it, env);
     dir(&mut it);
     watching(&mut it);
+    #[cfg(feature = "watch")]
+    watch_commands(&mut it);
     unloading(&mut it);
     Value::table(it)
 }
@@ -188,6 +190,21 @@ fn unloading(it: &mut Table) {
         }
         PENDING.with(|slot| slot.borrow_mut().push(callback.clone()));
         Ok(vec![Value::Bool(true)])
+    });
+}
+
+#[cfg(feature = "watch")]
+fn watch_commands(it: &mut Table) {
+    put(it, "watch_command", |_, args| {
+        let root = loading_base("oslo.direnv.watch_command")?;
+        let value = args.first().ok_or_else(|| {
+            LuaError::new("oslo.direnv.watch_command: expected a table".to_string())
+        })?;
+        let started = super::watch_service::start_directory(value, &root)?;
+        if let Some(cleanup) = started.cleanup {
+            PENDING.with(|slot| slot.borrow_mut().push(cleanup));
+        }
+        Ok(vec![started.handle])
     });
 }
 

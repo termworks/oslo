@@ -59,6 +59,7 @@ impl Sandbox {
             .env("HOME", self.home.path())
             .env("XDG_DATA_HOME", self.home.path().join("data"))
             .env("XDG_CONFIG_HOME", self.home.path().join("config"))
+            .env("OSLO_SCRATCH_DIR", self.home.path().join("scratch"))
             .env_remove("ENV")
             .stdin(Stdio::null())
             .output()
@@ -78,6 +79,7 @@ impl Sandbox {
             .env("HOME", self.home.path())
             .env("XDG_DATA_HOME", self.home.path().join("data"))
             .env("XDG_CONFIG_HOME", self.home.path().join("config"))
+            .env("OSLO_SCRATCH_DIR", self.home.path().join("scratch"))
             .env_remove("ENV")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -211,4 +213,95 @@ fn a_builtin_the_directory_registered_leaves_with_it() {
         "and does not still run after leaving: {after}"
     );
     assert!(after.contains("not found"), "and is reported gone: {after}");
+}
+
+#[cfg(feature = "watch")]
+#[test]
+fn a_watch_command_starts_scoped_and_stops_on_leave() {
+    let sandbox = Sandbox::new(
+        r#"
+oslo.direnv.watch_command {
+  name = "env-check",
+  paths = { "watched.txt" },
+  run = { "sh", "-c", "echo ran >> runs.txt" },
+  scratch = false,
+}
+"#,
+    );
+    std::fs::write(sandbox.project.join("watched.txt"), "").expect("watched");
+    let said = sandbox.arriving_in(
+        &sandbox.project,
+        r#"sleep 0.2
+printf first > watched.txt
+sleep 0.4
+cd ..
+printf second > proj/watched.txt
+sleep 0.3
+"#,
+    );
+    let runs = std::fs::read_to_string(sandbox.project.join("runs.txt")).unwrap_or_default();
+    assert_eq!(runs, "ran\n", "service did not stop on unload\n{said}");
+}
+
+#[cfg(feature = "watch")]
+#[test]
+fn a_watch_command_is_refused_outside_directory_loading() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let probe = home.path().join("probe.lua");
+    std::fs::write(
+        &probe,
+        r#"
+local ok, err = pcall(function()
+  oslo.direnv.watch_command { paths = { "x" }, run = { "true" } }
+end)
+print("refused=" .. tostring(not ok) .. " " .. tostring(err))
+"#,
+    )
+    .expect("probe");
+    let out = Command::new(oslo_bin())
+        .arg(&probe)
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .output()
+        .expect("oslo");
+    let said = text(&out);
+    assert!(said.contains("refused=true"), "{said}");
+    assert!(said.contains("only while"), "{said}");
+}
+
+#[cfg(all(feature = "watch", feature = "scratch"))]
+#[test]
+fn a_persistent_watch_survives_unload_until_explicitly_stopped() {
+    let sandbox = Sandbox::new(
+        r#"
+oslo.direnv.watch_command {
+  name = "persistent",
+  paths = { "watched.txt" },
+  run = { "sh", "-c", "echo ran >> runs.txt" },
+  initial = false,
+  persist = true,
+  scratch = "env-persist",
+}
+"#,
+    );
+    std::fs::write(sandbox.project.join("watched.txt"), "").expect("watched");
+    let said = sandbox.arriving_in(
+        &sandbox.project,
+        r#"sleep 0.5
+cd ..
+printf changed > proj/watched.txt
+sleep 1
+"#,
+    );
+    let runs = std::fs::read_to_string(sandbox.project.join("runs.txt")).unwrap_or_default();
+    let log = std::fs::read_to_string(sandbox.home.path().join("scratch/env-persist.log"))
+        .unwrap_or_default();
+    assert_eq!(
+        runs, "ran\n",
+        "persistent service stopped on unload\n{said}\nscratch log:\n{log}"
+    );
+    let killed = sandbox.oslo(&sandbox.project, &["scratch", "-k", "env-persist"]);
+    assert!(killed.status.success(), "{}", text(&killed));
 }

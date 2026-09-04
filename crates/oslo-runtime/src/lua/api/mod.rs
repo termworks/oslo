@@ -83,6 +83,8 @@ pub(crate) mod tool;
 mod ui;
 #[cfg(feature = "watch")]
 mod watch;
+#[cfg(feature = "watch")]
+pub(crate) mod watch_service;
 mod word;
 
 pub mod hooks;
