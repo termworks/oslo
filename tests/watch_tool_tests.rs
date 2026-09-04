@@ -7,6 +7,27 @@ use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+fn file_lines(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn await_line_count(path: &std::path::Path, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while file_lines(path).len() < count && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        file_lines(path).len(),
+        count,
+        "{}",
+        file_lines(path).join("\n")
+    );
+}
+
 #[test]
 fn one_save_runs_once_and_interrupt_returns_130() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -86,6 +107,106 @@ fn an_atomic_rename_over_a_literal_file_is_observed() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(std::fs::read_to_string(&output).expect("run"), "ran\n");
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).expect("terminate");
+    assert_eq!(child.wait().expect("wait").code(), Some(143));
+}
+
+#[test]
+fn events_during_a_failing_child_coalesce_into_one_rerun() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let watched = dir.path().join("watched.txt");
+    let output = dir.path().join("runs.txt");
+    std::fs::write(&watched, "").expect("watched");
+    let mut child = Command::new(oslo_bin())
+        .args([
+            "watch",
+            "--postpone",
+            "--debounce=20",
+            watched.to_str().expect("path"),
+            "--",
+            "sh",
+            "-c",
+            r#"echo start >> "$1"; sleep 0.25; echo end >> "$1"; exit 7"#,
+            "--",
+            output.to_str().expect("output"),
+        ])
+        .current_dir(dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch");
+    let mut errors = std::io::BufReader::new(child.stderr.take().expect("stderr"));
+    let mut ready = String::new();
+    errors.read_line(&mut ready).expect("ready");
+
+    std::fs::write(&watched, "first").expect("first");
+    await_line_count(&output, 1);
+    for value in ["second", "third", "fourth"] {
+        std::fs::write(&watched, value).expect("change during run");
+    }
+    await_line_count(&output, 4);
+    std::thread::sleep(Duration::from_millis(350));
+    assert_eq!(file_lines(&output), ["start", "end", "start", "end"]);
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).expect("terminate");
+    assert_eq!(child.wait().expect("wait").code(), Some(143));
+}
+
+#[test]
+fn restart_escalates_and_replaces_the_complete_process_group() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let watched = dir.path().join("watched.txt");
+    let pids = dir.path().join("pids.txt");
+    std::fs::write(&watched, "").expect("watched");
+    let mut child = Command::new(oslo_bin())
+        .args([
+            "watch",
+            "--postpone",
+            "--restart",
+            "--debounce=20",
+            "--grace=50",
+            watched.to_str().expect("path"),
+            "--",
+            "sh",
+            "-c",
+            r#"trap '' TERM; sleep 30 & echo "$$ $!" >> "$1"; wait"#,
+            "--",
+            pids.to_str().expect("pids"),
+        ])
+        .current_dir(dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch");
+    let mut errors = std::io::BufReader::new(child.stderr.take().expect("stderr"));
+    let mut ready = String::new();
+    errors.read_line(&mut ready).expect("ready");
+
+    std::fs::write(&watched, "first").expect("first");
+    await_line_count(&pids, 1);
+    std::fs::write(&watched, "second").expect("restart");
+    await_line_count(&pids, 2);
+    let first: Vec<i32> = file_lines(&pids)[0]
+        .split_whitespace()
+        .map(|pid| pid.parse().expect("pid"))
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while first
+        .iter()
+        .any(|pid| unsafe { nix::libc::kill(*pid, 0) } == 0)
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for pid in first {
+        assert_ne!(
+            unsafe { nix::libc::kill(pid, 0) },
+            0,
+            "{pid} survived restart"
+        );
+    }
+
     kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).expect("terminate");
     assert_eq!(child.wait().expect("wait").code(), Some(143));
 }
