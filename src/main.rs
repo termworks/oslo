@@ -80,6 +80,13 @@ fn main() {
     oslo::version::install(env!("CARGO_PKG_VERSION"));
     // Before any thread exists, as the safety note on the function requires.
     restore_default_sigpipe();
+    #[cfg(all(feature = "watch", feature = "scratch"))]
+    {
+        let args: Vec<String> = env::args().collect();
+        if let Some(status) = cli::watch::bootstrap(&args) {
+            std::process::exit(status);
+        }
+    }
     report_structured_audit();
     // The names that can carry structure. Declared once, here, for every mode the shell runs in —
     // a script and a prompt must agree about what `df` is.

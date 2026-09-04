@@ -52,6 +52,42 @@ pub(crate) fn run(args: &[String]) -> i32 {
     launch(request)
 }
 
+#[cfg(feature = "scratch")]
+pub(crate) fn bootstrap(argv: &[String]) -> Option<i32> {
+    let token = argv.get(1)?.strip_prefix("--__watch-scratch=")?;
+    if !oslo::scratch::program::verify_bootstrap(token) {
+        eprintln!("oslo watch: private scratch bootstrap refused");
+        return Some(2);
+    }
+    let Some(name) = argv.get(2) else {
+        eprintln!("oslo watch: private scratch bootstrap has no name");
+        return Some(2);
+    };
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("oslo watch: cannot read the working directory: {error}");
+            return Some(1);
+        }
+    };
+    let request = match parse(argv.get(3..).unwrap_or_default(), root) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("oslo watch: private scratch bootstrap: {error}");
+            return Some(2);
+        }
+    };
+    Some(
+        match oslo::scratch::program::host_watch(name, &request.spec) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("oslo watch: cannot start scratch {name}: {error}");
+                1
+            }
+        },
+    )
+}
+
 pub(crate) fn launch(request: Request) -> i32 {
     match &request.scratch {
         ScratchChoice::Disabled => foreground(&request.spec),
