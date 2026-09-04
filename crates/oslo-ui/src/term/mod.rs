@@ -237,7 +237,7 @@ impl Drop for Restore {
 /// **The point of asking is to not spend anything.** Everything gated on this is work whose only
 /// product is something on a screen — a colour, a mark, a frame of an animation. Where there is no
 /// screen the work has no product, and the most expensive of it spawns processes: see
-/// [`crate::prompt::animation::animate_in`].
+/// `crate::prompt::animation::animate_in`.
 ///
 /// An *unset* `TERM` is deliberately not the same answer as `dumb`. It is the ordinary state of a
 /// perfectly capable terminal that nobody has told, and treating it as no terminal at all would

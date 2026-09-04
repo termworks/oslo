@@ -1,6 +1,6 @@
 //! Saying a diagnostic once, in whichever of its two faces the reader can use.
 //!
-//! [`origin_now`](super::origin_now) answers *where* a diagnostic is speaking from. This answers
+//! `origin_now` answers *where* a diagnostic is speaking from. This answers
 //! *how* it is drawn: a one-line message to a pipe, and on a terminal the same message with a caret
 //! under the word at fault.
 //!

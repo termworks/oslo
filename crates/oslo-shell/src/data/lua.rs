@@ -26,7 +26,8 @@
 //!
 //! The two that were in dispute:
 //!
-//! * [`Val::Bytes`] is a **byte string**, through [`Value::bytes`] — the constructor that keeps text
+//! * [`Val::Bytes`] is a **byte string**, through [`oslo_base::value::Value::bytes`] — the
+//!   constructor that keeps text
 //!   as text and anything else as the bytes themselves. Lua has byte strings, so there is no reason
 //!   to lose the content: `from_utf8_lossy` is the mojibake `Val::Bytes` exists to prevent, and a
 //!   length is the blob thrown away.
@@ -48,7 +49,7 @@
 //! only Rust could make, and a tool a config registered could not answer with a size that drew like
 //! `df`'s.
 //!
-//! See [`tagged_kind`] for what is recognised, and what it costs.
+//! See `tagged_kind` for what is recognised, and what it costs.
 
 use crate::data::{Record, Val};
 use oslo_base::value::{Table, Value};

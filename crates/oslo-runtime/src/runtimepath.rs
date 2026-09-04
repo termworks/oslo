@@ -1,6 +1,6 @@
 //! Where oslo looks for Lua: a path of roots, not a directory.
 //!
-//! This is neovim's model, and it is the one [`hexe`] and [`trek`] use — three tools in one family
+//! This is neovim's model, and it is the one `hexe` and `trek` use — three tools in one family
 //! that each invented a layout would stop being a family, and a person who learned any of them
 //! would learn nothing about the others.
 //!

@@ -11,7 +11,7 @@
 //!
 //! `data::plan` decides which channel every edge carries before any stage starts, and everything
 //! good about the structured half follows from that. But the declaration it reads stops at
-//! [`Shape`](super::plan::Shape) — *takes rows, gives rows* — and says nothing about **which
+//! `Shape` — *takes rows, gives rows* — and says nothing about **which
 //! columns**. So a mistyped column name was caught by `tools::unknown_column` scanning the rows that
 //! were actually produced, which is to say *after the producer ran*. For `ls` that costs nothing;
 //! for a tool a config registered it means a side effect has already happened.
@@ -22,7 +22,7 @@
 //! # `Unknown` is an answer, not a failure
 //!
 //! Most streams are knowable and some are not. `from json` learns its columns from the document,
-//! `map` from whatever Lua returned, `headers` from row one. Those are [`Columns::Unknown`], and a
+//! `map` from whatever Lua returned, `headers` from row one. Those are `Columns::Unknown`, and a
 //! pipeline is `Unknown` from the first such stage onwards.
 //!
 //! **Nothing may be refused on an `Unknown`.** That is the rule the whole design rests on: a
