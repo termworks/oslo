@@ -183,4 +183,19 @@ mod tests {
         std::fs::write(outside.path().join("lib.rs"), "x").expect("file");
         assert!(!await_dirty(&mut set));
     }
+
+    #[test]
+    fn a_deleted_recursive_root_is_watched_after_recreation() {
+        let root = tempfile::tempdir().expect("root");
+        let source = root.path().join("src");
+        std::fs::create_dir(&source).expect("source");
+        let patterns = vec!["src/**/*.rs".to_string()];
+        let mut set = WatchSet::open(root.path(), &patterns).expect("set");
+        std::fs::remove_dir(&source).expect("remove source");
+        let _ = await_dirty(&mut set);
+        std::fs::create_dir(&source).expect("recreate source");
+        let _ = await_dirty(&mut set);
+        std::fs::write(source.join("lib.rs"), "x").expect("file");
+        assert!(await_dirty(&mut set));
+    }
 }

@@ -182,6 +182,15 @@ mod tests {
     }
 
     #[test]
+    fn question_marks_and_bracket_classes_match_one_component() {
+        let p = pattern("src/file?.[ch]");
+        assert!(p.matches(Path::new("/work/src/file1.c")));
+        assert!(p.matches(Path::new("/work/src/filex.h")));
+        assert!(!p.matches(Path::new("/work/src/file10.c")));
+        assert!(!p.matches(Path::new("/work/src/file1.rs")));
+    }
+
+    #[test]
     fn recursive_matches_zero_or_many_directories() {
         let p = pattern("src/**/*.rs");
         assert!(p.matches(Path::new("/work/src/lib.rs")));
@@ -200,5 +209,15 @@ mod tests {
     fn relative_parent_is_normalized_once() {
         let p = pattern("../shared/?.toml");
         assert!(p.matches(Path::new("/shared/a.toml")));
+    }
+
+    #[test]
+    fn a_literal_directory_matches_only_direct_entries() {
+        let root = tempfile::tempdir().expect("root");
+        let directory = root.path().join("config");
+        std::fs::create_dir(&directory).expect("directory");
+        let p = PathPattern::compile(root.path(), "config").expect("pattern");
+        assert!(p.matches(&directory.join("app.toml")));
+        assert!(!p.matches(&directory.join("nested/app.toml")));
     }
 }

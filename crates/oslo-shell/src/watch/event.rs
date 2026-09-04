@@ -8,7 +8,7 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 
 /// A decoded filesystem or watch-set event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
     Write,
     Modify,
@@ -145,6 +145,7 @@ fn errno(error: nix::errno::Errno) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -171,6 +172,47 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "event did not arrive");
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn directory_changes_keep_their_distinct_event_kinds() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut source = EventSource::open().expect("source");
+        source.add(root.path()).expect("watch root");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::write(&first, "x").expect("create");
+        std::fs::rename(&first, &second).expect("move");
+        std::fs::remove_file(&second).expect("delete");
+
+        let wanted = [
+            EventKind::Create,
+            EventKind::MoveFrom,
+            EventKind::MoveTo,
+            EventKind::Delete,
+        ];
+        let mut seen = HashSet::new();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !wanted.iter().all(|kind| seen.contains(kind)) && Instant::now() < deadline {
+            for event in source.read().expect("events") {
+                seen.insert(event.kind);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for kind in wanted {
+            assert!(seen.contains(&kind), "missing {kind:?}: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn control_masks_are_decoded_before_content_masks() {
+        for (mask, expected) in [
+            (AddWatchFlags::IN_Q_OVERFLOW, EventKind::Overflow),
+            (AddWatchFlags::IN_IGNORED, EventKind::Ignored),
+            (AddWatchFlags::IN_UNMOUNT, EventKind::Unmount),
+        ] {
+            assert_eq!(decode(mask | AddWatchFlags::IN_MODIFY), expected);
         }
     }
 }
