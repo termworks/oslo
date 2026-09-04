@@ -21,6 +21,7 @@ impl ChildGroup {
             .args(args)
             .current_dir(root)
             .env_remove("OSLO_WATCH_WORKER")
+            .env_remove("OSLO_WATCH_SCRATCH_BOOTSTRAP")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());

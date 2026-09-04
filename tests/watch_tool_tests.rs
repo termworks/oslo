@@ -179,6 +179,53 @@ oslo.proc.exec("sleep 0.2")
     );
 }
 
+#[test]
+fn a_persistent_process_service_outlives_its_lua_script_without_holding_its_pipes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("persistent.lua");
+    std::fs::write(
+        &script,
+        r#"
+oslo.watch.start {
+  name = "persistent-process",
+  paths = { "watched.txt" },
+  run = { "sh", "-c", "echo $PPID > worker.pid; echo ran >> runs.txt" },
+  initial = false,
+  persist = true,
+  scratch = false,
+}
+print("launched")
+"#,
+    )
+    .expect("script");
+    std::fs::write(dir.path().join("watched.txt"), "").expect("watched");
+    let output = Command::new(oslo_bin())
+        .arg(&script)
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .output()
+        .expect("lua");
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("launched"));
+
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::write(dir.path().join("watched.txt"), "changed").expect("change");
+    let runs = dir.path().join("runs.txt");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !runs.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read_to_string(&runs).expect("runs"), "ran\n");
+    let worker: i32 = std::fs::read_to_string(dir.path().join("worker.pid"))
+        .expect("worker pid")
+        .trim()
+        .parse()
+        .expect("pid");
+    kill(Pid::from_raw(worker), Signal::SIGTERM).expect("stop worker");
+}
+
 #[cfg(feature = "scratch")]
 #[test]
 fn explicit_scratch_is_listable_replayable_and_killable() {

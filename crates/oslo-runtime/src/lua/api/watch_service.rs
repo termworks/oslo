@@ -219,7 +219,7 @@ fn milliseconds(value: &Value, field: &str, default: u64) -> Result<Duration, Lu
 
 fn launch(parsed: &Parsed, _session: Option<&str>) -> std::io::Result<Target> {
     match &parsed.scratch {
-        ScratchRequest::Never => process(&parsed.spec),
+        ScratchRequest::Never => process(&parsed.spec, parsed.persist),
         #[cfg(feature = "scratch")]
         ScratchRequest::Auto | ScratchRequest::Required(_) => {
             let name = match &parsed.scratch {
@@ -237,7 +237,7 @@ fn launch(parsed: &Parsed, _session: Option<&str>) -> std::io::Result<Target> {
             Ok(Target::Scratch(name))
         }
         #[cfg(not(feature = "scratch"))]
-        ScratchRequest::Auto => process(&parsed.spec),
+        ScratchRequest::Auto => process(&parsed.spec, parsed.persist),
         #[cfg(not(feature = "scratch"))]
         ScratchRequest::Required(name) => {
             let _ = name;
@@ -248,13 +248,17 @@ fn launch(parsed: &Parsed, _session: Option<&str>) -> std::io::Result<Target> {
     }
 }
 
-fn process(spec: &WatchSpec) -> std::io::Result<Target> {
-    worker_command(spec, "--foreground")
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map(Target::Process)
+fn process(spec: &WatchSpec, persistent: bool) -> std::io::Result<Target> {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = worker_command(spec, "--foreground");
+    command.stdin(Stdio::null()).process_group(0);
+    if persistent {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    } else {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    }
+    command.spawn().map(Target::Process)
 }
 
 fn worker_command(spec: &WatchSpec, launch: &str) -> Command {
