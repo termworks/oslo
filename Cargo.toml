@@ -145,33 +145,19 @@ panic = "abort"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-opt-level = "s"
+# **Every crate at "z", measured rather than assumed.** oslo's own crates and every dependency, on
+# the static musl build with nothing else changed: 5,375,616 bytes with `oslo-ui` held back at "s",
+# against 5,199,488 with it at "z". Both are the shipped size, measured after `.make.lua` takes the
+# unwind tables off — a size measured before that step is 850 KB of something nobody ships.
+#
+# `oslo-ui` is the only one that costs anything, because it is the only crate on the keystroke path.
+# Painting a 57-character line takes 2.41 µs at `opt-level = 3` and 3.02 µs at "s". Keys are ~100 ms
+# apart, so even the larger of those is six ten-thousandths of one percent of the gap between two
+# keystrokes — a cost nobody can perceive, for 176,128 bytes anybody can measure.
+#
+# No per-package overrides any more, because there is nothing left to override: this line covers the
+# workspace members and the one below covers their dependencies.
+opt-level = "z"
 
 [profile.release.package."*"]
-opt-level = "s"
-
-# Size, not speed, and measured rather than assumed: at `opt-level = 3` painting a 57-character
-# line took 2.41 µs per keystroke and at "s" it takes 3.02 µs. A keystroke is ~100 ms apart, so the
-# difference is 0.0006% of the gap between two keys — and it is 250 KB of binary.
-[profile.release.package.oslo-ui]
-opt-level = "s"
-
-[profile.release.package.argc]
-opt-level = "z"
-
-[profile.release.package.oslo-runtime]
-opt-level = "z"
-
-[profile.release.package.oslo-base]
-opt-level = "z"
-
-
-# **172 KB, and the crate that can most afford it.** `oslo-shell` is the parser, the expander and
-# the executor: its work happens once per *command*, where the shell is already about to fork, and
-# not once per keystroke like `oslo-ui`. Measured on the static musl build, everything else
-# unchanged: 6,579,392 bytes at "s" against 6,403,264 at "z".
-#
-# Taking the whole tree to "z" saves 307,200 instead, and the extra 131 KB comes almost entirely
-# out of `oslo-ui` — which is the one crate the note above says to leave alone.
-[profile.release.package.oslo-shell]
 opt-level = "z"
