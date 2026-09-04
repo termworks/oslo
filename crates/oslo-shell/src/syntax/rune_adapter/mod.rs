@@ -32,7 +32,7 @@ mod redirects;
 
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::{Result, ShellError};
-use rune::ast::{AndOrList, Command, CommandList, ListItem, Pipeline, Script};
+use rune::ast::{AndOrList, Command, CommandList, ListItem, Pipeline, Script, SimpleCommand};
 use rune::{SyntaxKind, Tree};
 
 /// Parse `script` and lower it into something oslo can run.
@@ -44,6 +44,9 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
     oslo_base::nesting::check_nesting(script)?;
 
     let parsed = rune::parse(script);
+    if let Some(construct) = unsupported_command(parsed.tree(), parsed.tree().root()) {
+        return Err(unsupported(construct));
+    }
     // **The first error is the one to report, and rune orders them by position.** It finds every
     // mistake in the file, which is what a checker wants; a shell about to run the script wants
     // the earliest one, because that is where the program stopped making sense.
@@ -56,6 +59,25 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
         return Err(ShellError::SyntaxError(error.message.clone()));
     }
     convert_script(parsed.tree())
+}
+
+fn unsupported_command(tree: &Tree, node: &rune::Node) -> Option<&'static str> {
+    if matches!(
+        node.kind(),
+        SyntaxKind::CommandSubstitution | SyntaxKind::ProcessSubstitution
+    ) && closed(tree, node)
+    {
+        return None;
+    }
+    if let Some(command) = SimpleCommand::cast(node)
+        && command
+            .name()
+            .is_some_and(|word| tree.source().slice(word.span()) == "coproc")
+    {
+        return Some("coproc");
+    }
+    node.nodes()
+        .find_map(|child| unsupported_command(tree, child))
 }
 
 /// Whether an offset falls inside a command substitution that was properly closed.
