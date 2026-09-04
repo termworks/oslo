@@ -17,3 +17,7 @@ flags:
   "-P": "do not traverse any symbolic links (default)"
   "--help": "display this help and exit"
   "--version": "output version information and exit"
+completion:
+  positional:
+    - ["$groups"]
+  positionalany: ["$files", "$directories"]

@@ -61,3 +61,7 @@ flags:
   "--tips=": "Show strace tips, tricks, and tweaks before exit."
   "-V, --version": "Print the version number of strace."
   "-e=*": {description: "A qualifying expression which modifies which events to trace or how to trace them.", nargs: -1}
+completion:
+  flag:
+    attach: ["$pids"]
+  positionalany: ["$executables"]

@@ -1,0 +1,14 @@
+name: renice
+description: "Alter the scheduling priority of a running process"
+flags:
+  "-n, --priority=": "The scheduling priority to set"
+  "-p, --pid": "Interpret the arguments as process IDs (the default)"
+  "-g, --pgrp": "Interpret the arguments as process group IDs"
+  "-u, --user": "Interpret the arguments as user names or user IDs"
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  flag:
+    user: ["$users"]
+    pid: ["$pids"]
+  positionalany: ["$pids"]

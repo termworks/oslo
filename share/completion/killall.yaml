@@ -45,3 +45,5 @@ flags:
   "-c=": "Limit matching processes to those matching the given name"
   "-q": "Suppress error message if no processes are matched"
   "-z": "Do not skip zombies"
+completion:
+  positionalany: ["$executables"]

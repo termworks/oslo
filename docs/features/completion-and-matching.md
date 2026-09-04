@@ -296,6 +296,13 @@ how the menu tells a branch from a file.
 | `$directories` | directories only |
 | `$executables` | things that run |
 | `$hosts` | machines this one knows — see below; `user@` is kept |
+| `$pids` | processes running now, newest first, each with its command |
+| `$signals` | `TERM`, `KILL`, … — the name `kill -s` takes, its number beside it |
+| `$users`, `$groups` | `/etc/passwd` and `/etc/group`, with the id beside each |
+| `$variables` | this shell's environment, each value truncated to a column |
+| `$interfaces` | network interfaces, with their state |
+| `$mounts` | mount points — what `umount` and `df` take, not the device |
+| `$services` | systemd units, from the unit directories |
 | `$(git branch)` | run it here and read what it printed, one offer per line |
 | `$bash(…)`, `$zsh(…)`, `$fish(…)`, `$nu(…)`, … | run it in that shell, if it is installed |
 
@@ -461,6 +468,54 @@ is in `/etc/hosts` on every machine and is never what somebody is half way throu
 
 zsh asks `getent hosts` and NIS as well. Both are a process, or a network round trip, **on the Tab
 key**; the four files are a `read` each and cover what a person actually types.
+
+### The rest of what the machine knows
+
+```text
+kill 12⇥                  unset PA⇥                 umount /m⇥
+  1247   cargo      pid     PATH  /usr/bin:…  var     /mnt/backup  ext4  mount
+  1203   rust-anal… pid     PAGER less        var     /media/usb   vfat  mount
+```
+
+`$hosts` generalises. A pid is not a fact about `kill` — it is a fact about **this machine at this
+moment**, and it is the same fact `pkill`, `renice`, `strace` and `tail --pid` all want. So each of
+these is written once and pointed at from as many specs as want it:
+
+| source | from | shipped specs pointing at it |
+|---|---|---|
+| `$pids` | `/proc`, newest first, `comm` beside each | `kill`, `renice`, `strace --attach` |
+| `$signals` | a fixed list — the POSIX signals and the common Linux ones | `kill -s` |
+| `$users` | `/etc/passwd` | `chown`, `su`, `renice --user` |
+| `$groups` | `/etc/group` | `chgrp` |
+| `$variables` | this process's environment | `unset`, `env`, `printenv` |
+| `$interfaces` | `/sys/class/net` | `ip`, `tcpdump -i` |
+| `$mounts` | `/proc/mounts` | `umount` |
+| `$services` | the systemd unit directories | `systemctl start`, `stop`, `enable`, … |
+
+**Nothing here starts a process.** Every one is a read of `/proc`, `/sys`, `/etc` or the environment
+— the files the kernel and libc already keep for exactly these questions. zsh asks `getent`, `ps`
+and `systemctl` for some of the same answers and pays a fork per Tab for it.
+
+What is read once and what is read every time follows from what changes. Users, groups, service
+units and hosts are read once: adding a user mid-line is not a thing that happens. Pids, variables,
+mounts and interfaces are read on every Tab, because **the shell itself changes them** — `export X=1`
+then `unset ⇥` has to see `X`, a `mount` you just ran has to appear in the next `umount ⇥`, and a pid
+list a minute old is a list of the wrong pids.
+
+Three choices worth stating, because each cost something:
+
+* **`$pids` is newest first.** The thing you want to stop is nearly always the thing you just
+  started, and `/proc` enumerates in whatever order the directory happens to be in. The dropdown
+  ranks on top of that; the order it is given decides ties.
+* **`$mounts` offers the mount point, not the device.** That is what `umount`, `df` and `findmnt`
+  take, and the device is the field nobody can type from memory.
+* **`$services` reads the unit directories rather than `systemctl list-units`**, which is a process
+  and on a cold cache a slow one. What that costs is the *state* column — a directory listing cannot
+  say whether a unit is running — so the note is the unit's type instead, which is the part that
+  tells `nginx.service` from `nginx.socket`.
+
+Adding one is a function returning `Vec<Suggestion>` and a line in `sources::offers`. Then any spec,
+shipped or your own, can name it as `$whatever`.
 
 ### From a man page, for everything nobody wrote a spec for
 

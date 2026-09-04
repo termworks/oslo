@@ -1,0 +1,19 @@
+name: umount
+description: "Detach a filesystem from the file hierarchy"
+flags:
+  "-a, --all": "Unmount all of the filesystems described in /proc/self/mountinfo"
+  "-A, --all-targets": "Unmount all mountpoints for the given device"
+  "-c, --no-canonicalize": "Do not canonicalize paths"
+  "-d, --detach-loop": "Free the loop device if it has been used"
+  "-f, --force": "Force an unmount, in case of an unreachable NFS system"
+  "-l, --lazy": "Detach now, and clean up the references when the filesystem is no longer busy"
+  "-n, --no-mtab": "Unmount without writing in /etc/mtab"
+  "-q, --quiet": "Suppress 'not mounted' error messages"
+  "-R, --recursive": "Recursively unmount each path, and everything below it"
+  "-r, --read-only": "When unmounting fails, try to remount read-only"
+  "-t, --types=": "Act only on filesystems of the given types"
+  "-v, --verbose": "Say what is being done"
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  positionalany: ["$mounts"]

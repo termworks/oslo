@@ -3,3 +3,5 @@ name: unset
 description: "Named variable shall be undefined"
 flags:
   "-v": "Variable definition will be unset"
+completion:
+  positionalany: ["$variables"]

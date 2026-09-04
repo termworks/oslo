@@ -15,4 +15,6 @@ exclusiveflags:
   - [L, H, P]
   - [P, H, L]
 completion:
+  positional:
+    - ["$users"]
   positionalany: ["$files", "$directories"]

@@ -64,3 +64,6 @@ flags:
   "-y, --linktype=": "Set the data link type to use while capturing packets (see -L) or just compiling and dumping packet-matching code (see -d) to datalinktype."
   "-z=": "Used in conjunction with the -C or -G options, this will make tcpdump run \" postrotate-command file \" where file is the savefile being closed after each rotation."
   "-Z, --relinquish-privileges=": "If tcpdump is running as root, after opening the capture device or input savefile, but before opening any savefiles for output, change the user ID to user and the group ID to the primary group of user."
+completion:
+  flag:
+    i: ["$interfaces"]
