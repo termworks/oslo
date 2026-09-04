@@ -74,6 +74,10 @@ pub fn animate_in(after: Duration) {
     if !crate::term::draws() {
         return;
     }
+    schedule(after);
+}
+
+fn schedule(after: Duration) {
     let want = Instant::now() + after;
     NEXT.with(|next| match next.get() {
         // Somebody already wants a turn sooner. Theirs is the deadline; this one comes round on the
