@@ -134,6 +134,16 @@ The key is pressed at a prompt, long after oslo has started the threads that war
 and `fork` carries only the calling thread — a child that carried on would hold locks belonging to
 threads that do not exist in it.
 
+The same keeper can host an exact program for [`watch services`](watch.md). A generated watch
+Scratch is still a normal named Scratch: it appears in the finder and `scratch -l`, its output is
+replayed on attach, and `scratch -k NAME` stops the worker and its current command group. Only an
+explicitly requested watch service is auto-named; ordinary Scratch creation still requires the name
+the user typed.
+
+Program-backed launch goes through a private one-use marker and execs before normal Oslo threads
+start. Non-standard inherited descriptors are closed before the keeper fork, so a persistent watch
+cannot keep the pipes of the Lua script or shell that launched it open.
+
 ## Where it lives
 
 `/tmp/oslo-$UID/scratch`, mode `0700`, or wherever `oslo.scratch.dir` says.

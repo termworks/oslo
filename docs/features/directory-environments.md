@@ -156,6 +156,26 @@ Both watch calls are **refused outside a load**. The list is drained by the next
 from a timer or a background callback would quietly attach a path to whichever unrelated project
 loaded next.
 
+### Watching a command instead of the environment
+
+With the independent [`watch`](watch.md) feature, a file can own a long-running command watcher:
+
+```lua
+oslo.direnv.watch_command {
+  name = "server",
+  paths = { "src/**/*.rs", "Cargo.toml" },
+  run = { "cargo", "run" },
+  policy = "restart",
+}
+```
+
+This is deliberately different from the two calls above. `watch_file` and `watch_dir` add reasons
+to reload `.env.lua`; `watch_command` leaves the environment loaded and reruns the declared argv.
+It defaults to `initial = false`, starts only while the allowed environment is loading, and is
+stopped through the same reverse-order unload list when the shell leaves. `persist = true` omits
+that ownership. With Scratch support, the automatic service has a replayable log and a generated
+name containing the shell session, so two shells in one project do not stop each other's watcher.
+
 ### A variable the project keeps to itself
 
 `oslo.env.set` exports by default, and for a long time that was the only thing it could do — so a
@@ -482,3 +502,4 @@ arguments and on `flake.nix`, `flake.lock`, `shell.nix` and `default.nix` as the
 | `crates/oslo-shell/src/env/builtins/direnv.rs` | the `direnv` builtin |
 | `crates/oslo-runtime/src/startup/environments/` | running the file, `capturing`, `live`, the block |
 | `crates/oslo-runtime/src/lua/api/direnv.rs` | `oslo.direnv.path_add`, `oslo.direnv.nix_develop` |
+| `crates/oslo-runtime/src/lua/api/watch_service.rs` | `oslo.direnv.watch_command`, service handles and teardown |

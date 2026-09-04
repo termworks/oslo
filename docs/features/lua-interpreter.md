@@ -395,6 +395,12 @@ package.preload["team.colours"] = function() return { accent = "#89b4fa" } end
 advertising a C path would turn an honest "module not found" into a confusing loader error — but a
 `cpath` that is absent breaks `package.cpath == ""`, which is how a script asks.
 
+When the optional [`watch`](watch.md) feature is present, Lua can declare a command service with
+`oslo.watch.start { paths = { … }, run = { … } }`. The command is an argv list rather than a shell
+string, and the returned handle exposes `name()`, `mode()`, and idempotent `stop()`. The blocking
+inotify loop runs in a separate Oslo process; it is not a callback executing inside the Lua VM.
+Non-persistent services are stopped when the Lua script or interactive shell normally exits.
+
 ## Measurements
 
 `target/release/oslo` at fat LTO, best of three, wall clock including process start (3.6 ms, from
