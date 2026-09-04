@@ -56,6 +56,18 @@ const KEPT: &[(&str, &str)] = &[
     ("{}", "the same, positionally"),
     ("{}: {}", "a name and a message the name did not choose"),
     ("{problem}", "a config or macro problem, already a sentence"),
+    (
+        "{body}",
+        "the refusing helper has no operand when this branch is reached",
+    ),
+    (
+        "funced: {name}: {problem}",
+        "the parser is reporting edited function content, not the command-line name",
+    ),
+    (
+        "set -U: {problem}",
+        "the universal-variable store's complete error message",
+    ),
     ("{name}: {e}", "a verb and the error its Lua raised"),
     ("{name}: {message}", "the same"),
     ("{label}: {}", "a redirection failure, named by its label"),
@@ -122,15 +134,6 @@ const KEPT: &[(&str, &str)] = &[
         "scratch: -k takes a name\\n{USAGE}",
         "the value is missing, so there is nothing to point at",
     ),
-    (
-        "{name}: --keep is a lookup option",
-        "the flag is in the wrong place, not misspelled",
-    ),
-    (
-        "{name}: a column name is required",
-        "the operand is absent; a caret needs one to be there",
-    ),
-    ("{name}: an expression is required", "the same"),
     (
         "{name}: a column name and an expression are required",
         "the same: both are absent",
