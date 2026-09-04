@@ -111,7 +111,14 @@ pub(super) fn convert_command_list(
     list: CommandList<'_>,
 ) -> Result<oslo_ast::CommandList> {
     let mut items = Vec::new();
+    let mut previous_unterminated = false;
     for item in list.items() {
+        if previous_unterminated {
+            return Err(ShellError::SyntaxError(
+                "commands must be separated by `;`, `&`, or a newline".to_string(),
+            ));
+        }
+        previous_unterminated = item.terminator().is_none();
         items.push(convert_list_item(tree, item)?);
     }
     Ok(oslo_ast::CommandList { items })
