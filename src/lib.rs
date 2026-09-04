@@ -32,6 +32,8 @@ pub use oslo_shell::direnv;
 pub use oslo_shell::make;
 /// Completion spec files, and the macros a spec names. See `oslo_shell::spec`.
 pub use oslo_shell::spec;
+#[cfg(feature = "watch")]
+pub use oslo_shell::watch;
 /// The shell: syntax adaptation, expansion, execution, the builtins, the structured pipeline and
 /// directory environments.
 pub use oslo_shell::{data, env, exec, expand, lexer, names, syntax};

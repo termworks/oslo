@@ -56,6 +56,11 @@ pub const TOOLS: &[Tool] = &[
         name: "make",
         about: "run a recipe from the project's .make.lua",
     },
+    #[cfg(feature = "watch")]
+    Tool {
+        name: "watch",
+        about: "run a command when watched paths change",
+    },
     Tool {
         name: "hook",
         about: "list and test the shell hooks",
@@ -182,6 +187,10 @@ pub fn run(tool: &'static Tool, args: &[String]) -> i32 {
     #[cfg(feature = "make")]
     if tool.name == "make" {
         return crate::cli::make::run(args);
+    }
+    #[cfg(feature = "watch")]
+    if tool.name == "watch" {
+        return crate::cli::watch::run(args);
     }
     if tool.name == "profile" {
         return crate::cli::profile::run(args);
