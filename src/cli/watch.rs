@@ -1,6 +1,7 @@
 //! `oslo watch` command-line parsing and launch selection.
 
 use oslo::watch::{Policy, WatchSpec};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -19,6 +20,13 @@ pub(crate) struct Request {
 }
 
 pub(crate) fn run(args: &[String]) -> i32 {
+    let (args, private) = match private_args(args) {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("oslo watch: {error}");
+            return 2;
+        }
+    };
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         print!("{HELP}");
         return 0;
@@ -30,24 +38,73 @@ pub(crate) fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let request = match parse(args, root) {
+    let mut request = match parse(&args, root) {
         Ok(request) => request,
         Err(error) => {
             eprintln!("oslo watch: {error}\n{USAGE}");
             return 2;
         }
     };
+    if private {
+        request.scratch = ScratchChoice::Disabled;
+        request.attach = false;
+    }
     launch(request)
 }
 
 pub(crate) fn launch(request: Request) -> i32 {
-    match request.scratch {
-        ScratchChoice::Auto | ScratchChoice::Disabled => foreground(&request.spec),
-        ScratchChoice::Required(_) => {
-            eprintln!("oslo watch: this build does not support Scratch-backed watch services");
-            2
+    match &request.scratch {
+        ScratchChoice::Disabled => foreground(&request.spec),
+        ScratchChoice::Auto
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() =>
+        {
+            foreground(&request.spec)
+        }
+        ScratchChoice::Auto | ScratchChoice::Required(_) => scratch(request),
+    }
+}
+
+#[cfg(feature = "scratch")]
+fn scratch(request: Request) -> i32 {
+    let name = match &request.scratch {
+        ScratchChoice::Required(Some(name)) => {
+            if !oslo::scratch::name::valid(name) {
+                eprintln!("oslo watch: {name:?} is not a usable scratch name");
+                return 2;
+            }
+            name.clone()
+        }
+        _ => oslo::scratch::program::generated_name(&request.spec, None),
+    };
+    if oslo::scratch::store::alive(&name) {
+        eprintln!(
+            "oslo watch: scratch {name} is already running\nattach: oslo scratch {name}\nkill: oslo scratch -k {name}"
+        );
+        return 1;
+    }
+    if let Err(error) = oslo::scratch::program::start_watch(&name, &request.spec) {
+        eprintln!("oslo watch: cannot start scratch {name}: {error}");
+        return 1;
+    }
+    println!("watch {} started in scratch {name}", request.spec.name);
+    println!("attach: oslo scratch {name}");
+    if !request.attach {
+        return 0;
+    }
+    let key = oslo_ui::settings::current().scratch.key.clone();
+    match oslo::scratch::enter::open_named(&key, 8192, &name) {
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("oslo watch: cannot attach to {name}: {error}");
+            1
         }
     }
+}
+
+#[cfg(not(feature = "scratch"))]
+fn scratch(_request: Request) -> i32 {
+    eprintln!("oslo watch: this build does not support Scratch-backed watch services");
+    2
 }
 
 fn foreground(spec: &WatchSpec) -> i32 {
@@ -155,6 +212,32 @@ fn milliseconds(option: &str, value: &str) -> Result<u64, String> {
     value
         .parse::<u64>()
         .map_err(|_| format!("{option}: expected milliseconds, got {value:?}"))
+}
+
+#[cfg(feature = "scratch")]
+fn private_args(args: &[String]) -> Result<(Vec<String>, bool), String> {
+    let Some(first) = args.first() else {
+        return Ok((Vec::new(), false));
+    };
+    let Some(token) = first.strip_prefix("--__worker=") else {
+        return Ok((args.to_vec(), false));
+    };
+    let inherited = std::env::var(oslo::scratch::program::WORKER_ENV).ok();
+    if token.len() != 32 || inherited.as_deref() != Some(token) {
+        return Err("private worker invocation refused".to_string());
+    }
+    Ok((args[1..].to_vec(), true))
+}
+
+#[cfg(not(feature = "scratch"))]
+fn private_args(args: &[String]) -> Result<(Vec<String>, bool), String> {
+    if args
+        .first()
+        .is_some_and(|arg| arg.starts_with("--__worker="))
+    {
+        return Err("private worker invocation refused".to_string());
+    }
+    Ok((args.to_vec(), false))
 }
 
 const USAGE: &str = "usage: oslo watch [OPTIONS] PATH... -- COMMAND [ARG...]";

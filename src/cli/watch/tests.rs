@@ -45,3 +45,11 @@ fn attach_selects_scratch() {
     assert_eq!(request.scratch, ScratchChoice::Required(None));
     assert!(request.attach);
 }
+
+#[test]
+fn private_worker_requires_its_inherited_marker() {
+    let token = "0123456789abcdef0123456789abcdef";
+    let error =
+        private_args(&words(&[&format!("--__worker={token}")])).expect_err("public private flag");
+    assert!(error.contains("refused"), "{error}");
+}
