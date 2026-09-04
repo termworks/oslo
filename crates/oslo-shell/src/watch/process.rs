@@ -20,6 +20,7 @@ impl ChildGroup {
         command
             .args(args)
             .current_dir(root)
+            .env_remove("OSLO_WATCH_WORKER")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());

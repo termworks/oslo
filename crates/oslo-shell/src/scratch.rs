@@ -12,6 +12,8 @@ pub mod enter;
 pub mod keeper;
 pub mod log;
 pub mod name;
+#[cfg(feature = "watch")]
+pub mod program;
 pub mod store;
 pub mod wire;
 
