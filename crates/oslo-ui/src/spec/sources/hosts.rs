@@ -58,6 +58,20 @@ pub struct Host {
     pub source: &'static str,
 }
 
+/// Every host, as the menu wants them — with whatever `user@` is already on the line kept.
+///
+/// **`user@` is carried through.** A candidate has to match the whole word or nothing does, and
+/// `ci@ga` *is* the word — so an offer of the bare `gate.example.com` matches nothing and the menu
+/// stays shut, which is what `scp f.txt ci@ga<Tab>` did before this. Whatever was typed up to the
+/// last `@` goes back on the front of every host.
+pub fn offers(word: &str) -> Vec<super::Suggestion> {
+    let user = word.rfind('@').map(|at| &word[..=at]).unwrap_or_default();
+    all()
+        .iter()
+        .map(|host| super::Suggestion::new(format!("{user}{}", host.name), host.source, "host"))
+        .collect()
+}
+
 /// Every host name this machine knows.
 pub fn all() -> &'static [Host] {
     HOSTS.get_or_init(gather)

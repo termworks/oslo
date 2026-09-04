@@ -5,20 +5,20 @@
 //!
 //! # The shape is carapace's
 //!
-//! A command is a name, some flags, some subcommands, and — the part oslo lacked until now — a
+//! A command is a name, some flags, some subcommands, and â the part oslo lacked until now â a
 //! declared answer for **each argument position**. That is the model
 //! [carapace-spec](https://github.com/carapace-sh/carapace-spec) settled on, and it is what makes
 //! the difference between `git checkout <Tab>` offering files and offering branches: the shape of
 //! the command is data, and only the values need computing.
 //!
-//! What a position completes to is an [`Action`], which is deliberately *not* resolved here — see
+//! What a position completes to is an [`Action`], which is deliberately *not* resolved here â see
 //! [`action`] for why a value list stays text until the Tab key is pressed.
 //!
 //! # Owned strings, since a config can declare one
 //!
 //! Every field here used to be `&'static str`, which is the natural shape for four hand-written
 //! definitions compiled into the binary and an impossible one for a spec built at runtime from Lua.
-//! That single word was the whole reason a plugin's only route to completion was `for_command` — a
+//! That single word was the whole reason a plugin's only route to completion was `for_command` â a
 //! function that has to re-implement subcommand matching, flag parsing and descriptions by hand.
 //!
 //! The cost is an allocation per string at *build* time and a pointer chase at *read* time. Both
@@ -30,9 +30,9 @@ pub mod custom;
 pub mod definitions;
 pub mod flag;
 pub mod frecency;
-/// The machines this one already knows about, for the ssh family.
-pub mod hosts;
 pub mod resolve;
+/// What the machine knows — hosts, pids, users, mounts — offered as completions.
+pub mod sources;
 pub mod vars;
 
 pub use action::{Action, Query};
@@ -43,7 +43,7 @@ use std::rc::Rc;
 
 /// Whether a flag takes an argument, and whether it insists.
 ///
-/// carapace spells these on the flag itself — `-v=` takes one, `-o, --optarg?` takes one or none —
+/// carapace spells these on the flag itself â `-v=` takes one, `-o, --optarg?` takes one or none â
 /// and the distinction is not decoration: it decides whether the word *after* the flag is that
 /// flag's value or the command's next positional argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,9 +51,9 @@ pub enum Arg {
     /// A plain switch. `--verbose`.
     #[default]
     None,
-    /// `--file=` — the next word belongs to this flag.
+    /// `--file=` â the next word belongs to this flag.
     Required,
-    /// `--optarg?` — a value only when it is written `--optarg=x`, never as a separate word.
+    /// `--optarg?` â a value only when it is written `--optarg=x`, never as a separate word.
     Optional,
 }
 
@@ -63,7 +63,7 @@ pub enum Nargs {
     #[default]
     One,
     Exactly(usize),
-    /// `nargs: -1` — everything up to the next flag.
+    /// `nargs: -1` â everything up to the next flag.
     Any,
 }
 
@@ -73,7 +73,7 @@ pub enum Parsing {
     /// Flags and arguments mix freely.
     #[default]
     Interspersed,
-    /// The first positional argument ends flag parsing — `ssh host -l` passes `-l` to the host.
+    /// The first positional argument ends flag parsing â `ssh host -l` passes `-l` to the host.
     NonInterspersed,
     /// Nothing is a flag. `env`, `sudo`, `xargs`: the words belong to whatever runs next.
     Disabled,
@@ -81,16 +81,16 @@ pub enum Parsing {
 
 #[derive(Debug, Clone, Default)]
 pub struct OptionSpec {
-    /// Every spelling of one flag — `["-m", "--message"]`. All of them are offered.
+    /// Every spelling of one flag â `["-m", "--message"]`. All of them are offered.
     pub names: Vec<String>,
     pub description: String,
     pub takes: Arg,
     pub nargs: Nargs,
-    /// `--verbose*` — may be given more than once, so it stays on offer after it has been used.
+    /// `--verbose*` â may be given more than once, so it stays on offer after it has been used.
     pub repeatable: bool,
-    /// `--internal&` — real, and never offered.
+    /// `--internal&` â real, and never offered.
     pub hidden: bool,
-    /// `--out!` — the command refuses to run without it.
+    /// `--out!` â the command refuses to run without it.
     pub required: bool,
     pub default: Option<String>,
     /// What this flag's **argument** completes to.
@@ -195,7 +195,7 @@ impl SpecRegistry {
     /// The spec for `cmd`, if anything has one.
     ///
     /// **A config's spec wins over a built-in one.** The four compiled in are a starting point, not
-    /// a claim to be right forever — `git` grows subcommands faster than this tree does — and
+    /// a claim to be right forever â `git` grows subcommands faster than this tree does â and
     /// somebody who has written a better one should get theirs. That is the same rule the settings
     /// take, and the opposite of `register_tool`, where a name that already means something keeps
     /// its meaning because a *command* changing under a script is a different kind of surprise.
