@@ -48,10 +48,6 @@ impl PtyShell {
         Self::spawn_with_options(term, false, None)
     }
 
-    pub(crate) fn spawn_with_extensions(term: &str, semantic_extensions: bool) -> Self {
-        Self::spawn_with_options(term, semantic_extensions, None)
-    }
-
     pub(crate) fn spawn_with_options(
         term: &str,
         semantic_extensions: bool,
