@@ -1,0 +1,6 @@
+name: unalias
+description: "Remove an alias"
+flags:
+  "-a": "Remove every alias"
+completion:
+  positionalany: ["$aliases"]

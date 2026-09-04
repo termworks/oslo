@@ -1,0 +1,9 @@
+name: jobs
+description: "List the jobs this shell is managing"
+flags:
+  "-l": "Show the process group id as well"
+  "-p": "Show only the process group ids"
+  "-r": "Show only the running jobs"
+  "-s": "Show only the stopped jobs"
+completion:
+  positionalany: ["$jobs"]

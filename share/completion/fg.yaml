@@ -1,0 +1,5 @@
+name: fg
+description: "Bring a job into the foreground"
+completion:
+  positional:
+    - ["$jobs"]

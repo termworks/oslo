@@ -132,7 +132,7 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     argc::register();
     // A spec — one the config declared, or one a `.yaml` file carries — reaches the shell for the
     // macros it names and the directory it may be found in.
-    spec::register();
+    spec::register(&env_struct);
 
     let settings = history::settings(&env_struct.lock().unwrap());
     // Start walking `$PATH` now, in the background. Whatever is left to do here — opening the

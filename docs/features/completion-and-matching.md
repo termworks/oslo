@@ -303,6 +303,8 @@ how the menu tells a branch from a file.
 | `$interfaces` | network interfaces, with their state |
 | `$mounts` | mount points — what `umount` and `df` take, not the device |
 | `$services` | systemd units, from the unit directories |
+| `$jobs` | this shell's job table, as the `%n` that names each |
+| `$aliases`, `$functions` | what this session has defined |
 | `$(git branch)` | run it here and read what it printed, one offer per line |
 | `$bash(…)`, `$zsh(…)`, `$fish(…)`, `$nu(…)`, … | run it in that shell, if it is installed |
 
@@ -516,6 +518,35 @@ Three choices worth stating, because each cost something:
 
 Adding one is a function returning `Vec<Suggestion>` and a line in `sources::offers`. Then any spec,
 shipped or your own, can name it as `$whatever`.
+
+### What only this shell knows
+
+```text
+fg %⇥                      unalias ⇥
+  %1  cargo build  running   ll   ls -l      alias
+  %2  vim  stopped          gs   git status  alias
+```
+
+| source | for |
+|---|---|
+| `$jobs` | `fg`, `bg`, `wait`, `disown`, `jobs` |
+| `$aliases` | `unalias` |
+| `$functions` | anything that names one |
+
+**No other shell's spec system can answer these**, because no other spec system runs inside the
+shell. carapace is a separate binary; it cannot see a job table it is not the parent of.
+
+They do not come from `sources` and they cannot come from `$(…)`. `sources` reads files, and there
+is no file holding a job table. And **every macro runs as a child** — see the deadline in
+[Declaring is not always computing](#declaring-is-not-always-computing) — so `$(jobs)` would fork a
+shell that has never seen this session's aliases and owns none of its children, then answer
+honestly and emptily. These ride the macro hook and are answered in the shell's own process,
+before the name is treated as a command to run.
+
+**`%1`, not `1`.** A bare number is a pid to `fg`, `bg`, `wait` and `kill` alike, which is a
+different job or no job at all. And an alias carries its expansion in the second column, because
+that is the one thing its name does not tell you — and the name you cannot place is exactly the one
+you are about to `unalias`.
 
 ### From a man page, for everything nobody wrote a spec for
 

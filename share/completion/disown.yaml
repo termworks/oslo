@@ -1,0 +1,8 @@
+name: disown
+description: "Stop managing a job, without stopping the job"
+flags:
+  "-a": "Disown every job"
+  "-r": "Disown only the running jobs"
+  "-h": "Keep the job, but do not send it SIGHUP when the shell exits"
+completion:
+  positionalany: ["$jobs"]

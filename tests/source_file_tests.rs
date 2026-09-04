@@ -12,8 +12,15 @@ use oslo::env::Environment;
 use oslo::ui::OsloHelper;
 use std::sync::{Arc, Mutex};
 
+thread_local! {
+    /// One environment for the whole test, shared by the editor and by the macro runner — which is
+    /// how the shell holds it, and the only arrangement in which `$aliases` can see an alias the
+    /// session set.
+    static SESSION: Arc<Mutex<Environment>> = Arc::new(Mutex::new(Environment::new()));
+}
+
 fn offered(line: &str) -> Vec<String> {
-    let mut helper = OsloHelper::new(Arc::new(Mutex::new(Environment::new())));
+    let mut helper = OsloHelper::new(SESSION.with(Arc::clone));
     helper.set_menu(false);
     let (_, found) = helper.candidates(line, line.len());
     found.into_iter().map(|one| one.display).collect()
@@ -86,6 +93,34 @@ fn a_shipped_spec_reaches_the_source_it_names() {
         !offered("chown ").is_empty(),
         "$users offered nobody at all"
     );
+
+    // Shell state takes the macro hook rather than `sources`, because there is no file to read a
+    // job table out of — so it needs the runner installed, exactly as the REPL installs it.
+    let held = SESSION.with(Arc::clone);
+    held.lock().unwrap().set_alias("ll", "ls -l");
+    oslo::ui::spec::action::set_runner(Some(std::rc::Rc::new(
+        move |name: &str, arg: &str, query: &_| {
+            oslo::spec::state::offers(name, &held)
+                .unwrap_or_else(|| oslo::spec::run::offers(name, arg, query))
+        },
+    )));
+    assert!(
+        offered("unalias ").iter().any(|one| one == "ll"),
+        "$aliases did not reach `unalias`"
+    );
+    // A test process has no jobs, so the claim worth making is that `fg <Tab>` answers *emptily*
+    // rather than falling back to filenames. An empty answer is the source having been consulted;
+    // a directory listing would be it never having been reached.
+    let no_jobs = offered("fg ");
+    assert!(
+        no_jobs.iter().all(|one| one.starts_with('%')),
+        "$jobs offered something that is not a job: {no_jobs:?}"
+    );
+    assert!(
+        offered("wait ").contains(&mine),
+        "`wait` fell past $jobs without reaching $pids"
+    );
+    oslo::ui::spec::action::set_runner(None);
 
     oslo::ui::spec::custom::set_loader(None);
     oslo::ui::spec::custom::forget();
