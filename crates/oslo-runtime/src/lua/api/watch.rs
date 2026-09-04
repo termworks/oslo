@@ -1,12 +1,13 @@
 //! `oslo.fs.watch` — being told when a file changes, instead of asking.
 //!
 //! ```lua
-//! local watch <close> = oslo.fs.watch("src", { "write", "create", "delete" })
+//! local watch = oslo.fs.watch("src", { "write", "create", "delete" })
 //! oslo.every(500, function()
 //!   for change in watch do
 //!     if change.name:match("%.rs$") then oslo.spawn{ "cargo", "check" } end
 //!   end
 //! end)
+//! oslo.on("exit", function() watch:close() end)
 //! ```
 //!
 //! # Why polling is the interface, and not a callback
@@ -38,10 +39,11 @@
 //! `oslo.fs.walk` is how a caller who really wants a tree enumerates one.
 
 use super::util::{failed_path, ok, put, record, text};
-use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 use oslo_base::value::{LuaError, Table, Value};
+use oslo_shell::watch::event::{EventKind, EventSource};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
+use std::path::Path;
 use std::rc::Rc;
 
 /// The names a caller writes, and the flags they mean.
@@ -49,24 +51,22 @@ use std::rc::Rc;
 /// **Shorter than inotify's own, and fewer.** `IN_CLOSE_WRITE` is what "the file was saved" almost
 /// always means — `IN_MODIFY` fires per `write(2)`, so a large save arrives as a burst — and a
 /// name-per-constant surface would make the caller learn inotify to ask a simple question.
-const KINDS: &[(&str, AddWatchFlags)] = &[
-    // Saved: opened for writing, then closed. One event per save, which is what people mean.
-    ("write", AddWatchFlags::IN_CLOSE_WRITE),
-    // Every `write(2)`, for a caller that genuinely wants the partial ones.
-    ("modify", AddWatchFlags::IN_MODIFY),
-    ("create", AddWatchFlags::IN_CREATE),
-    ("delete", AddWatchFlags::IN_DELETE),
-    ("move", AddWatchFlags::IN_MOVE),
-    ("attrib", AddWatchFlags::IN_ATTRIB),
-    ("open", AddWatchFlags::IN_OPEN),
-    ("read", AddWatchFlags::IN_ACCESS),
+const KINDS: &[(&str, &[EventKind])] = &[
+    ("write", &[EventKind::Write]),
+    ("modify", &[EventKind::Modify]),
+    ("create", &[EventKind::Create]),
+    ("delete", &[EventKind::Delete]),
+    ("move", &[EventKind::MoveFrom, EventKind::MoveTo]),
+    ("attrib", &[EventKind::Attribute]),
+    ("open", &[EventKind::Open]),
+    ("read", &[EventKind::Read]),
 ];
 
 /// What a watch is holding: the instance, which paths its descriptors name, and what has arrived.
 struct Watching {
-    inotify: Inotify,
-    /// Watch descriptor to the directory it was added for, so an event can say where it happened.
-    where_: HashMap<WatchDescriptor, String>,
+    source: RefCell<Option<EventSource>>,
+    path: String,
+    wanted: Vec<EventKind>,
     /// Events read from the kernel but not yet handed to Lua.
     ///
     /// **A queue, because one read returns many.** `read_events` drains whatever the kernel has
@@ -80,20 +80,18 @@ pub fn install(fs: &mut Table) {
     // oslo.fs.watch(path, { "write", … }) -> a handle, or nil + message
     put(fs, "watch", |_, args| {
         let path = text(&args, 1, "oslo.fs.watch")?;
-        let flags = wanted(args.get(1))?;
-        let inotify = match Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC) {
+        let wanted = wanted(args.get(1))?;
+        let mut source = match EventSource::open() {
             Ok(it) => it,
-            Err(e) => return failed_path(&path, &std::io::Error::from(e)),
+            Err(e) => return failed_path(&path, &e),
         };
-        let descriptor = match inotify.add_watch(path.as_str(), flags) {
-            Ok(wd) => wd,
-            Err(e) => return failed_path(&path, &std::io::Error::from(e)),
-        };
-        let mut where_ = HashMap::new();
-        where_.insert(descriptor, path.clone());
+        if let Err(e) = source.add(Path::new(&path)) {
+            return failed_path(&path, &e);
+        }
         ok(handle(Rc::new(Watching {
-            inotify,
-            where_,
+            source: RefCell::new(Some(source)),
+            path,
+            wanted,
             pending: RefCell::new(VecDeque::new()),
         })))
     });
@@ -110,17 +108,13 @@ fn handle(watching: Rc<Watching>) -> Value {
 
     // oslo.fs.watch(…):path() -> the directory being watched
     let it = Rc::clone(&watching);
-    handle.verb("path", move |_, _| {
-        ok(match it.where_.values().next() {
-            Some(path) => Value::str(path),
-            None => Value::Nil,
-        })
-    });
+    handle.verb("path", move |_, _| ok(Value::str(&it.path)));
 
     // Closing drops the inotify instance, which is what releases the kernel's watch. Without it a
     // watch outlives every reference to it for the rest of the session.
     handle.on_close("oslo.fs.watch.close", move || {
         watching.pending.borrow_mut().clear();
+        watching.source.borrow_mut().take();
     });
 
     handle.build()
@@ -134,36 +128,43 @@ impl Watching {
         }
         // `WouldBlock` is the ordinary answer for "nothing has happened", not a failure — the
         // instance is non-blocking on purpose.
-        let Ok(events) = self.inotify.read_events() else {
+        let Ok(mut source) = self.source.try_borrow_mut() else {
+            return Value::Nil;
+        };
+        let Some(source) = source.as_mut() else {
+            return Value::Nil;
+        };
+        let Ok(events) = source.read() else {
             return Value::Nil;
         };
         {
             let mut pending = self.pending.borrow_mut();
             for event in events {
-                let kind = names_of(event.mask);
-                // `IN_IGNORED` is the kernel saying the watch is gone — the directory was removed
-                // or unmounted. Passed on rather than swallowed, because a caller looping on this
-                // otherwise waits forever for events that can no longer come.
+                if !self.wanted.contains(&event.kind)
+                    && !matches!(
+                        event.kind,
+                        EventKind::Overflow | EventKind::Ignored | EventKind::Unmount
+                    )
+                {
+                    continue;
+                }
                 pending.push_back(record(vec![
                     (
                         "name",
-                        match &event.name {
+                        match event.name {
                             Some(name) => Value::str(name.to_string_lossy()),
                             None => Value::Nil,
                         },
                     ),
                     (
                         "path",
-                        match self.where_.get(&event.wd) {
-                            Some(dir) => Value::str(dir),
+                        match event.directory {
+                            Some(dir) => Value::str(dir.to_string_lossy()),
                             None => Value::Nil,
                         },
                     ),
-                    ("kind", Value::str(kind)),
-                    (
-                        "directory",
-                        Value::Bool(event.mask.contains(AddWatchFlags::IN_ISDIR)),
-                    ),
+                    ("kind", Value::str(kind_name(event.kind))),
+                    ("directory", Value::Bool(event.is_directory)),
                 ]));
             }
         }
@@ -175,13 +176,15 @@ impl Watching {
 ///
 /// No list means every kind this module names — the useful default for "tell me when anything
 /// happens here", and the one a caller writes first while finding out what they want.
-fn wanted(value: Option<&Value>) -> Result<AddWatchFlags, LuaError> {
+fn wanted(value: Option<&Value>) -> Result<Vec<EventKind>, LuaError> {
     let Some(Value::Table(asked)) = value else {
         return Ok(KINDS
             .iter()
-            .fold(AddWatchFlags::empty(), |all, (_, flag)| all | *flag));
+            .flat_map(|(_, kinds)| *kinds)
+            .copied()
+            .collect());
     };
-    let mut flags = AddWatchFlags::empty();
+    let mut kinds = Vec::new();
     for entry in asked.borrow().sequence() {
         let Value::Str(name) = entry else {
             return Err(LuaError::new(
@@ -189,7 +192,7 @@ fn wanted(value: Option<&Value>) -> Result<AddWatchFlags, LuaError> {
             ));
         };
         match KINDS.iter().find(|(known, _)| *known == name.as_ref()) {
-            Some((_, flag)) => flags |= *flag,
+            Some((_, found)) => kinds.extend_from_slice(found),
             None => {
                 let known: Vec<&str> = KINDS.iter().map(|(name, _)| *name).collect();
                 return Err(LuaError::new(format!(
@@ -199,7 +202,7 @@ fn wanted(value: Option<&Value>) -> Result<AddWatchFlags, LuaError> {
             }
         }
     }
-    Ok(flags)
+    Ok(kinds)
 }
 
 /// The name for what happened, as the first kind whose flag is set.
@@ -207,16 +210,20 @@ fn wanted(value: Option<&Value>) -> Result<AddWatchFlags, LuaError> {
 /// One name rather than a list: a caller branches on what a change *was*, and inotify sets at most
 /// one of these per event anyway. `IN_ISDIR` is carried separately, as a field, because it modifies
 /// every one of them rather than being one of them.
-fn names_of(mask: AddWatchFlags) -> &'static str {
-    for (name, flag) in KINDS {
-        if mask.contains(*flag) {
-            return name;
-        }
+fn kind_name(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::Write => "write",
+        EventKind::Modify => "modify",
+        EventKind::Create => "create",
+        EventKind::Delete => "delete",
+        EventKind::MoveFrom | EventKind::MoveTo => "move",
+        EventKind::Attribute => "attrib",
+        EventKind::Open => "open",
+        EventKind::Read => "read",
+        EventKind::Overflow => "overflow",
+        EventKind::Ignored | EventKind::Unmount => "gone",
+        EventKind::Other => "other",
     }
-    if mask.contains(AddWatchFlags::IN_IGNORED) || mask.contains(AddWatchFlags::IN_UNMOUNT) {
-        return "gone";
-    }
-    "other"
 }
 
 #[cfg(test)]

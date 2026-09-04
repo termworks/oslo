@@ -111,6 +111,7 @@ const FUNCTIONS: &[&str] = &[
     "oslo.fs.glob",
     "oslo.fs.read",
     "oslo.fs.write",
+    #[cfg(feature = "watch")]
     "oslo.fs.watch",
     "oslo.path.join",
     "oslo.path.parent",

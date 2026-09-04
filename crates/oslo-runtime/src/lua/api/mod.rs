@@ -81,6 +81,7 @@ mod theme;
 pub(crate) mod timer;
 pub(crate) mod tool;
 mod ui;
+#[cfg(feature = "watch")]
 mod watch;
 mod word;
 

@@ -6,8 +6,10 @@ use super::*;
 #[test]
 fn no_list_means_every_kind_this_module_names() {
     let all = wanted(None).expect("a default");
-    for (_, flag) in KINDS {
-        assert!(all.contains(*flag), "the default left out {flag:?}");
+    for (_, kinds) in KINDS {
+        for kind in *kinds {
+            assert!(all.contains(kind), "the default left out {kind:?}");
+        }
     }
 }
 
@@ -27,10 +29,10 @@ fn the_named_kinds_are_the_flags_asked_for() {
     let mut asked = Table::new();
     asked.set(Value::int(1), Value::str("write"));
     asked.set(Value::int(2), Value::str("delete"));
-    let flags = wanted(Some(&Value::table(asked))).expect("valid");
-    assert!(flags.contains(AddWatchFlags::IN_CLOSE_WRITE));
-    assert!(flags.contains(AddWatchFlags::IN_DELETE));
-    assert!(!flags.contains(AddWatchFlags::IN_ACCESS));
+    let kinds = wanted(Some(&Value::table(asked))).expect("valid");
+    assert!(kinds.contains(&EventKind::Write));
+    assert!(kinds.contains(&EventKind::Delete));
+    assert!(!kinds.contains(&EventKind::Read));
 }
 
 /// **`write` is `IN_CLOSE_WRITE`, not `IN_MODIFY`**, and the distinction is the whole reason the
@@ -40,9 +42,9 @@ fn the_named_kinds_are_the_flags_asked_for() {
 fn write_means_saved_rather_than_written_to() {
     let mut asked = Table::new();
     asked.set(Value::int(1), Value::str("write"));
-    let flags = wanted(Some(&Value::table(asked))).expect("valid");
-    assert!(flags.contains(AddWatchFlags::IN_CLOSE_WRITE));
-    assert!(!flags.contains(AddWatchFlags::IN_MODIFY));
+    let kinds = wanted(Some(&Value::table(asked))).expect("valid");
+    assert!(kinds.contains(&EventKind::Write));
+    assert!(!kinds.contains(&EventKind::Modify));
 }
 
 #[test]
@@ -149,6 +151,26 @@ fn a_closed_watch_refuses() {
     probe::method(&watch, "close", Vec::new()).expect("close");
     let refused = probe::method(&watch, "path", Vec::new()).expect_err("still open");
     assert!(refused.to_string().contains("closed"), "{refused}");
+}
+
+#[test]
+fn explicit_close_releases_the_descriptor_immediately() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut source = EventSource::open().expect("source");
+    source.add(dir.path()).expect("watch");
+    let watching = Rc::new(Watching {
+        source: RefCell::new(Some(source)),
+        path: dir.path().display().to_string(),
+        wanted: wanted(None).expect("kinds"),
+        pending: RefCell::new(VecDeque::new()),
+    });
+    let watch = handle(Rc::clone(&watching));
+    probe::method(&watch, "close", Vec::new()).expect("close");
+    assert!(watching.source.borrow().is_none());
+    assert!(
+        matches!(watch, Value::Table(_)),
+        "the handle remains reachable"
+    );
 }
 
 #[test]

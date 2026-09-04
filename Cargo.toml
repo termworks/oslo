@@ -25,6 +25,8 @@ vista = ["oslo-base/vista", "oslo-runtime/vista", "oslo-ui/vista"]
 
 scratch = ["oslo-shell/scratch", "oslo-runtime/scratch"]
 
+watch = ["oslo-shell/watch", "oslo-runtime/watch"]
+
 direnv = ["oslo-shell/direnv", "oslo-runtime/direnv"]
 
 # `make` — `.make.lua` recipes, the `oslo make` tool and the `make` builtin.
@@ -58,7 +60,7 @@ argc = { path = "vendor/argc", default-features = false, features = [
     "eval", "eval-bash", "compgen",
 ], optional = true }
 nix = { version = "0.29", features = [
-    "process", "signal", "term", "fs", "user", "resource", "hostname", "poll", "inotify",
+    "process", "signal", "term", "fs", "user", "resource", "hostname", "poll",
 ] }
 regex = { version = "1", default-features = false, features = [
     "std", "unicode-case", "unicode-perl",
