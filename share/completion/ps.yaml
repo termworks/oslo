@@ -7,10 +7,10 @@ flags:
   "-d": "Select all processes except session leaders"
   "--deselect": "Select all processes except those that fulfill the specified conditions"
   "-N": "Select all processes except those that fulfill the specified conditions (negates the selection)"
-  "--pid=": "Select by process ID"
+  "-p, --pid=": "Select by process ID"
   "--ppid=": "Select by parent process ID. This selects the processes with a parent process ID in pidlist"
   "--sid=": "Select by session ID"
-  "--tty=": "Select by terminal"
+  "-t, --tty=": "Select by terminal"
   "-U=": "Select by real user ID (RUID) or name"
   "-u=": "Select by effective user ID (EUID) or name"
   "--User=": "Select by real user ID (RUID) or name"
@@ -39,3 +39,12 @@ flags:
   "--help": "Print a help message"
   "--info": "Print debugging info"
   "--version": "Print the procps version"
+completion:
+  flag:
+    tty: ["$terminals"]
+    U: ["$users"]
+    u: ["$users"]
+    pid: ["$pids"]
+    ppid: ["$pids"]
+    user: ["$users"]
+    User: ["$users"]

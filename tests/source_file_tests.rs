@@ -37,6 +37,36 @@ fn a_shipped_spec_reaches_the_source_it_names() {
 
     let mine = std::process::id().to_string();
     assert!(
+        offered("ps -t ").iter().any(|one| one.starts_with("pts/")),
+        "$terminals did not reach `ps -t`"
+    );
+    assert!(
+        offered("mount -t ").iter().any(|one| one == "proc"),
+        "$filesystems did not reach `mount -t`"
+    );
+    assert!(
+        offered("sysctl kernel.")
+            .iter()
+            .any(|one| one.starts_with("kernel.")),
+        "$sysctls did not reach `sysctl`"
+    );
+    assert!(
+        offered("rmmod ").len() > 1,
+        "$modules offered nothing at all"
+    );
+    assert!(
+        offered("chsh -s ").iter().any(|one| one.starts_with("/")),
+        "$shells did not reach `chsh -s`"
+    );
+    assert!(
+        offered("df ").iter().any(|one| one == "/"),
+        "$mounts did not reach `df`"
+    );
+    assert!(
+        offered("lsblk ").iter().all(|one| one.starts_with("/dev/")),
+        "$devices offered something that is not a device"
+    );
+    assert!(
         offered("kill ").contains(&mine),
         "$pids did not offer this process"
     );

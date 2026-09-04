@@ -21,3 +21,5 @@ exclusiveflags:
   - [n, A, F, G, M, P, g, p, u]
   - [p, A, F, G, M, P, g, p, u]
   - [u, A, F, G, M, P, g, p, u]
+completion:
+  positionalany: ["$users"]

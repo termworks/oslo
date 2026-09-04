@@ -6,6 +6,7 @@ flags:
   "-l=": "Causes the password to be updated in the given location of the chosen directory system"
   "-u=": "Specify the user name to use when authenticating to the directory node"
 completion:
+  positionalany: ["$users"]
   flag:
     i: [PAM, opendirectory, file, nis]
     l: ["$files", "$directories"]

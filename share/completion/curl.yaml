@@ -228,6 +228,7 @@ flags:
   "--url=": "URL to work with"
   "--xattr": "Store metadata in extended file attributes"
 completion:
+  positionalany: ["$hosts"]
   flag:
     config: ["$files"]
     cookie: ["$files"]

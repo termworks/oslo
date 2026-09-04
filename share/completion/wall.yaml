@@ -1,0 +1,12 @@
+name: wall
+description: "Send a message to every logged-in terminal"
+flags:
+  "-n, --nobanner": "Do not print the banner"
+  "-t, --timeout=": "Give up on a terminal that blocks for longer than this"
+  "-g, --group=": "Send only to the members of the given group"
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  flag:
+    group: ["$groups"]
+  positionalany: ["$files"]

@@ -1,0 +1,41 @@
+name: timedatectl
+description: "Control the system time and date"
+flags:
+  "--no-pager": "Do not pipe the output into a pager"
+  "--no-ask-password": "Do not query the user for authentication"
+  "-H, --host=": "Operate on the given remote host"
+  "-M, --machine=": "Operate on the given local container"
+  "--monitor": "Follow the time synchronisation status as it changes"
+  "-h, --help": "Display help and exit"
+  "--version": "Display version and exit"
+commands:
+  - name: status
+    description: "Show the current time settings"
+  - name: show
+    description: "Show the current time settings as properties"
+  - name: set-time
+    description: "Set the system time"
+  - name: set-timezone
+    description: "Set the system timezone"
+    completion:
+      positional:
+        - ["$timezones"]
+  - name: list-timezones
+    description: "List every known timezone"
+  - name: set-local-rtc
+    description: "Whether the hardware clock keeps local time"
+    completion:
+      positional:
+        - ["true", "false"]
+  - name: set-ntp
+    description: "Whether network time synchronisation is on"
+    completion:
+      positional:
+        - ["true", "false"]
+  - name: timesync-status
+    description: "Show the status of systemd-timesyncd"
+  - name: show-timesync
+    description: "Show the status of systemd-timesyncd as properties"
+completion:
+  flag:
+    host: ["$hosts"]

@@ -22,6 +22,7 @@ flags:
   "--wipe, -w=": "Wipe filesystem, RAID and partition-table signatures from the device, in order to avoid possible collisions"
   "--wipe-partitions, -W=": "Wipe filesystem, RAID and partition-table signatures from a newly created partitions, in order to avoid possible collisions"
 completion:
+  positionalany: ["$devices"]
   flag:
     sector-size: [512, 1024, 2048, 4096]
     compatibility: [dos, nondos]

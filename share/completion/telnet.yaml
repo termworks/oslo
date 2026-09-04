@@ -16,3 +16,5 @@ flags:
   "-n=": "Opens tracefile for recording trace information."
   "-h, -help": "Print help"
   "-V, -version": "Print version"
+completion:
+  positionalany: ["$hosts"]

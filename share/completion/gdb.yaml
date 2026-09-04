@@ -39,3 +39,6 @@ flags:
   "-l=": "Set timeout in seconds for remote debugging."
   "--cd=": "Change current directory to DIR."
   "-D, --data-directory=": "Set GDB's data-directory to DIR."
+completion:
+  flag:
+    pid: ["$pids"]

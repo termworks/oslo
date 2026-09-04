@@ -1,0 +1,9 @@
+name: swapoff
+description: "Stop swapping to a file or device"
+flags:
+  "-a, --all": "Stop swapping to everything in /proc/swaps"
+  "-v, --verbose": "Say what is being done"
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  positionalany: ["$swaps", "$devices", "$files"]

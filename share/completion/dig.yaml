@@ -20,3 +20,5 @@ commands:
     description: "Query ALL DNS Records"
   - name: "+nocomments +noquestion +noauthority +noadditional +nostats"
     description: "Query only answer section"
+completion:
+  positionalany: ["$hosts"]

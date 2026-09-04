@@ -19,6 +19,7 @@ flags:
 exclusiveflags:
   - [q, a, b, d, H, l, m, p, r, s, T, t, u]
 completion:
+  positionalany: ["$files"]
   positional:
     - ["$files"]
 commands:

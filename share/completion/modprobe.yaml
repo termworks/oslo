@@ -1,0 +1,19 @@
+name: modprobe
+description: "Add or remove a module from the Linux kernel"
+flags:
+  "-r, --remove": "Remove the module rather than insert it"
+  "-a, --all": "Insert every module named on the command line"
+  "-f, --force": "Ignore both the module and the kernel version magic"
+  "-n, --dry-run": "Do everything but the insertion itself"
+  "-q, --quiet": "Say nothing about a module that could not be found"
+  "-s, --syslog": "Send errors to the syslog instead of standard error"
+  "-v, --verbose": "Say what is being done"
+  "-C, --config=": "Use the given configuration file or directory"
+  "-d, --dirname=": "Use the given directory as the root of the module tree"
+  "-S, --set-version=": "Use the module directory of the given kernel version"
+  "-c, --showconfig": "Dump the effective configuration and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  flag:
+    remove: ["$modules"]
+  positionalany: ["$modules"]

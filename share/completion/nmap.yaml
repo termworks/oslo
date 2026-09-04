@@ -28,3 +28,6 @@ flags:
   "-privileged": "Assume that user is fully privileges"
   "-unprivileged": "Assume that user lacks raw socket privileges"
   "--help, -h": "Show help for nmap"
+completion:
+  flag:
+    p: ["$ports"]

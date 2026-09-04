@@ -1,0 +1,29 @@
+name: journalctl
+description: "Query the systemd journal"
+flags:
+  "-u, --unit=": "Show messages from the given unit"
+  "--user-unit=": "Show messages from the given user unit"
+  "-f, --follow": "Follow the journal as it grows"
+  "-n, --lines=": "Show the given number of most recent lines"
+  "-e, --pager-end": "Jump to the end of the journal in the pager"
+  "-r, --reverse": "Show the newest entries first"
+  "-k, --dmesg": "Show only kernel messages"
+  "-b, --boot?": "Show messages from the given boot"
+  "-p, --priority=": "Show messages no less important than the given priority"
+  "-S, --since=": "Show entries not older than the given time"
+  "-U, --until=": "Show entries not newer than the given time"
+  "-o, --output=": "Which output format to use"
+  "--no-pager": "Do not pipe the output into a pager"
+  "-g, --grep=": "Show only entries whose message matches the given pattern"
+  "-_PID=": "Show only entries from the given process"
+  "--disk-usage": "Show how much disk space the journal is taking"
+  "--vacuum-size=": "Remove archived files until the journal is under the given size"
+  "--vacuum-time=": "Remove archived files older than the given time"
+  "-h, --help": "Display help and exit"
+completion:
+  flag:
+    unit: ["$services"]
+    user-unit: ["$services"]
+    priority: [emerg, alert, crit, err, warning, notice, info, debug]
+    output: [short, short-precise, short-iso, short-full, short-monotonic, short-unix, verbose, export, json, json-pretty, json-sse, cat, with-unit]
+  positionalany: ["$files"]

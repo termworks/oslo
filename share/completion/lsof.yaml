@@ -36,6 +36,9 @@ flags:
   "-X": "File descriptor table only"
 completion:
   flag:
+    i: ["$ports"]
+    u: ["$users"]
+    p: ["$pids"]
     f: ["c\tFile structure use count", "g\tFile flag abbreviations", "G\tFile flags in hexadecimal"]
     F: ["a\tAccess: r = read; w = write; u = read/write", "c\tCommand name", "C\tFile struct share count", "d\tDevice character code", "D\tMajor/minor device number as 0x<hex>", "f\tFile descriptor (always selected)", "G\tFile flaGs", "i\tInode number", "k\tLink count", "K\tTask ID (TID)", "l\tLock: r/R = read; w/W = write; u = read/write", "L\tLogin name", "m\tMarker between repeated output", "M\tTask comMand name", "n\tComment, name, Internet addresses", "o\tFile offset as 0t<dec> or 0x<hex>", "p\tProcess ID (PID)", "g\tProcess group ID (PGID)", "P\tProtocol name", "r\tRaw device number as 0x<hex>", "R\tPaRent PID", "s\tFile size", "S\tStream module and device names", "t\tFile type", "T\tTCP/TPI info", "u\tUser ID (UID)", "0\t(zero) use NUL field terminator instead of N"]
     T: ["f\tSelects reporting of socket options/states/values and tcp flag values", "q\tSelects queue length reporting", "s\tSelects connection state reporting", "w\tSelects window size reporting", "\tDisables info"]

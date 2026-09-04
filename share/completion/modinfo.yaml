@@ -1,0 +1,14 @@
+name: modinfo
+description: "Show information about a Linux kernel module"
+flags:
+  "-a, --author": "Show only the module's author"
+  "-d, --description": "Show only the module's description"
+  "-l, --license": "Show only the module's license"
+  "-p, --parameters": "Show only the module's parameters"
+  "-n, --filename": "Show only the module's filename"
+  "-F, --field=": "Show only the given field's value"
+  "-k, --set-version=": "Look in the module directory of the given kernel version"
+  "-0, --null": "Separate output with a null rather than a newline"
+  "-h, --help": "Display help and exit"
+completion:
+  positionalany: ["$modules", "$files"]

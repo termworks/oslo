@@ -1,0 +1,13 @@
+name: swapon
+description: "Start swapping to a file or device"
+flags:
+  "-a, --all": "Start swapping to everything in /etc/fstab marked as swap"
+  "-d, --discard?": "Discard freed swap pages, either 'once' or 'pages'"
+  "-p, --priority=": "The priority of this swap area"
+  "-s, --summary": "Show a summary of the swap areas in use"
+  "--show?": "List the swap areas in a definable table"
+  "-v, --verbose": "Say what is being done"
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  positionalany: ["$devices", "$files"]
