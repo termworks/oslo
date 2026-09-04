@@ -163,7 +163,7 @@ fn produce(piece: &Piece, query: &Query, out: &mut Resolved) {
             // source answers from `/proc`, `/sys`, `/etc` or the environment, and the whole reason
             // they exist is that the alternative is `ps`, `getent` or `systemctl` on the Tab key.
             // See [`super::sources`].
-            _ => match super::sources::offers(name, &query.value) {
+            _ => match super::sources::offers(name, query) {
                 Some(found) => out.offers.extend(found.into_iter().map(|one| Offer {
                     value: one.value,
                     description: Some(one.note),

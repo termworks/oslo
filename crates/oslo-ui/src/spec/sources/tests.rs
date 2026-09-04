@@ -1,4 +1,9 @@
 use super::*;
+use crate::spec::action::Query;
+
+fn nothing() -> Query {
+    Query::default()
+}
 
 /// **Every source answers, and nothing else does.** The dispatch is the contract between a spec
 /// naming `$pids` and the code that knows what a pid is; a name missing from it silently falls
@@ -25,8 +30,15 @@ fn every_source_is_reachable_by_name() {
         "swaps",
         "modules",
         "sysctls",
+        "branches",
+        "tags",
+        "remotes",
+        "revisions",
     ] {
-        assert!(offers(name, "").is_some(), "${name} is not dispatched");
+        assert!(
+            offers(name, &nothing()).is_some(),
+            "${name} is not dispatched"
+        );
     }
 }
 
@@ -34,10 +46,10 @@ fn every_source_is_reachable_by_name() {
 /// apart, and `$(git branch)` still has to reach the shell.
 #[test]
 fn something_that_is_not_a_source_falls_through() {
-    assert!(offers("files", "").is_none());
-    assert!(offers("git branch", "").is_none());
-    assert!(offers("", "").is_none());
-    assert!(offers("nonsense", "").is_none());
+    assert!(offers("files", &nothing()).is_none());
+    assert!(offers("git branch", &nothing()).is_none());
+    assert!(offers("", &nothing()).is_none());
+    assert!(offers("nonsense", &nothing()).is_none());
 }
 
 /// Every row the menu draws needs a kind for its column, whatever the source.
@@ -52,7 +64,7 @@ fn every_offer_names_what_it_is() {
         "filesystems",
         "shells",
     ] {
-        for one in offers(name, "").unwrap_or_default() {
+        for one in offers(name, &nothing()).unwrap_or_default() {
             assert!(!one.kind.is_empty(), "${name} offered a row with no kind");
             assert!(!one.value.is_empty(), "${name} offered an empty value");
         }

@@ -305,6 +305,7 @@ how the menu tells a branch from a file.
 | `$services` | systemd units, from the unit directories |
 | `$jobs` | this shell's job table, as the `%n` that names each |
 | `$aliases`, `$functions` | what this session has defined |
+| `$branches`, `$tags`, `$remotes`, `$revisions` | the refs of the repository you are in |
 | `$(git branch)` | run it here and read what it printed, one offer per line |
 | `$bash(…)`, `$zsh(…)`, `$fish(…)`, `$nu(…)`, … | run it in that shell, if it is installed |
 
@@ -518,6 +519,48 @@ Three choices worth stating, because each cost something:
 
 Adding one is a function returning `Vec<Suggestion>` and a line in `sources::offers`. Then any spec,
 shipped or your own, can name it as `$whatever`.
+
+### Git refs, read from `.git`
+
+```text
+git checkout ⇥              git checkout v0.6⇥
+  develop     current  branch   v0.6.0   tag
+  feat/after-fish      branch   v0.6.1   tag
+  origin/main   remote branch   v0.6.2   tag
+```
+
+This is the most-typed completion in any shell, and before this it offered the filenames in the
+current directory: the shipped `git` spec is three hundred kilobytes of flags and not one branch,
+because a branch is not a fact about `git`.
+
+| source | for |
+|---|---|
+| `$branches` | `git branch -d`, `git switch` |
+| `$tags` | `git tag -d` |
+| `$remotes` | `git push`, `pull`, `fetch`, `remote` |
+| `$revisions` | `checkout`, `merge`, `rebase`, `log`, `diff`, `show`, `revert`, `reset` |
+
+**Read from `.git`, not from `git`.** zsh and carapace both run `git for-each-ref` here — a fork, a
+process, and on a cold cache a visible one. The refs are files: `refs/heads/` is a directory of them
+and `packed-refs` is a text file of the rest, so the answer is two reads and a walk of a directory
+with one entry per branch. It works where a fork would not, too: a repository whose `git` is not on
+`$PATH`, and the keystroke path where a macro must be given a deadline precisely because a child
+might never come back.
+
+Both halves are read, because `git gc` folds refs into `packed-refs` at any time and a source
+reading only `refs/heads/` would quietly lose branches as a repository ages. A worktree's `.git` is
+a *file* holding `gitdir:`, and its refs belong to the repository all the worktrees share — named
+by a `commondir` beside them, which is the difference between completing branches in a worktree and
+completing nothing.
+
+**Tags appear once you have typed something.** A bare `git checkout ⇥` offers branches; this
+repository has 68 tags and three branches, and the menu breaks ties alphabetically, so including
+tags in the empty menu buries every branch under `v0.1.1`. Nothing is lost — `git checkout v0.6⇥`
+finds the tag, because by then there is a prefix to search with. An empty Tab is a menu of what you
+might want; a typed prefix is a search.
+
+Not cached: a branch you just created is the branch you are about to check out, and the repository
+being completed in changes with every `cd`.
 
 ### What only this shell knows
 

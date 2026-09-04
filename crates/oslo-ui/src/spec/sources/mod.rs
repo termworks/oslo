@@ -40,6 +40,7 @@
 //! one you wrote — can name it as `$whatever` in a positional or a flag's value.
 
 pub mod disk;
+pub mod git;
 pub mod hosts;
 pub mod kernel;
 pub mod net;
@@ -77,9 +78,9 @@ impl Suggestion {
 /// **`None` rather than an empty list**, because the two mean different things to the caller: a
 /// source that found nothing has answered, and a name that is not a source has not — the latter
 /// falls through to the shell, which is how `$(git branch)` and `$bash(…)` still work.
-pub fn offers(name: &str, word: &str) -> Option<Vec<Suggestion>> {
+pub fn offers(name: &str, query: &super::action::Query) -> Option<Vec<Suggestion>> {
     Some(match name {
-        "hosts" => hosts::offers(word),
+        "hosts" => hosts::offers(&query.value),
         "pids" => procs::pids(),
         "signals" => procs::signals(),
         "users" => system::users(),
@@ -98,6 +99,10 @@ pub fn offers(name: &str, word: &str) -> Option<Vec<Suggestion>> {
         "terminals" => procs::terminals(),
         "modules" => kernel::modules(),
         "sysctls" => kernel::sysctls(),
+        "branches" => git::branches(&query.dir),
+        "tags" => git::tags(&query.dir),
+        "remotes" => git::remotes(&query.dir),
+        "revisions" => git::revisions(&query.dir, &query.value),
         _ => return None,
     })
 }
