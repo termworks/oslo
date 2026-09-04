@@ -15,7 +15,7 @@
 //! `renice`, `strace` and `tail --pid` all want.
 //!
 //! So a source is written once and pointed at from as many specs as want it. That is the whole
-//! economy of the thing: eight sources here answer arguments for dozens of commands, where a spec
+//! economy of the thing: nineteen sources here answer arguments for dozens of commands, where a spec
 //! per command would be dozens of specs that each go stale on their own.
 //!
 //! # Cheap enough for the Tab key
@@ -28,17 +28,21 @@
 //!
 //! | | |
 //! |---|---|
-//! | [`hosts`] | read once — the files do not change while you type |
+//! | [`hosts`], [`system`] users, groups, shells, services, timezones | read once |
 //! | [`procs`] | read every time — a pid list a minute old is a list of the wrong pids |
-//! | [`system`] users, groups, services | read once |
-//! | [`system`] variables, mounts, interfaces | read every time — the shell itself changes them |
+//! | [`disk`], [`net`], [`system`] variables | read every time — the shell itself changes them |
+//! | [`kernel`] sysctls | read once — an 1,800-file walk, and the set does not move |
+//! | [`kernel`] modules | read every time — loading one is often why the next command is typed |
 //!
 //! # Adding one
 //!
 //! A function answering `Vec<Suggestion>`, and a line in [`offers`]. Then any spec — shipped, or
 //! one you wrote — can name it as `$whatever` in a positional or a flag's value.
 
+pub mod disk;
 pub mod hosts;
+pub mod kernel;
+pub mod net;
 pub mod procs;
 pub mod system;
 
@@ -81,9 +85,19 @@ pub fn offers(name: &str, word: &str) -> Option<Vec<Suggestion>> {
         "users" => system::users(),
         "groups" => system::groups(),
         "variables" => system::variables(),
-        "interfaces" => system::interfaces(),
-        "mounts" => system::mounts(),
+        "interfaces" => net::interfaces(),
+        "ports" => net::ports(),
+        "mounts" => disk::mounts(),
+        "fstab" => disk::fstab(),
+        "devices" => disk::devices(),
+        "filesystems" => disk::filesystems(),
+        "swaps" => disk::swaps(),
         "services" => system::services(),
+        "shells" => system::shells(),
+        "timezones" => system::timezones(),
+        "terminals" => procs::terminals(),
+        "modules" => kernel::modules(),
+        "sysctls" => kernel::sysctls(),
         _ => return None,
     })
 }

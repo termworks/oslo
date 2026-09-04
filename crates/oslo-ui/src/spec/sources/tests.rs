@@ -15,6 +15,16 @@ fn every_source_is_reachable_by_name() {
         "interfaces",
         "mounts",
         "services",
+        "shells",
+        "timezones",
+        "terminals",
+        "ports",
+        "fstab",
+        "devices",
+        "filesystems",
+        "swaps",
+        "modules",
+        "sysctls",
     ] {
         assert!(offers(name, "").is_some(), "${name} is not dispatched");
     }
@@ -33,7 +43,15 @@ fn something_that_is_not_a_source_falls_through() {
 /// Every row the menu draws needs a kind for its column, whatever the source.
 #[test]
 fn every_offer_names_what_it_is() {
-    for name in ["pids", "signals", "users", "variables", "mounts"] {
+    for name in [
+        "pids",
+        "signals",
+        "users",
+        "variables",
+        "mounts",
+        "filesystems",
+        "shells",
+    ] {
         for one in offers(name, "").unwrap_or_default() {
             assert!(!one.kind.is_empty(), "${name} offered a row with no kind");
             assert!(!one.value.is_empty(), "${name} offered an empty value");

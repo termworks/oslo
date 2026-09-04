@@ -1,11 +1,11 @@
-//! The names this machine keeps: users, groups, variables, interfaces, mounts, services.
+//! The names this machine keeps: users, groups, shells, variables, services, timezones.
 //!
 //! ```text
-//!   chown ⇥              bresilla   1000              user
-//!   umount /m⇥           /mnt/backup   ext4           mount
-//!   unset PA⇥            PATH       /usr/bin:…        variable
-//!   ip link set ⇥        wlan0                        interface
-//!   systemctl start ng⇥  nginx.service   enabled      service
+//!   chown ⇥                    bresilla   1000            user
+//!   chsh -s ⇥                  /usr/bin/fish              shell
+//!   unset PA⇥                  PATH   /usr/bin:…          variable
+//!   systemctl start ng⇥        nginx.service   service    service
+//!   timedatectl set-timezone ⇥ Europe/Amsterdam           timezone
 //! ```
 //!
 //! Six sources in one file because they are one idea — a name the system already wrote down
@@ -13,10 +13,10 @@
 //!
 //! # What is read once, and what is not
 //!
-//! Users, groups and service units are read once: adding a user mid-line is not a thing that
-//! happens. Variables, mounts and interfaces are read every time, because **the shell itself
-//! changes them** — `export X=1` then `unset <Tab>` has to see `X`, and a `mount` you just ran has
-//! to appear in `umount <Tab>`. A cache there would be wrong within one command.
+//! Users, groups, shells, service units and timezones are read once: adding a user mid-line is not
+//! a thing that happens. Variables are read every time, because **the shell itself changes them** —
+//! `export X=1` then `unset <Tab>` has to see `X`, and a cache filled at startup would be wrong
+//! before the first command finished.
 
 use super::{Suggestion, colons, read};
 use std::sync::OnceLock;
@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 static USERS: OnceLock<Vec<(String, String)>> = OnceLock::new();
 static GROUPS: OnceLock<Vec<(String, String)>> = OnceLock::new();
 static SERVICES: OnceLock<Vec<String>> = OnceLock::new();
+static ZONES: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Everyone with an account, their uid beside them.
 ///
@@ -86,47 +87,6 @@ fn shorten(value: &str) -> String {
     }
 }
 
-/// The network interfaces this machine has.
-///
-/// `/sys/class/net` is a directory of them, which is why this needs neither `ip` nor a netlink
-/// socket. Not cached: interfaces come and go with a VPN, a container, a cable.
-pub fn interfaces() -> Vec<Suggestion> {
-    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
-        return Vec::new();
-    };
-    let mut found: Vec<Suggestion> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_str()?.to_string();
-            let state = read(&format!("/sys/class/net/{name}/operstate"));
-            Some(Suggestion::new(name, state.trim(), "interface"))
-        })
-        .collect();
-    found.sort_unstable_by(|a, b| a.value.cmp(&b.value));
-    found
-}
-
-/// Where things are mounted, with the filesystem beside each.
-///
-/// **The mount point, not the device**, because that is what `umount`, `df` and `findmnt` take —
-/// and the device is the field a person is least likely to be able to type from memory.
-///
-/// Not cached: a `mount` you just ran has to appear in the next `umount <Tab>`.
-pub fn mounts() -> Vec<Suggestion> {
-    read("/proc/mounts")
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let _device = fields.next()?;
-            let point = fields.next()?;
-            let kind = fields.next().unwrap_or_default();
-            // `/proc/mounts` escapes a space in a path as `\040`, and a menu row showing the escape
-            // would insert something that does not exist.
-            Some(Suggestion::new(point.replace("\\040", " "), kind, "mount"))
-        })
-        .collect()
-}
-
 /// The systemd units installed on this machine.
 ///
 /// Read from the unit directories rather than from `systemctl list-units`, which is a process and
@@ -183,6 +143,81 @@ fn is_a_unit(name: &str) -> bool {
         ".swap",
     ];
     KINDS.iter().any(|kind| name.ends_with(kind))
+}
+
+/// The login shells this machine offers, for `chsh -s` and `usermod -s`.
+///
+/// `/etc/shells` is the list, and it is the list `chsh` itself checks against — a shell missing
+/// from it is one `chsh` will refuse, so offering anything else would be offering a refusal.
+pub fn shells() -> Vec<Suggestion> {
+    read("/etc/shells")
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .filter(|line| line.starts_with('/'))
+        .map(|path| Suggestion::new(path, "", "shell"))
+        .collect()
+}
+
+/// Every timezone name, in the `Region/City` form everything takes.
+///
+/// A walk of `/usr/share/zoneinfo`, cached: about 450 names that change when the tzdata package
+/// does, which is not during a session.
+///
+/// **`posix/` and `right/` are skipped.** They are two more complete copies of the same tree, and
+/// including them would treble the list to say the same thing three ways. The loose files at the
+/// top — `zone.tab`, `leapseconds`, `tzdata.zi` — are data about the zones rather than zones.
+pub fn timezones() -> Vec<Suggestion> {
+    ZONES
+        .get_or_init(|| {
+            let mut found = Vec::new();
+            zones(std::path::Path::new("/usr/share/zoneinfo"), &mut found);
+            found.sort_unstable();
+            found
+        })
+        .iter()
+        .map(|name| Suggestion::new(name, "", "timezone"))
+        .collect()
+}
+
+fn zones(dir: &std::path::Path, found: &mut Vec<String>) {
+    const SKIP: &[&str] = &["posix", "right"];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if path.is_dir() {
+            if !SKIP.contains(&name.as_str()) {
+                zones(&path, found);
+            }
+            continue;
+        }
+        // A zone name always has a region in it. The bare files at the top of the tree are tables
+        // and leap-second data, and `Factory` is a placeholder nobody sets.
+        if let Some(zone) = path
+            .to_str()
+            .and_then(|p| p.strip_prefix("/usr/share/zoneinfo/"))
+            && zone.contains('/')
+        {
+            found.push(zone.to_string());
+        }
+    }
+}
+
+/// The name behind a uid, for a source that has a number and wants a person.
+///
+/// Reuses whatever [`users`] already read, so this is a lookup and not a second parse.
+pub(super) fn user_named(uid: u32) -> String {
+    let wanted = uid.to_string();
+    USERS
+        .get_or_init(|| named("/etc/passwd"))
+        .iter()
+        .find(|(_, id)| *id == wanted)
+        .map(|(name, _)| name.clone())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

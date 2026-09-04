@@ -62,25 +62,6 @@ fn a_long_value_is_cut_to_a_column() {
     assert_eq!(shorten("short"), "short");
 }
 
-/// The mount *point*, not the device: that is what `umount` and `df` take.
-#[test]
-fn a_mount_offers_where_it_is_mounted() {
-    let all = mounts();
-    if all.is_empty() {
-        return; // no /proc/mounts
-    }
-    assert!(all.iter().any(|one| one.value == "/"), "no root mount");
-    assert!(all.iter().all(|one| one.value.starts_with('/')));
-    assert!(all.iter().all(|one| one.kind == "mount"));
-}
-
-/// `/proc/mounts` escapes a space as `\040`, and a row showing the escape inserts a path that does
-/// not exist.
-#[test]
-fn an_escaped_space_comes_back_as_a_space() {
-    assert!(!mounts().iter().any(|one| one.value.contains("\\040")));
-}
-
 /// A unit is `name.kind`; a drop-in directory beside it is not a thing to start.
 #[test]
 fn only_real_units_are_offered() {
@@ -93,13 +74,34 @@ fn only_real_units_are_offered() {
     assert!(!is_a_unit("README"));
 }
 
-/// An interface is a directory under `/sys/class/net`, and loopback is on every machine.
+/// A login shell is a path, because a path is what `chsh -s` takes.
 #[test]
-fn the_loopback_interface_is_there() {
-    let all = interfaces();
-    if all.is_empty() {
-        return; // no /sys/class/net
+fn a_shell_is_offered_as_a_path() {
+    for one in shells() {
+        assert!(one.value.starts_with('/'), "{}", one.value);
     }
-    assert!(all.iter().any(|one| one.value == "lo"));
-    assert!(all.iter().all(|one| one.kind == "interface"));
+}
+
+/// **`posix/` and `right/` are two more copies of the same tree.** Including them would treble the
+/// list to say the same thing three ways, and `posix/Europe/Rome` is not a name anybody sets.
+#[test]
+fn a_timezone_is_a_region_and_a_city_and_nothing_doubled() {
+    let found = timezones();
+    if found.is_empty() {
+        return; // No tzdata installed.
+    }
+    assert!(found.iter().any(|one| one.value.contains('/')));
+    for one in &found {
+        assert!(!one.value.starts_with("posix/"), "{}", one.value);
+        assert!(!one.value.starts_with("right/"), "{}", one.value);
+        // The loose files at the top of the tree are tables about zones, not zones.
+        assert!(!one.value.ends_with(".tab"), "{}", one.value);
+    }
+}
+
+/// A uid nobody has is an empty note, not a panic and not the wrong person.
+#[test]
+fn a_uid_finds_its_person_or_nobody() {
+    assert!(user_named(u32::MAX).is_empty());
+    assert_eq!(user_named(0), "root");
 }

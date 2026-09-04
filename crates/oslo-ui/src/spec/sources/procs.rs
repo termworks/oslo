@@ -1,8 +1,9 @@
-//! Running processes, and the signals you can send them.
+//! Running processes, the signals you can send them, and the terminals they sit on.
 //!
 //! ```text
 //!   kill 12⇥            1247   cargo build      pid
 //!   kill -s ⇥           TERM   15               signal
+//!   pkill -t ⇥          pts/3  bresilla         terminal
 //! ```
 //!
 //! # Never cached
@@ -94,6 +95,36 @@ pub fn signals() -> Vec<Suggestion> {
         .iter()
         .map(|(name, number)| Suggestion::new(*name, number.to_string(), "signal"))
         .collect()
+}
+
+/// The terminals open on this machine, as `pts/N`.
+///
+/// **`pts/N` and not `/dev/pts/N`**, because that is the form `pkill -t`, `ps -t` and `write` take;
+/// the `/dev/` prefix is what `ls` shows, not what the commands want.
+///
+/// The note is whoever owns the terminal, which is the whole point of the column on a machine with
+/// more than one person logged in — the number alone says nothing about whose session it is.
+pub fn terminals() -> Vec<Suggestion> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir("/dev/pts") else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u32, Suggestion)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            // `/dev/pts` also holds `ptmx`, which is the multiplexer rather than a terminal.
+            let number: u32 = name.to_str()?.parse().ok()?;
+            let owner = entry.metadata().map(|it| it.uid()).unwrap_or_default();
+            let who = super::system::user_named(owner);
+            Some((
+                number,
+                Suggestion::new(format!("pts/{number}"), who, "terminal"),
+            ))
+        })
+        .collect();
+    found.sort_unstable_by_key(|(number, _)| *number);
+    found.into_iter().map(|(_, one)| one).collect()
 }
 
 #[cfg(test)]
