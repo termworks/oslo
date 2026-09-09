@@ -124,3 +124,52 @@ fn a_name_is_credited_to_the_first_source_that_had_it() {
         assert!(usable(&host.name), "{} should not be offered", host.name);
     }
 }
+
+/// **The history is where the hosts are on an ordinary machine.** `HashKnownHosts yes` is the
+/// Debian and Ubuntu default, so `known_hosts` holds `|1|…` HMACs with no name in them; with no
+/// `~/.ssh/config` the file sources answer nothing at all, and what somebody typed is the only
+/// record of where they go.
+#[test]
+fn a_machine_that_was_connected_to_is_remembered() {
+    crate::recall::clear();
+    crate::recall::seed(vec![
+        ("ssh tron.netbird".to_string(), "shell".to_string()),
+        ("ssh 172.30.0.248".to_string(), "shell".to_string()),
+        ("ssh tron.netbird uptime".to_string(), "shell".to_string()),
+        ("echo not a host at all".to_string(), "shell".to_string()),
+    ]);
+    let found = super::from_history();
+    assert!(found.contains(&"tron.netbird".to_string()), "{found:?}");
+    // An address somebody typed is a machine they go to, even though one out of `/etc/hosts`
+    // would be noise.
+    assert!(found.contains(&"172.30.0.248".to_string()), "{found:?}");
+    // The argument to a remote command is not a second host.
+    assert!(!found.contains(&"uptime".to_string()), "{found:?}");
+    crate::recall::clear();
+}
+
+/// **A copy names its machine wherever the machine sits.** `rsync -a build/ ci@box:/srv` has its
+/// remote *second*, so taking the first operand made the local directory `build/` a host.
+#[test]
+fn the_remote_half_of_a_copy_is_the_host() {
+    crate::recall::clear();
+    crate::recall::seed(vec![
+        (
+            "rsync -a build/ ci@buildbox:/srv/".to_string(),
+            "shell".to_string(),
+        ),
+        (
+            "scp report.pdf gate.lan:/tmp".to_string(),
+            "shell".to_string(),
+        ),
+    ]);
+    let found = super::from_history();
+    assert!(found.contains(&"buildbox".to_string()), "{found:?}");
+    assert!(found.contains(&"gate.lan".to_string()), "{found:?}");
+    assert!(
+        !found.contains(&"build/".to_string()),
+        "a local path: {found:?}"
+    );
+    assert!(!found.contains(&"report.pdf".to_string()), "{found:?}");
+    crate::recall::clear();
+}
