@@ -223,7 +223,7 @@ impl Spec {
             's' => {
                 let mut s = arg.to_string();
                 if let Some(p) = self.precision() {
-                    s.truncate(p.min(s.len()));
+                    s.truncate(whole_characters(&s, p.min(s.len())));
                 }
                 s.into_bytes()
             }
@@ -292,7 +292,11 @@ impl Spec {
                     }
                     0.0
                 });
-                let p = self.precision().unwrap_or(6);
+                // **Rust's formatter takes a `u16` precision and panics above it.**
+                // `printf '%.70000f' 1` aborted the shell with `Formatting argument out of range`;
+                // bash prints the number. Clamped rather than refused: a precision past this is
+                // already more digits than a `f64` can distinguish, so the answer is the same one.
+                let p = self.precision().unwrap_or(6).min(u16::MAX as usize);
                 let rendered = match self.conversion {
                     'e' => c_exponent(&format!("{:.*e}", p, value), 'e'),
                     'E' => c_exponent(&format!("{:.*E}", p, value), 'E'),
@@ -378,6 +382,14 @@ impl Spec {
             return body;
         };
         if body.len() >= width {
+            return body;
+        }
+        // **A width is a number somebody typed, and the padding for it is allocated.**
+        // `printf '%9999999999s' x` asked for ten gigabytes of spaces; bash answers `Value too
+        // large for defined data type` and carries on, and anything past a line of output is a
+        // typo rather than a request. Reported once and clamped, so the format still runs.
+        if width > WIDEST {
+            eprintln!("{}printf: {width}: width is too large", origin_now());
             return body;
         }
         let fill = if self.flags.contains('0')
@@ -563,4 +575,77 @@ mod tests {
         assert_eq!(parse_int("'A"), Ok(65));
         assert_eq!(parse_int("abc"), Err(()));
     }
+
+    /// **A precision counts bytes, and a character can be several.** `printf '%.2s' 'héllo'` cut
+    /// between the two bytes of `é` and `String::truncate` asserts on that — the shell aborted with
+    /// a panic, which is a terminal left in raw mode. bash writes the half character and produces
+    /// invalid UTF-8; a Rust `String` cannot, so the character is dropped instead.
+    #[test]
+    fn a_precision_never_cuts_a_character_in_half() {
+        assert_eq!(printf("%.1s", &["héllo"]), "h");
+        assert_eq!(
+            printf("%.2s", &["héllo"]),
+            "h",
+            "é is two bytes and does not fit"
+        );
+        // Every other precision matches bash byte for byte.
+        assert_eq!(printf("%.3s", &["héllo"]), "hé");
+        assert_eq!(printf("%.4s", &["héllo"]), "hél");
+        // A precision past the end is the whole string, not a panic.
+        assert_eq!(printf("%.99s", &["héllo"]), "héllo");
+        // And a four-byte character behaves the same way.
+        assert_eq!(printf("%.2s", &["😀x"]), "");
+        assert_eq!(printf("%.4s", &["😀x"]), "😀");
+    }
+
+    /// **Rust's formatter takes a `u16` precision and panics above it.** `printf '%.70000f' 1`
+    /// aborted the shell with `Formatting argument out of range`; bash prints the number.
+    #[test]
+    fn an_enormous_float_precision_does_not_abort() {
+        let wide = printf("%.70000f", &["1"]);
+        assert!(
+            wide.starts_with("1."),
+            "it still formats: {}",
+            &wide[..10.min(wide.len())]
+        );
+        assert!(
+            wide.len() > 1000,
+            "and it is long, not truncated to nothing"
+        );
+    }
+
+    /// **A width is allocated, so an unbounded one is an unbounded allocation.**
+    /// `printf '%9999999999s' x` asked for ten gigabytes of spaces. bash reports `Value too large
+    /// for defined data type` and carries on; this reports and carries on too.
+    #[test]
+    fn an_enormous_width_is_refused_rather_than_allocated() {
+        assert_eq!(
+            printf("%9999999999s|", &["x"]),
+            "x|",
+            "no padding, and no allocation"
+        );
+        // A width anybody would really use still pads.
+        assert_eq!(printf("%5s|", &["x"]), "    x|");
+    }
 }
+
+/// The largest cut at or below `bytes` that does not land inside a character.
+///
+/// **`%.2s` on `héllo` aborted the shell.** POSIX counts a precision in bytes, and `é` is two of
+/// them, so the cut fell between them — `String::truncate` asserts on that and a panic in a shell
+/// is a terminal left in raw mode. bash writes the half character and produces invalid UTF-8; a
+/// Rust `String` cannot hold that, so the character is dropped instead. The only disagreement with
+/// bash is one broken byte that nothing can read on purpose.
+fn whole_characters(text: &str, bytes: usize) -> usize {
+    let mut at = bytes.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// The widest field `printf` will pad to.
+///
+/// A width is a number somebody typed and the padding is allocated for it, so an unbounded one is
+/// an unbounded allocation: `printf '%9999999999s' x` asked for ten gigabytes of spaces. A hundred
+const WIDEST: usize = 100_000;
