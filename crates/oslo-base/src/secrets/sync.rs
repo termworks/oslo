@@ -228,6 +228,10 @@ fn count(report: &mut SecretReport, absent: bool, deleted: bool, on_the_left: bo
     }
 }
 
-#[cfg(test)]
+// **Needs `crypt`, not just `secrets`.** Every test here seals and opens for real, so the shared
+// `store` helper calls `key::generate` and asks for `Crypto::Native` — both of which exist only
+// with the built-in crypto. Without this the module does not *compile* under `--features secrets`,
+// which is a configuration the feature graph allows: `crypt` implies `secrets`, never the reverse.
+#[cfg(all(test, feature = "crypt"))]
 #[path = "sync/tests.rs"]
 mod tests;

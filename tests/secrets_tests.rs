@@ -1,4 +1,10 @@
 //! `oslo secret` through the real binary: kept encrypted, handed back whole.
+//!
+//! **Two features, not one.** `secrets` is the store and its plumbing, where sealing is delegated
+//! to the `encrypt`/`decrypt command` a store names; `crypt` adds oslo's own crypto — the identity,
+//! the key file, and the native seal. A test that makes a key or round-trips a value needs the
+//! second one, and the six that do say so, or `cargo test --features secrets` is red on a build
+//! that is behaving exactly as designed. See `oslo_base::secrets::Store::seal_natively`.
 #![cfg(feature = "secrets")]
 
 mod common;
@@ -39,6 +45,7 @@ fn secret(store: &std::path::Path, args: &[&str], input: &[u8]) -> (String, Stri
 
 /// The whole point: what goes in comes back out, and what is on disk is not it.
 #[test]
+#[cfg(feature = "crypt")]
 fn a_secret_survives_the_round_trip_without_being_written_down() {
     let store = tempfile::tempdir().expect("tempdir");
     let value = "hunter2-correct-horse";
@@ -65,6 +72,7 @@ fn a_secret_survives_the_round_trip_without_being_written_down() {
 /// nothing else is. A token with `\n` on the end fails authentication in a way that takes an hour
 /// to find.
 #[test]
+#[cfg(feature = "crypt")]
 fn one_trailing_newline_is_dropped_and_no_more() {
     let store = tempfile::tempdir().expect("tempdir");
     secret(store.path(), &["set", "one"], b"value\n");
@@ -79,6 +87,7 @@ fn one_trailing_newline_is_dropped_and_no_more() {
 /// It is the *profile's* key: a store derives its own from that rather than keeping a second one,
 /// so this is the file that matters on the whole machine.
 #[test]
+#[cfg(feature = "crypt")]
 fn the_identity_is_private_from_the_start() {
     use std::os::unix::fs::PermissionsExt;
     let store = tempfile::tempdir().expect("tempdir");
@@ -100,6 +109,7 @@ fn the_identity_is_private_from_the_start() {
 /// can go in a dotfiles repository; a key inside it would be committed along with it, which turns
 /// the feature into the accident it exists to prevent.
 #[test]
+#[cfg(feature = "crypt")]
 fn the_key_is_not_where_the_secrets_are() {
     let store = tempfile::tempdir().expect("tempdir");
     secret(store.path(), &["set", "token"], b"value");
@@ -120,6 +130,7 @@ fn the_key_is_not_where_the_secrets_are() {
 
 /// `$OSLO_SECRET_IDENTITY` puts the key anywhere — a USB stick, an encrypted volume, `~/.ssh`.
 #[test]
+#[cfg(feature = "crypt")]
 fn the_key_can_be_put_anywhere() {
     let store = tempfile::tempdir().expect("tempdir");
     let elsewhere = tempfile::tempdir().expect("tempdir");
@@ -187,6 +198,7 @@ fn a_key_inside_a_repository_is_called_out() {
 
 /// Names are listed; a name that was forgotten is not.
 #[test]
+#[cfg(feature = "crypt")]
 fn what_is_kept_can_be_listed_and_forgotten() {
     let store = tempfile::tempdir().expect("tempdir");
     secret(store.path(), &["set", "alpha"], b"1");
