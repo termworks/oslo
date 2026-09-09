@@ -15,13 +15,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// killing the process. An ignored disposition survives `execv` (only *handled* signals are reset
 /// by exec), so without this every command oslo runs inherits it — which is why `yes | head -1`
 /// printed `yes: standard output: Broken pipe` instead of dying quietly on the closed pipe.
-const RESET_IN_CHILD: [Signal; 6] = [
+/// SIGHUP and SIGTERM are here for [`catch_fatal_for_exit_trap`]: `exec` would reset a *handled*
+/// signal on its own, but a forked subshell never execs, and one carrying the parent's handler
+/// would record a fatal signal instead of dying of it.
+const RESET_IN_CHILD: [Signal; 8] = [
     Signal::SIGPIPE,
     Signal::SIGINT,
     Signal::SIGQUIT,
     Signal::SIGTSTP,
     Signal::SIGTTIN,
     Signal::SIGTTOU,
+    Signal::SIGHUP,
+    Signal::SIGTERM,
 ];
 
 /// The signals a `trap '' SIG` has deliberately ignored, one bit per signal number.
@@ -52,10 +57,34 @@ pub fn note_deliberate_ignore(signum: i32, deliberate: bool) {
 }
 
 /// Whether a child should keep `sig` ignored rather than get `SIG_DFL` back.
+///
+/// Two ways that happens. A `trap '' SIG` in this shell is the recorded one. The other is an
+/// ignore this shell was *started* with and never touched: **`nohup` works by ignoring SIGHUP and
+/// exec'ing**, and an ignore is inherited, so `nohup oslo -c 'sh -c …'` must hand it to the child
+/// too — bash and dash both do. Only the signals the shell changes for its own reasons are in
+/// [`RESET_IN_CHILD`] unconditionally; the two in [`FATAL_TO_A_SHELL`] are there because
+/// [`catch_fatal_for_exit_trap`] may have *handled* them, which is not a reason to overwrite an
+/// ignore nobody here installed.
 fn ignored_on_purpose(sig: Signal) -> bool {
     let signum = sig as i32;
-    (1..=64).contains(&signum)
+    if (1..=64).contains(&signum)
         && IGNORED_ON_PURPOSE.load(Ordering::SeqCst) & (1u64 << (signum - 1)) != 0
+    {
+        return true;
+    }
+    FATAL_TO_A_SHELL.contains(&sig) && currently_ignored(signum)
+}
+
+/// Whether the kernel has `SIG_IGN` for `signum` right now.
+///
+/// `sigaction` is async-signal-safe, which is what makes this legal between `fork` and `execv`.
+fn currently_ignored(signum: i32) -> bool {
+    // SAFETY: a zeroed `sigaction` to read into, and a null pointer for the new disposition.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signum, std::ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
+    }
 }
 
 /// Restore the signal state a freshly-started program is entitled to assume.
@@ -95,6 +124,104 @@ pub fn reset_signals_for_child() {
     let _ = signal::sigprocmask(SigmaskHow::SIG_SETMASK, Some(&SigSet::empty()), None);
 
     super::control::leave_job_control();
+}
+
+/// The signals that would kill the shell outright, and so leave an EXIT trap unrun.
+///
+/// SIGHUP and SIGTERM only. SIGINT and SIGQUIT already reach the shell as something it can act on —
+/// SIGINT through [`handle_sigint`], SIGQUIT ignored at a prompt — and SIGKILL cannot be caught by
+/// anything.
+const FATAL_TO_A_SHELL: [Signal; 2] = [Signal::SIGHUP, Signal::SIGTERM];
+
+/// The fatal signal that has arrived, or 0. Read by [`fatal_signal_pending`].
+static FATAL_RECEIVED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn handle_fatal(signum: libc::c_int) {
+    // One store on a lock-free atomic, which is all a handler may do. The shell notices at its
+    // next command boundary or interrupted wait and ends itself there, where running the EXIT
+    // trap's shell code is legal.
+    FATAL_RECEIVED.store(signum, std::sync::atomic::Ordering::SeqCst);
+
+    // **The second one kills outright.** Deferring the first is what buys the EXIT trap its chance
+    // to run, but a shell parked somewhere that never reaches a command boundary — idle at a
+    // prompt — would otherwise have absorbed a signal meant to end it. Restoring the default here
+    // means `kill` twice always works, without anything having to be reachable to arrange it.
+    //
+    // `sigaction` is async-signal-safe, which is why this is legal in a handler at all.
+    let dfl = libc::sigaction {
+        sa_sigaction: libc::SIG_DFL,
+        ..unsafe { std::mem::zeroed() }
+    };
+    unsafe {
+        let _ = libc::sigaction(signum, &dfl, std::ptr::null_mut());
+    }
+}
+
+/// Whether a fatal signal has arrived, and which. Cleared as it is taken.
+pub fn fatal_signal_pending() -> Option<i32> {
+    match FATAL_RECEIVED.swap(0, std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        signum => Some(signum),
+    }
+}
+
+/// Whether a fatal signal is waiting, **without** taking it.
+///
+/// For the foreground wait, which has no channel to report one through: it stops waiting so the
+/// shell does not sit out a `sleep 20` it is supposed to be dying during, and leaves the signal for
+/// the command boundary immediately after to act on. The same peek-versus-drain split as
+/// [`interrupt_waiting`] and for the same reason — a reader that cleared it would leave the
+/// boundary with no evidence the signal arrived.
+pub fn fatal_signal_waiting() -> Option<i32> {
+    match FATAL_RECEIVED.load(Ordering::SeqCst) {
+        0 => None,
+        signum => Some(signum),
+    }
+}
+
+/// Catch — or stop catching — the signals that would otherwise kill the shell before its EXIT
+/// trap could run.
+///
+/// **`trap cleanup EXIT` did not survive `kill`.** A shell terminated by SIGTERM or SIGHUP dies in
+/// the kernel, so the handler every script writes to remove its temporary directory never ran:
+/// `timeout` on a script, a session hanging up, a service manager stopping a job — all of them left
+/// the cleanup undone. bash catches these, runs the trap, and still exits `128 + signo`; measured,
+/// it also dies *promptly* rather than waiting for the foreground child, which is what makes this
+/// safe to do at all.
+///
+/// **Armed only while an EXIT trap is actually set**, which is the containment that matters: a
+/// shell with no EXIT trap keeps the default disposition and dies the instant it is signalled, so
+/// nothing about an ordinary session changes. Nothing here can make a shell unkillable — the
+/// handler only records, and the two places that read it are the command boundary and an
+/// interrupted wait, both of which then exit.
+///
+/// # Where this is still short of bash
+///
+/// A shell blocked inside a *builtin* — `read` from a pipe that never fills — reaches neither of
+/// those two places, so it absorbs the first signal and needs a second. bash dies on the first.
+/// The second always works, because [`handle_fatal`] puts the default disposition back as it runs,
+/// so the failure is a cleanup skipped rather than a process that will not stop. Closing it means
+/// giving the same check to every blocking `EINTR` retry in the builtins, which is a wider change
+/// than the one measured here.
+pub fn catch_fatal_for_exit_trap(catching: bool) {
+    let action = match catching {
+        true => SigAction::new(
+            SigHandler::Handler(handle_fatal),
+            SaFlags::empty(),
+            SigSet::empty(),
+        ),
+        false => SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty()),
+    };
+    for sig in FATAL_TO_A_SHELL {
+        // SAFETY: an `extern "C"` handler with the signature the kernel calls it with, or the
+        // system default.
+        unsafe {
+            let _ = signal::sigaction(sig, &action);
+        }
+    }
+    if !catching {
+        FATAL_RECEIVED.store(0, Ordering::SeqCst);
+    }
 }
 
 /// Set by the SIGINT handler; drained by [`interrupt_pending`].
@@ -363,230 +490,5 @@ pub(crate) fn without_sigttou<R>(f: impl FnOnce() -> R) -> R {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        RESET_IN_CHILD, interrupt_pending, note_interrupt, reset_signals_for_child, without_sigttou,
-    };
-    use nix::libc;
-    use nix::sys::signal::{SigSet, Signal};
-    use nix::sys::wait::{WaitStatus, waitpid};
-    use nix::unistd::{ForkResult, fork};
-
-    /// Exercised in a forked child, not in the test process.
-    ///
-    /// Setting SIGPIPE back to `SIG_DFL` here would arm the whole test binary to be killed by any
-    /// write to a closed pipe, and libtest runs these on shared threads. The child never
-    /// allocates — only `sigaction`, `sigprocmask` and `_exit`, all async-signal-safe — so it is
-    /// safe in the post-fork window even though the parent is multi-threaded.
-    /// Both tests below drive the same process-wide mask, so they may not overlap.
-    static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn every_ignored_signal_comes_back_as_sig_dfl() {
-        let _alone = ALONE.lock().unwrap_or_else(|held| held.into_inner());
-        let child = unsafe { fork() }.expect("fork");
-        match child {
-            ForkResult::Child => {
-                let status = unsafe { child_checks_dispositions() };
-                unsafe { libc::_exit(status) };
-            }
-            ForkResult::Parent { child } => {
-                assert_eq!(
-                    waitpid(child, None).expect("waitpid"),
-                    WaitStatus::Exited(child, 0),
-                    "a signal was left ignored, or the mask was left blocked"
-                );
-            }
-        }
-    }
-
-    /// Ignore and block everything the helper is supposed to undo, undo it, then read the state
-    /// back out of the kernel. Exit 0 means the helper did its job.
-    ///
-    /// # Safety
-    ///
-    /// Only for use in a forked child: it changes process-wide signal state.
-    unsafe fn child_checks_dispositions() -> i32 {
-        unsafe {
-            let mut ign: libc::sigaction = std::mem::zeroed();
-            ign.sa_sigaction = libc::SIG_IGN;
-            let mut full: libc::sigset_t = std::mem::zeroed();
-            libc::sigfillset(&mut full);
-
-            for sig in RESET_IN_CHILD {
-                if libc::sigaction(sig as i32, &ign, std::ptr::null_mut()) != 0 {
-                    return 10;
-                }
-            }
-            if libc::sigprocmask(libc::SIG_SETMASK, &full, std::ptr::null_mut()) != 0 {
-                return 11;
-            }
-
-            reset_signals_for_child();
-
-            for sig in RESET_IN_CHILD {
-                let mut cur: libc::sigaction = std::mem::zeroed();
-                if libc::sigaction(sig as i32, std::ptr::null(), &mut cur) != 0 {
-                    return 12;
-                }
-                if cur.sa_sigaction != libc::SIG_DFL {
-                    return 13;
-                }
-            }
-
-            let mut mask: libc::sigset_t = std::mem::zeroed();
-            if libc::sigprocmask(libc::SIG_SETMASK, std::ptr::null(), &mut mask) != 0 {
-                return 14;
-            }
-            for sig in RESET_IN_CHILD {
-                if libc::sigismember(&mask, sig as i32) != 0 {
-                    return 15;
-                }
-            }
-            0
-        }
-    }
-
-    /// **`trap '' INT` has to survive into the child**, or it protects nothing.
-    ///
-    /// POSIX: a child inherits its parent's dispositions, save that *caught* signals go back to the
-    /// default. bash and dash both hand SIGINT on as ignored — `SigIgn: …2` in the child's
-    /// `/proc/<pid>/status`. oslo reset it, so `trap '' INT; ./long-job` left the job killable by
-    /// the very keystroke the trap was written to survive.
-    #[test]
-    fn a_deliberate_ignore_reaches_the_child() {
-        let _alone = ALONE.lock().unwrap_or_else(|held| held.into_inner());
-        super::note_deliberate_ignore(libc::SIGINT, true);
-        let child = unsafe { fork() }.expect("fork");
-        match child {
-            ForkResult::Child => {
-                let status = unsafe { child_checks_the_kept_ignore() };
-                unsafe { libc::_exit(status) };
-            }
-            ForkResult::Parent { child } => {
-                let seen = waitpid(child, None).expect("waitpid");
-                super::note_deliberate_ignore(libc::SIGINT, false);
-                assert_eq!(
-                    seen,
-                    WaitStatus::Exited(child, 0),
-                    "the trap's ignore was undone, or another signal kept one it was not given"
-                );
-            }
-        }
-    }
-
-    /// Ignore everything, reset, and read back: SIGINT stays ignored, the rest do not.
-    ///
-    /// # Safety
-    ///
-    /// Only for use in a forked child: it changes process-wide signal state.
-    unsafe fn child_checks_the_kept_ignore() -> i32 {
-        unsafe {
-            let mut ign: libc::sigaction = std::mem::zeroed();
-            ign.sa_sigaction = libc::SIG_IGN;
-            for sig in RESET_IN_CHILD {
-                if libc::sigaction(sig as i32, &ign, std::ptr::null_mut()) != 0 {
-                    return 10;
-                }
-            }
-
-            reset_signals_for_child();
-
-            for sig in RESET_IN_CHILD {
-                let mut cur: libc::sigaction = std::mem::zeroed();
-                if libc::sigaction(sig as i32, std::ptr::null(), &mut cur) != 0 {
-                    return 11;
-                }
-                let want = if sig == Signal::SIGINT {
-                    libc::SIG_IGN
-                } else {
-                    libc::SIG_DFL
-                };
-                if cur.sa_sigaction != want {
-                    return 12;
-                }
-            }
-            0
-        }
-    }
-
-    /// The flag is edge-triggered: one keystroke aborts one evaluation, not every later one.
-    #[test]
-    fn an_interrupt_is_reported_once() {
-        // Drain anything an earlier test left, so this reads its own signal and not a stale one.
-        let _ = interrupt_pending();
-        assert!(!interrupt_pending());
-        note_interrupt();
-        assert!(interrupt_pending());
-        assert!(!interrupt_pending());
-    }
-
-    /// SIGTTOU has to be blocked *and* restored — a shell that leaked the block would hand it to
-    /// every command it forked, and `reset_signals_for_child` is the only other thing that clears
-    /// it.
-    #[test]
-    fn sigttou_is_blocked_only_for_the_call() {
-        let before = SigSet::thread_get_mask().expect("mask");
-        let seen = without_sigttou(|| {
-            SigSet::thread_get_mask()
-                .expect("mask")
-                .contains(Signal::SIGTTOU)
-        });
-        assert!(seen, "SIGTTOU was not blocked inside the guard");
-        let after = SigSet::thread_get_mask().expect("mask");
-        assert_eq!(
-            before.contains(Signal::SIGTTOU),
-            after.contains(Signal::SIGTTOU),
-            "the mask was not restored"
-        );
-    }
-
-    /// **A non-interactive shell's `trap - INT` really does mean the system default**, which is
-    /// what bash gives a script — so the restore must decline there and let `SIG_DFL` through.
-    #[test]
-    fn a_script_gets_the_system_default_back() {
-        assert!(
-            !crate::exec::pipeline::is_interactive(),
-            "a test binary is not a REPL"
-        );
-        assert!(
-            !super::restore_shell_signal(libc::SIGINT),
-            "nothing is restored where the shell installed nothing"
-        );
-    }
-
-    /// And only the four the shell claims for itself — everything else is the trap's to set.
-    #[test]
-    fn only_the_shells_own_signals_are_restorable() {
-        for other in [libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1, libc::SIGQUIT] {
-            assert!(
-                !super::restore_shell_signal(other),
-                "signal {other} is not one the shell installs"
-            );
-        }
-    }
-
-    /// **Ctrl-\ must not kill the session.** POSIX says an interactive shell ignores SIGQUIT, and
-    /// both bash and dash do — `SigIgn` in `/proc/<pid>/status` carries it for a real pty session.
-    /// oslo left it at the system default, so the key that dumps core killed the shell and took the
-    /// terminal with it.
-    #[test]
-    fn the_shell_ignores_quit_and_hands_the_default_to_children() {
-        assert!(
-            super::IGNORED_AT_A_PROMPT.contains(&Signal::SIGQUIT),
-            "the shell ignores it for itself"
-        );
-        assert!(
-            super::RESET_IN_CHILD.contains(&Signal::SIGQUIT),
-            "and every child gets SIG_DFL back, or Ctrl-\\ would stop quitting the job"
-        );
-        // Everything the prompt ignores has to be undone in a child, or a program oslo starts
-        // inherits a disposition it never asked for.
-        for ignored in super::IGNORED_AT_A_PROMPT {
-            assert!(
-                super::RESET_IN_CHILD.contains(&ignored),
-                "{ignored:?} is ignored at the prompt and never reset in a child"
-            );
-        }
-    }
-}
+#[path = "signals/tests.rs"]
+mod tests;

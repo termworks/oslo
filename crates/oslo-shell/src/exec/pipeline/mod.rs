@@ -91,6 +91,12 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> 
         if job::interrupt_pending() {
             return Err(interrupt::raise(env));
         }
+        // A SIGTERM or SIGHUP that arrived while an EXIT trap was set. Ending as an ordinary
+        // `exit 128 + signo` is what runs that trap: the shell dies of the signal either way, and
+        // this is the difference between the cleanup happening and not.
+        if let Some(signum) = job::fatal_signal_pending() {
+            return Err(ShellError::Exit(128 + signum));
+        }
 
         if item.op == ListOp::Background {
             jobs::spawn_background(env, &item.and_or)?;
@@ -101,6 +107,13 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> 
         } else {
             last_status = eval_and_or_list(env, &item.and_or)?;
         }
+    }
+
+    // And once more on the way out, for a signal that arrived during the *last* command of the
+    // list: there is no boundary after it, and the shell would otherwise end normally and report
+    // the command's status rather than the signal's.
+    if let Some(signum) = job::fatal_signal_pending() {
+        return Err(ShellError::Exit(128 + signum));
     }
 
     Ok(last_status)

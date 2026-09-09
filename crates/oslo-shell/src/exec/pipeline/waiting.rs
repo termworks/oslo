@@ -80,7 +80,14 @@ pub(crate) fn wait_for_child(pid: Pid) -> (i32, bool) {
             Ok(WaitStatus::Signaled(_, sig, _)) => (128 + sig as i32, false),
             Ok(WaitStatus::Stopped(_, sig)) => (128 + sig as i32, true),
             Ok(WaitStatus::StillAlive) => continue,
-            Err(nix::errno::Errno::EINTR) => continue,
+            // A SIGTERM or SIGHUP with an EXIT trap set ends the *wait*, not just this call: the
+            // shell is dying, and sitting out the rest of a `sleep 20` first would leave the
+            // cleanup that long undone. The signal is left standing for the command boundary
+            // just after this to act on — see `job::fatal_signal_waiting`.
+            Err(nix::errno::Errno::EINTR) => match crate::exec::job::fatal_signal_waiting() {
+                Some(signum) => (128 + signum, false),
+                None => continue,
+            },
             // Nothing was reaped, so there is no status to report: 127 is what a shell says when
             // it cannot run or account for a command.
             _ => (127, false),

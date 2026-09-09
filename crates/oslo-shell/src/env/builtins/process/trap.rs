@@ -229,6 +229,16 @@ fn apply(args: &[String], env: &mut Environment, spec: &str, action: &str) -> bo
         // reports success here; the trap is recorded and simply never fires, exactly as in bash.
         let _ = handlers::arm(number, &disposition);
     }
+    // An EXIT trap is only worth setting if it runs, and SIGTERM or SIGHUP would otherwise kill
+    // the shell before it could. Armed here and disarmed by `trap - EXIT`, so a shell without one
+    // keeps the default disposition — see `job::catch_fatal_for_exit_trap`.
+    if let Condition::Exit = condition {
+        let running = matches!(
+            handlers::disposition(env, condition.key()),
+            handlers::Disposition::Run(_)
+        );
+        crate::exec::job::catch_fatal_for_exit_trap(running);
+    }
     true
 }
 

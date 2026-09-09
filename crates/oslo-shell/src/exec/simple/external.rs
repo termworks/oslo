@@ -213,7 +213,14 @@ fn wait_for_child(child: Pid, cmd_name: &str, words: &[String]) -> i32 {
                 return 128 + sig as i32;
             }
             Ok(_) => continue,
-            Err(nix::errno::Errno::EINTR) => continue,
+            // A SIGTERM or SIGHUP with an EXIT trap set ends the *wait*, not just this call: the
+            // shell is dying, and sitting out the rest of a `sleep 20` first would leave the
+            // cleanup that long undone. The signal stands for the command boundary just after
+            // this to act on — see `job::fatal_signal_waiting`.
+            Err(nix::errno::Errno::EINTR) => match crate::exec::job::fatal_signal_waiting() {
+                Some(signum) => return 128 + signum,
+                None => continue,
+            },
             Err(_) => return 1,
         }
     }
