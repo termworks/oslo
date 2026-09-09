@@ -321,3 +321,35 @@ fn an_unknown_option_goes_to_the_real_rm() {
         "and there has to be one to hand it to"
     );
 }
+
+/// **A name on `$PATH` that is really this shell must not be handed the work.**
+///
+/// The test used to be against the literal `/usr/bin/oslo`, so it matched exactly one install and
+/// missed the shape oslo already ships: a symlink named for another program. `resolve_program`
+/// answers the link rather than its target, so the old check never fired and `rm` was handed to
+/// oslo — which then reported a *shell* usage error for an `rm` flag.
+#[test]
+fn this_shell_is_recognised_through_a_symlink() {
+    let exe = std::env::current_exe().expect("a test binary has a path");
+    assert!(
+        super::is_this_shell(&exe),
+        "the running binary is this shell"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("rm");
+    std::os::unix::fs::symlink(&exe, &link).unwrap();
+    assert!(
+        super::is_this_shell(&link),
+        "a link named `rm` pointing here is still here"
+    );
+}
+
+/// A real program is not this shell, and neither is a path that resolves to nothing.
+#[test]
+fn another_program_is_not_this_shell() {
+    for other in ["/usr/bin/rm", "/bin/sh", "/nonexistent/rm"] {
+        let path = std::path::Path::new(other);
+        assert!(!super::is_this_shell(path), "{other} was taken for oslo");
+    }
+}

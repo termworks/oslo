@@ -352,7 +352,7 @@ fn delegate(args: &[String]) -> Result<i32> {
 /// `/bin/sh` may be running with a `$PATH` that has not been set up yet.
 fn external_rm() -> Option<PathBuf> {
     if let Some(found) = super::spawn::resolve_program("rm")
-        && found != Path::new("/usr/bin/oslo")
+        && !is_this_shell(&found)
     {
         return Some(found);
     }
@@ -360,6 +360,26 @@ fn external_rm() -> Option<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .find(|p| p.is_file())
+}
+
+/// Whether a path found on `$PATH` is this very shell.
+///
+/// **Both sides are resolved before they are compared.** This used to test the found path against
+/// the literal `/usr/bin/oslo`, which is one of the places oslo can be and not the only one: an
+/// install under `~/.local/bin`, a build being tested, or — the shape this shell already ships —
+/// a *symlink* named for another program pointing at it. `resolve_program` answers the link, so a
+/// name-only test never matched and oslo would have handed `rm` to itself.
+///
+/// A path that cannot be resolved is treated as not-this-shell: the fallbacks below are literal
+/// files, and refusing to run a real `rm` because its link could not be read would be the worse
+/// mistake of the two.
+fn is_this_shell(candidate: &Path) -> bool {
+    let Ok(found) = candidate.canonicalize() else {
+        return false;
+    };
+    std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .is_ok_and(|exe| exe == found)
 }
 
 #[cfg(test)]
