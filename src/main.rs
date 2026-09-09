@@ -1,6 +1,7 @@
 //! The `oslo` binary: argument handling, script execution, and the interactive REPL.
 
 mod cli;
+mod handoff;
 
 // Startup, the Lua API and history expansion all live at the top of the stack now, in
 // `oslo-runtime`. History expansion in particular must stay reachable only from the interactive
@@ -11,6 +12,7 @@ use oslo_runtime::absorb_loop_control;
 use oslo_runtime::startup;
 
 use cli::{Action, Invocation};
+use handoff::{block_every_signal, restore_signal_mask};
 use oslo::env::Environment;
 use oslo::env::builtins::run_exit_trap;
 use oslo::env::options::ShellOption;
@@ -98,12 +100,7 @@ fn main() {
     // The shell runs on a stack oslo chose rather than one it inherited; see
     // [`oslo::INTERPRETER_STACK`]. `main` itself does nothing afterwards but wait.
     //
-    // Signals need care, and getting it wrong is subtle. `kill` directed at a *process* is
-    // delivered to any one thread that is not blocking it, so with `main` merely parked in
-    // `join` the kernel was free to hand it there — and `kill -USR1 $$` would then return to the
-    // shell before its own trap had run, printing the next command's output first. Blocking
-    // everything here and unblocking on the worker leaves exactly one candidate thread, which is
-    // what restores the single-threaded ordering the rest of the shell is written against.
+    // The signal mask around the handoff is [`handoff`]'s, and why it matters is documented there.
     let inherited = block_every_signal();
     let worker = std::thread::Builder::new()
         .name("oslo".to_string())
@@ -112,32 +109,23 @@ fn main() {
             // Anything raised in the gap is merely pending, and arrives the moment this returns.
             restore_signal_mask(&inherited);
             dispatch();
-        })
-        .expect("oslo: cannot start");
+        });
+
+    // **A shell that cannot spawn a thread still has to be a shell.** Under `ulimit -u` or a low
+    // pids cgroup this fails with `EAGAIN`, and `.expect` made that a panic — so oslo would not
+    // start where bash and dash both run the script. All the worker buys is a 16 MiB stack, and
+    // both ways of recursing are bounded anyway (`nesting::MAX_INPUT_NESTING`, and the
+    // nested-script counter), so the fallback runs the same programs with less headroom.
+    let Ok(worker) = worker else {
+        restore_signal_mask(&inherited);
+        dispatch();
+        return;
+    };
+
     if worker.join().is_err() {
         // The worker panicked and has already printed its message.
         std::process::exit(2);
     }
-}
-
-/// Block every signal on the calling thread, answering the mask that was in force.
-fn block_every_signal() -> nix::sys::signal::SigSet {
-    let mut previous = nix::sys::signal::SigSet::empty();
-    let _ = nix::sys::signal::pthread_sigmask(
-        nix::sys::signal::SigmaskHow::SIG_SETMASK,
-        Some(&nix::sys::signal::SigSet::all()),
-        Some(&mut previous),
-    );
-    previous
-}
-
-/// Put a saved mask back, so the shell starts with whatever its caller handed it.
-fn restore_signal_mask(mask: &nix::sys::signal::SigSet) {
-    let _ = nix::sys::signal::pthread_sigmask(
-        nix::sys::signal::SigmaskHow::SIG_SETMASK,
-        Some(mask),
-        None,
-    );
 }
 
 fn dispatch() {
