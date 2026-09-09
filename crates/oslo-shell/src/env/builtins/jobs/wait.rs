@@ -34,6 +34,32 @@ use oslo_base::error::Result;
 /// Status for a pid or job the shell cannot account for. POSIX fixes this number.
 const NO_SUCH_CHILD: i32 = 127;
 
+/// A trapped signal arrived, and the wait is over whatever the child is doing.
+///
+/// **POSIX: `wait` is interrupted by a signal the shell has a trap for.** The trap runs and `wait`
+/// returns above 128; it does not go back to sleep. Every loop here retried on `EINTR` instead, so
+/// `trap 'echo caught' USR1; sleep 5 & wait $!` sat out the full five seconds and answered 0 —
+/// bash and dash both come back in the moment the signal lands, with 138.
+///
+/// `EINTR` on its own is not this. The shell's own SIGINT handler and the reaper both interrupt a
+/// `waitpid` without any trap being involved, and abandoning the wait for those would turn a
+/// stray reap into a child whose status is never collected — hence the check for a *pending trap*
+/// rather than for the errno alone.
+struct Interrupted(i32);
+
+/// What a `waitpid` returning `EINTR` means: a trap to run, or nothing worth stopping for.
+fn a_trap_cut_it_short() -> Option<Interrupted> {
+    crate::env::builtins::pending_signal().map(Interrupted)
+}
+
+/// The status a `wait` ended by a trapped signal reports.
+fn interrupted_status(env: &mut Environment, Interrupted(signum): Interrupted) -> Result<i32> {
+    // The body first, then the status — the order bash prints them in, and the reason the trap is
+    // worth setting at all.
+    crate::env::builtins::run_pending_traps(env)?;
+    Ok(128 + signum)
+}
+
 /// `wait [-fn] [-p var] [id …]`.
 pub fn builtin_wait(env: &mut Environment, args: &[String]) -> Result<i32> {
     let opts = match Options::parse(&args[1..]) {
@@ -52,12 +78,16 @@ pub fn builtin_wait(env: &mut Environment, args: &[String]) -> Result<i32> {
 
     if opts.ids.is_empty() {
         if opts.next_only {
-            let outcome = wait_any();
-            return Ok(report(env, &opts, outcome));
+            return match wait_any() {
+                Ok(outcome) => Ok(report(env, &opts, outcome)),
+                Err(cut) => interrupted_status(env, cut),
+            };
         }
         // Bare `wait` has no status to report — POSIX makes it 0 whatever the children did.
-        wait_for_everything();
-        return Ok(0);
+        return match wait_for_everything() {
+            Ok(()) => Ok(0),
+            Err(cut) => interrupted_status(env, cut),
+        };
     }
 
     if opts.next_only {
@@ -69,8 +99,10 @@ pub fn builtin_wait(env: &mut Environment, args: &[String]) -> Result<i32> {
         if let Some(done) = finished {
             return Ok(report(env, &opts, Some(done)));
         }
-        let outcome = wait_first_of(&targets);
-        return Ok(report(env, &opts, outcome));
+        return match wait_first_of(&targets) {
+            Ok(outcome) => Ok(report(env, &opts, outcome)),
+            Err(cut) => interrupted_status(env, cut),
+        };
     }
 
     // Several operands: bash waits for each in turn and reports the *last* one, so a bad operand
@@ -79,10 +111,10 @@ pub fn builtin_wait(env: &mut Environment, args: &[String]) -> Result<i32> {
     let mut status = 0;
     for id in &opts.ids {
         status = match resolve(id) {
-            Ok(target) => {
-                let outcome = settle(target);
-                report(env, &opts, outcome)
-            }
+            Ok(target) => match settle(target) {
+                Ok(outcome) => report(env, &opts, outcome),
+                Err(cut) => return interrupted_status(env, cut),
+            },
             Err(status) => status,
         };
     }
@@ -228,9 +260,9 @@ fn resolve_pid(pid: Pid) -> Target {
 }
 
 /// Block for whatever the operand named.
-fn settle(target: Target) -> Option<(Pid, i32)> {
+fn settle(target: Target) -> std::result::Result<Option<(Pid, i32)>, Interrupted> {
     match target {
-        Target::Done(pid, status) => Some((pid, status)),
+        Target::Done(pid, status) => Ok(Some((pid, status))),
         Target::Live(pids) => wait_for_all_of(&pids),
     }
 }
@@ -263,33 +295,36 @@ fn collect_targets(ids: &[String]) -> (Vec<Pid>, Option<(Pid, i32)>) {
 ///
 /// `None` means neither the table nor the kernel has anything to say about it — the caller
 /// reports 127 and, for a pid operand, says so on stderr.
-fn wait_for_pid(pid: Pid) -> Option<i32> {
+fn wait_for_pid(pid: Pid) -> std::result::Result<Option<i32>, Interrupted> {
     if let Some(status) = with_jobs(|jobs| jobs.take_status(pid)) {
         note_reaped(pid);
-        return Some(status);
+        return Ok(Some(status));
     }
     loop {
         match waitpid(pid, None) {
-            Ok(WaitStatus::StillAlive) => return None,
+            Ok(WaitStatus::StillAlive) => return Ok(None),
             Ok(status) => {
                 if let Some(code) = exit_status(status) {
                     note_reaped(pid);
-                    return Some(code);
+                    return Ok(Some(code));
                 }
                 // A stop or a continue is not a termination; keep waiting for the real end.
             }
-            // A trap firing mid-wait says nothing about how the child ended.
-            Err(Errno::EINTR) => continue,
-            Err(_) => return None,
+            Err(Errno::EINTR) => match a_trap_cut_it_short() {
+                Some(cut) => return Err(cut),
+                // Says nothing about how the child ended.
+                None => continue,
+            },
+            Err(_) => return Ok(None),
         }
     }
 }
 
 /// Wait for every pid of a job; the last one decides, as in a pipeline.
-fn wait_for_all_of(pids: &[Pid]) -> Option<(Pid, i32)> {
+fn wait_for_all_of(pids: &[Pid]) -> std::result::Result<Option<(Pid, i32)>, Interrupted> {
     let mut last = None;
     for pid in pids {
-        match wait_for_pid(*pid) {
+        match wait_for_pid(*pid)? {
             Some(status) => last = Some((*pid, status)),
             None if pids.len() == 1 => eprintln!(
                 "oslo: wait: pid {} is not a child of this shell",
@@ -298,7 +333,7 @@ fn wait_for_all_of(pids: &[Pid]) -> Option<(Pid, i32)> {
             None => {}
         }
     }
-    last
+    Ok(last)
 }
 
 /// Bare `wait`: block until nothing the shell started is outstanding.
@@ -306,7 +341,7 @@ fn wait_for_all_of(pids: &[Pid]) -> Option<(Pid, i32)> {
 /// `waitpid(-1)` rather than a walk of the job table, because a shell has children the table
 /// never knew about — anything forked before job control was set up — and POSIX says bare `wait`
 /// waits for all of them.
-fn wait_for_everything() {
+fn wait_for_everything() -> std::result::Result<(), Interrupted> {
     loop {
         match waitpid(Pid::from_raw(-1), None) {
             Ok(WaitStatus::StillAlive) => break,
@@ -315,17 +350,21 @@ fn wait_for_everything() {
                     note_reaped(pid);
                 }
             }
-            Err(Errno::EINTR) => continue,
+            Err(Errno::EINTR) => match a_trap_cut_it_short() {
+                Some(cut) => return Err(cut),
+                None => continue,
+            },
             // ECHILD: nothing left to wait for, which is the successful end of a bare `wait`.
             Err(_) => break,
         }
     }
+    Ok(())
 }
 
 /// `wait -n` with no operands: the next child to finish, or one that already has.
-fn wait_any() -> Option<(Pid, i32)> {
+fn wait_any() -> std::result::Result<Option<(Pid, i32)>, Interrupted> {
     if let Some(found) = take_finished_job() {
-        return Some(found);
+        return Ok(Some(found));
     }
     wait_first_of(&[])
 }
@@ -334,23 +373,23 @@ fn wait_any() -> Option<(Pid, i32)> {
 ///
 /// Children reaped along the way are folded into the table rather than thrown away, so a later
 /// `wait` for one of them still has an answer.
-fn wait_first_of(targets: &[Pid]) -> Option<(Pid, i32)> {
+fn wait_first_of(targets: &[Pid]) -> std::result::Result<Option<(Pid, i32)>, Interrupted> {
     for pid in targets {
         if let Some(status) = with_jobs(|jobs| jobs.take_status(*pid)) {
             note_reaped(*pid);
-            return Some((*pid, status));
+            return Ok(Some((*pid, status)));
         }
     }
     loop {
         match waitpid(Pid::from_raw(-1), None) {
-            Ok(WaitStatus::StillAlive) => return None,
+            Ok(WaitStatus::StillAlive) => return Ok(None),
             Ok(status) => {
                 let (Some(pid), Some(code)) = (status.pid(), exit_status(status)) else {
                     continue;
                 };
                 if targets.is_empty() || targets.contains(&pid) {
                     note_reaped(pid);
-                    return Some((pid, code));
+                    return Ok(Some((pid, code)));
                 }
                 // **Somebody else's child, and its status is not ours to throw away.** `waitpid(-1)`
                 // collects whichever ends first; the kernel will never offer this one again, so a
@@ -362,8 +401,11 @@ fn wait_first_of(targets: &[Pid]) -> Option<(Pid, i32)> {
                 };
                 with_jobs(|jobs| jobs.keep_status(pid, code, signal));
             }
-            Err(Errno::EINTR) => continue,
-            Err(_) => return None,
+            Err(Errno::EINTR) => match a_trap_cut_it_short() {
+                Some(cut) => return Err(cut),
+                None => continue,
+            },
+            Err(_) => return Ok(None),
         }
     }
 }
@@ -493,6 +535,6 @@ mod tests {
     #[test]
     fn a_pid_that_is_not_a_child_has_no_status() {
         // pid 1 is init: it exists, so this is `ECHILD` rather than `ESRCH`.
-        assert_eq!(wait_for_pid(Pid::from_raw(1)), None);
+        assert!(matches!(wait_for_pid(Pid::from_raw(1)), Ok(None)));
     }
 }

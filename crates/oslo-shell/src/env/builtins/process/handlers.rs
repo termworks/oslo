@@ -123,6 +123,18 @@ pub fn arm(signum: i32, disposition: &Disposition<'_>) -> bool {
     }
 }
 
+/// The lowest-numbered signal whose trap has arrived and not yet run, without taking it.
+///
+/// For the one caller that must not wait for a command boundary: `wait` blocks inside the kernel,
+/// and POSIX says a trapped signal ends that block — the trap runs and `wait` returns `128 + signo`
+/// rather than going back to sleep until the child it was watching finishes on its own.
+///
+/// Peeking rather than draining, because running the bodies is still [`run_pending_traps`]'s.
+pub fn pending_signal() -> Option<i32> {
+    let pending = PENDING.load(Ordering::SeqCst);
+    (pending != 0).then(|| pending.trailing_zeros() as i32 + 1)
+}
+
 /// Run the handler of every signal that has arrived since the last check.
 ///
 /// Called at command boundaries, where the shell is between commands and running arbitrary code
