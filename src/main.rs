@@ -319,12 +319,15 @@ fn run_program_reading(
     frame: Option<&str>,
 ) -> ! {
     let mut env = Environment::new();
+    // **The name first**, because pushing the frame publishes `$BASH_SOURCE` and the script's own
+    // path is its outermost entry — pushed first, the array named `oslo` instead of the script and
+    // `dirname "${BASH_SOURCE[0]}"` answered the wrong directory.
+    env.shell_name = invocation.name.clone();
     // How this program was reached, for `$FUNCNAME`'s outermost entry. See
     // `Environment::enter_script_frame`; nothing is pushed for `-c` or standard input.
     if let Some(frame) = frame {
         env.enter_script_frame(frame);
     }
-    env.shell_name = invocation.name.clone();
     env.set_positional(invocation.positional.clone());
     apply_invocation_options(&mut env, invocation);
     startup::history::register(&mut env);
