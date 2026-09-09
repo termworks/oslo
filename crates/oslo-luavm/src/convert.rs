@@ -193,13 +193,12 @@ type Pending<'gc> = Vec<(Table<'gc>, Rc<RefCell<oslo_base::value::Table>>)>;
 /// itself; the only difference is that the entries are walked from a queue rather than from the
 /// call stack, so nothing here is bounded by frames. Nothing is truncated and no depth is refused.
 ///
-/// **This narrows the hole rather than closing it, and the rest is not here.** What comes back is a
-/// chain of `Rc<RefCell<Table>>`, and *dropping* one still recurses: the last reference to a table
-/// drops its child, which drops its child. Measured after this change, the abort moved from about
-/// fifteen thousand levels to about twenty-five thousand — better, and still an abort. Closing it
-/// needs an iterative `Drop` for `oslo_base::value::Table`, which changes how every table in the
-/// shell is torn down and wants care around the cycle case (an `Rc` cycle already leaks rather than
-/// dropping, which this does not alter).
+/// **This was only half of it.** What comes back is a chain of `Rc<RefCell<Table>>`, and *dropping*
+/// one used to recurse as well — the last reference to a table freed its child, which freed its
+/// child. Fixing the conversion alone moved the abort from about fifteen thousand levels to about
+/// twenty-five thousand; the teardown is bounded too, by `impl Drop for oslo_base::value::Table`,
+/// and half a million levels now come and go. Either half alone leaves the crash reachable, so the
+/// two belong together.
 fn from_lua_within<'gc>(ctx: Context<'gc>, value: Value<'gc>, seen: &mut Brought<'gc>) -> Own {
     let mut waiting: Pending<'gc> = Vec::new();
     let root = shallow(ctx, value, seen, &mut waiting);

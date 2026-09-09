@@ -245,6 +245,61 @@ impl Table {
     }
 }
 
+/// **Tearing a table down must not recurse, because a script chooses how deep one is.**
+///
+/// A table holds tables, so the derived teardown freed a child from inside freeing its parent:
+/// twenty-five thousand levels — which `for i = 1, 30000 do c.n = {}; c = c.n end` writes in a
+/// line — exhausted the stack and aborted the process. A shell cannot report that; the session is
+/// simply gone, and it happened while *dropping* a value, which is to say at a point no `Result`
+/// reaches and no caller can guard.
+///
+/// The children are moved onto a queue and freed from there, so the depth costs heap rather than
+/// frames. **What is freed, and when, is exactly what it was**: [`Rc::try_unwrap`] hands back the
+/// contents only for the last owner, so a table another value still holds is left alone, and a
+/// table that holds itself never reaches a count of one and leaks — which is what an `Rc` cycle
+/// already did. Only the recursion is gone.
+impl Drop for Table {
+    fn drop(&mut self) {
+        let mut waiting = Vec::new();
+        take_tables(self, &mut waiting);
+        while let Some(child) = waiting.pop() {
+            // Not the last owner: someone else's to free, exactly as before.
+            let Ok(cell) = Rc::try_unwrap(child) else {
+                continue;
+            };
+            let mut inner = cell.into_inner();
+            take_tables(&mut inner, &mut waiting);
+            // `inner` is dropped here with nothing nested left in it, so its own `drop` finds an
+            // empty queue and stops — one frame, not one per level.
+        }
+    }
+}
+
+/// Move every table this one holds onto `waiting`, leaving it with none.
+///
+/// Every field that can carry one: the sequence, the hash part, the objects kept so a table used
+/// as a *key* can be handed back, and the metatable.
+fn take_tables(table: &mut Table, waiting: &mut Vec<Rc<RefCell<Table>>>) {
+    let mut take = |value: Value| {
+        if let Value::Table(nested) = value {
+            waiting.push(nested);
+        }
+    };
+    for value in table.array.drain(..) {
+        take(value);
+    }
+    for (_, value) in table.hash.drain() {
+        take(value);
+    }
+    for (_, value) in table.key_objects.drain() {
+        take(value);
+    }
+    table.order.clear();
+    if let Some(meta) = table.metatable.take() {
+        waiting.push(meta);
+    }
+}
+
 /// A callable.
 ///
 /// `Native` is the whole reason this evaluator exists: it is how Lua reaches oslo's Rust core, so
@@ -503,3 +558,7 @@ mod tests {
 #[cfg(test)]
 #[path = "value/bytes_tests.rs"]
 mod byte_string_tests;
+
+#[cfg(test)]
+#[path = "value/drop_tests.rs"]
+mod drop_tests;
