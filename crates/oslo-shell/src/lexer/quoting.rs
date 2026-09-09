@@ -108,6 +108,15 @@ impl Lexer<'_> {
                     self.advance();
                     current_lit.push('\\');
                 }
+                // **`\` before a newline is a line continuation: both go.** Every other character
+                // is escaped *to* itself, and treating a newline the same way spliced a literal
+                // newline into the middle of the word — `P=/usr/bin:\` + newline + `/usr/local/bin`
+                // became a `$P` with a line break in it, where bash and dash both join the two
+                // halves. POSIX 2.2.1 names this as the one exception to the escape rule.
+                '\\' if self.peek_char() == Some('\n') => {
+                    self.advance();
+                    self.advance();
+                }
                 '\\' => {
                     self.advance();
                     if let Some(escaped) = self.current_char() {

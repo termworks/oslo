@@ -328,3 +328,30 @@ fn every_token_consumes_at_least_one_character() {
         }
     }
 }
+
+/// **`\` before a newline is a line continuation: both characters go.**
+///
+/// Every other character is escaped *to itself* and kept as a [`WordPart::Escaped`]. Doing that to
+/// a newline spliced a real line break into the middle of the word, so
+/// `P=/usr/bin:\` + newline + `/usr/local/bin` produced a `$P` containing one — where bash and dash
+/// join the halves. POSIX 2.2.1 names the newline as the single exception to the escape rule.
+#[test]
+fn a_backslash_before_a_newline_joins_the_word() {
+    assert_eq!(
+        parts("a\\\nb"),
+        vec![WordPart::Literal("ab".into())],
+        "the continuation left something behind"
+    );
+    // The halves of a split path become one word with nothing between them.
+    assert_eq!(
+        parts("/usr/bin:\\\n/usr/local/bin"),
+        vec![WordPart::Literal("/usr/bin:/usr/local/bin".into())]
+    );
+    // And nothing else changes: a backslash before any other character still escapes it, which is
+    // what keeps `echo \*` from globbing.
+    assert_eq!(
+        parts("\\*"),
+        vec![WordPart::Escaped("*".into())],
+        "an ordinary escape was swallowed with the newline case"
+    );
+}
