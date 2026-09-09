@@ -411,4 +411,34 @@ mod tests {
         assert!(!ShellPattern::from_unquoted("[!a]").matches("a"));
         assert!(ShellPattern::from_unquoted("[^a]").matches("b"));
     }
+
+    /// **A pattern a user typed must not be able to hang the shell.**
+    ///
+    /// [`super::matches_items`] resumes from the most recent `*` and no other, which is what keeps
+    /// the match linear. A matcher that kept *every* star as a resumption point is the classic
+    /// catastrophic case: `a*a*…*b` against a run of `a`s that never reaches the `b` explores one
+    /// path per way of dividing the run, and that is exponential in the number of stars.
+    ///
+    /// Sixty-four characters and ten stars, so a matcher that regressed to full backtracking would
+    /// not finish within the life of the test run — while the real one answers in microseconds. The
+    /// bound is wall clock and enormously slack on purpose: the distance being tested is between
+    /// "instant" and "never", not between two timings.
+    ///
+    /// This reaches every shell pattern there is — `case`, `[[ == ]]`, `${x#…}` and filename
+    /// globbing all compile through here — so the input is one a script can be handed.
+    #[test]
+    fn a_pathological_pattern_does_not_take_exponential_time() {
+        let pattern = ShellPattern::from_unquoted("a*a*a*a*a*a*a*a*a*a*b");
+        let subject = "a".repeat(64);
+
+        let started = std::time::Instant::now();
+        assert!(!pattern.matches(&subject), "there is no `b` to match");
+        let took = started.elapsed();
+
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "the match took {took:?}: the star backtracking is no longer bounded to one \
+             resumption point"
+        );
+    }
 }
