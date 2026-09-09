@@ -225,10 +225,13 @@ fn the_last_argument_is_remembered() {
     assert_eq!(var("true first; true second", "_"), "second");
 }
 
-/// An assignment on its own is not a command, so it leaves `$_` alone — as bash does.
+/// An assignment on its own clears `$_` — checked against bash, which prints `[]` and not the
+/// previous value. It is set to nothing rather than unset: `${_-UNSET}` answers empty.
 #[test]
-fn an_assignment_alone_does_not_touch_it() {
-    assert_eq!(var("true kept; x=1", "_"), "kept");
+fn an_assignment_alone_clears_it() {
+    assert_eq!(var("true kept; x=1", "_"), "");
+    // `export z=1` is a command with a word, so the ordinary rule applies.
+    assert_eq!(var("true kept; export z=1", "_"), "z=1");
 }
 
 /// It describes this shell's own history, so a child is not told it.

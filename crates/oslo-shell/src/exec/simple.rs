@@ -237,6 +237,11 @@ fn apply_assignments_only(env: &mut Environment, simple: &SimpleCommand) -> Resu
     if let Some(name) = refused {
         return posix::assignment_failure(env, &name);
     }
+    // **A line with no command clears `$_` rather than leaving it.** Checked against bash 5.3:
+    // `true kept; x=1; echo "[$_]"` prints `[]`, and `${_-UNSET}` prints empty rather than `UNSET`
+    // — so it is set to nothing, not unset. `export z=1` is a command with a word and keeps the
+    // ordinary rule, which is why it answers `z=1`.
+    env.set_var("_", "", false);
     Ok(apply_wordless_redirections(env, &simple.redirections))
 }
 
