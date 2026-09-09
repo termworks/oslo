@@ -122,6 +122,11 @@ const KEPT: &[(&str, &str)] = &[
         "the same function, the same reason",
     ),
     (
+        "printf: {width}: width is too large",
+        "the same formatter and the same reason — the padding guard sits inside the conversion, \
+         which is handed a width and no argv",
+    ),
+    (
         "getopts: {} -- {}",
         "the message is `getopts`'s own OPTERR text, not a word of the command",
     ),
