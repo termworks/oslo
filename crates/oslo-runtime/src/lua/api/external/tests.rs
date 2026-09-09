@@ -275,3 +275,43 @@ fn the_horizon_reaches_the_tool_only_when_asked_for() {
         "--frames-ms="
     );
 }
+
+/// **A tool that leaves something behind must not hold the shell.**
+///
+/// The output used to be read with no deadline, after the wait loop had already reaped the child.
+/// A grandchild — a `&`, an ssh ControlMaster, a daemonising helper — inherits the write end of the
+/// pipe, so EOF never came and the thread drawing the prompt never returned: an interactive shell
+/// that never prompts, never reads a line and cannot be exited. Measured before the fix, this exact
+/// shape gave `exit=124 prompt=0 HELLO=0`; after it, `exit=0 prompt=2 HELLO=3`.
+#[test]
+fn a_tool_that_leaves_a_process_behind_still_answers() {
+    let started = std::time::Instant::now();
+    let answer = super::run(
+        "sh",
+        &["-c".to_string(), "sleep 30 & printf 'ready'".to_string()],
+        Duration::from_millis(2000),
+    );
+    let took = started.elapsed();
+    assert_eq!(answer.as_deref(), Some("ready"), "the output is used");
+    assert!(
+        took < Duration::from_secs(3),
+        "it returned rather than waiting for the grandchild: {took:?}"
+    );
+}
+
+/// **More than a pipe buffer must not deadlock.** A pipe holds 64 KB; a tool with more to say
+/// blocks on the write, so a loop that only polled for exit waited out the whole deadline, killed a
+/// tool that was working, and threw the output away — on every prompt.
+#[test]
+fn a_tool_that_says_more_than_a_pipe_holds_is_not_killed() {
+    let answer = super::run(
+        "sh",
+        &[
+            "-c".to_string(),
+            "awk 'BEGIN{for(i=0;i<40000;i++)printf \"x\"}'".to_string(),
+        ],
+        Duration::from_millis(4000),
+    );
+    let text = answer.expect("a tool that prints a lot still answers");
+    assert_eq!(text.len(), 40000, "every byte arrived, not one pipe buffer");
+}
