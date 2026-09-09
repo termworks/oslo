@@ -82,7 +82,7 @@ fn main() {
     restore_default_sigpipe();
     #[cfg(all(feature = "watch", feature = "scratch"))]
     {
-        let args: Vec<String> = env::args().collect();
+        let args: Vec<String> = arguments();
         if let Some(status) = cli::watch::bootstrap(&args) {
             std::process::exit(status);
         }
@@ -141,7 +141,7 @@ fn restore_signal_mask(mask: &nix::sys::signal::SigSet) {
 }
 
 fn dispatch() {
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = arguments();
 
     let invocation = match cli::parse(&args) {
         Ok(inv) => inv,
@@ -583,4 +583,16 @@ fn exit_error_status(env: &Environment, err: ShellError) -> i32 {
             status
         }
     }
+}
+
+/// This process's arguments, with any byte that is not UTF-8 replaced rather than fatal.
+///
+/// **`env::args()` panics on such a byte**, before `main` has done anything: `oslo ./café.sh` with
+/// the name in Latin-1 died with `SIGABRT` and no message a person could act on, where bash runs
+/// the script. A positional parameter cannot be skipped the way an environment variable can —
+/// `$2` has to stay `$2` — so the byte is replaced and the argument keeps its place.
+fn arguments() -> Vec<String> {
+    env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
 }
