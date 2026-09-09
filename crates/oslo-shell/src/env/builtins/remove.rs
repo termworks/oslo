@@ -98,10 +98,31 @@ enum Removal {
     Interrupted,
 }
 
+/// Whether a person is actually typing at a prompt — the one condition the loose mode rests on.
+///
+/// **`-i` alone is not a prompt.** `ShellOption::Interactive` is set by the `-i` *flag*, and
+/// `sh -i -c '…'` is an ordinary scripted form: the `bash -ic` trick that loads interactive rc
+/// files for nvm and direnv, `SHELL='bash -i'` in a Makefile, ssh and CI shims. With the flag
+/// alone as the test, a bare `rm dir` in one of those became `rm -rf dir` and answered **0** —
+/// POSIX and bash both refuse a directory without `-r` and exit 1, so a caller had no way to know
+/// a tree had been deleted. `Rm::to_tmp` is off by default, so there was no trash to recover from
+/// either. That is the worst outcome this file can produce, and it was reachable from a script.
+///
+/// Three flags together, because each rules out a case the others do not: `Interactive` says the
+/// session is interactive, the absence of `CommandString` says the shell was not handed a program
+/// with `-c`, and the absence of `StdinInput` says it is not reading one from a pipe with `-s`.
+/// All three are recorded when the shell is invoked, so this asks what the shell was *asked to be*
+/// rather than probing a descriptor that a redirection could have moved.
+fn at_a_prompt(env: &Environment) -> bool {
+    let options = env.options();
+    options.is_set(ShellOption::Interactive)
+        && !options.is_set(ShellOption::CommandString)
+        && !options.is_set(ShellOption::StdinInput)
+}
+
 /// The behaviour this shell allows, which is the whole safety argument in five lines.
 fn mode_for(env: &Environment, options: &Options) -> Mode {
-    let at_a_prompt = env.options().is_set(ShellOption::Interactive);
-    if options.strict || !at_a_prompt {
+    if options.strict || !at_a_prompt(env) {
         return Mode {
             loose: false,
             trash: None,

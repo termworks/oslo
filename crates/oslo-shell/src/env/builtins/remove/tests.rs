@@ -353,3 +353,33 @@ fn another_program_is_not_this_shell() {
         assert!(!super::is_this_shell(path), "{other} was taken for oslo");
     }
 }
+
+/// **`-i` alone is not a prompt, and this is the worst bug in the file if it is treated as one.**
+///
+/// `sh -i -c '…'` is an ordinary scripted form — the `bash -ic` trick that loads interactive rc
+/// files for nvm and direnv, `SHELL='bash -i'` in a Makefile, ssh and CI shims. With the flag alone
+/// as the test, a bare `rm dir` in one of those became `rm -rf dir` and answered **0**: POSIX and
+/// bash both refuse a directory without `-r` and exit 1, so the caller could not tell a tree had
+/// been deleted — and `to_tmp` is off by default, so there was no trash to recover it from.
+#[test]
+fn a_command_string_is_not_a_prompt() {
+    let dir = tree();
+    let mut env = shell(true);
+    env.set_option(ShellOption::CommandString, true);
+    assert_eq!(
+        run(&mut env, &[&path(&dir, "dir")]),
+        1,
+        "rm dir must refuse"
+    );
+    assert!(!gone(&dir, "dir"), "the tree must survive");
+}
+
+/// And neither is a program read from standard input with `-s`.
+#[test]
+fn a_script_on_stdin_is_not_a_prompt() {
+    let dir = tree();
+    let mut env = shell(true);
+    env.set_option(ShellOption::StdinInput, true);
+    assert_eq!(run(&mut env, &[&path(&dir, "dir")]), 1);
+    assert!(!gone(&dir, "dir"));
+}
