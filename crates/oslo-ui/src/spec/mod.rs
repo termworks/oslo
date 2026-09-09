@@ -30,6 +30,7 @@ pub mod custom;
 pub mod definitions;
 pub mod flag;
 pub mod frecency;
+pub mod remote;
 pub mod resolve;
 /// What the machine knows — hosts, pids, users, mounts — offered as completions.
 pub mod sources;

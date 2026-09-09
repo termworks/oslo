@@ -284,11 +284,12 @@ impl OsloHelper {
             None => (word, Vec::new()),
         };
 
-        // **Nothing at all once the word names another machine.** Not the local filesystem, and not
-        // a second host either: after `tron:` every row would splice into `tron:othermachine`, a
-        // word naming neither. The position was declared, so this still answers `true` and the
-        // caller does not fall back to ordinary path completion.
+        // **Once the word names another machine, only that machine can answer.** Not the local
+        // filesystem, and not a second host either: after `tron:` every host row would splice into
+        // `tron:othermachine`, a word naming neither. The position was declared, so this answers
+        // `true` whatever it found and the caller does not fall back to ordinary path completion.
         if names_another_machine(action, &word) {
+            self.remote_candidates(&word, out);
             return true;
         }
 
@@ -315,6 +316,45 @@ impl OsloHelper {
             self.path_candidates_for(&word, &wanted, out);
         }
         true
+    }
+
+    /// What the machine named before the `:` has in the directory being typed.
+    ///
+    /// Silent unless a lister is installed, which is what makes this safe to reach from a crate
+    /// that must not run programs: with none, the position answers nothing and the menu stays shut
+    /// — the behaviour before there was any remote listing at all.
+    ///
+    /// The value of each row is the **whole path**, not the name: the `:` is a word break, so what
+    /// gets replaced on the line is everything after it, and a bare `log` would turn
+    /// `host:/var/lo` into `host:log`.
+    fn remote_candidates(&self, word: &Word<'_>, out: &mut Vec<CompletionCandidate>) {
+        let Some(host) = word.prefix.strip_suffix(':') else {
+            return;
+        };
+        let (dir, fragment) = crate::spec::remote::split(&word.stem);
+        let Some(found) = crate::spec::remote::entries(host, dir) else {
+            return;
+        };
+        let fold = self.case_sensitive();
+        for entry in found {
+            // Hidden names only once somebody has typed the dot, as local path completion does.
+            if entry.name.starts_with('.') && !fragment.starts_with('.') {
+                continue;
+            }
+            if !matches_prefix(&entry.name, fragment, fold) {
+                continue;
+            }
+            // A directory keeps its `/`, so the next Tab continues into it rather than ending the
+            // word.
+            let slash = if entry.directory { "/" } else { "" };
+            let whole = format!("{dir}{}{slash}", entry.name);
+            let kind = if entry.directory {
+                "directory"
+            } else {
+                "remote"
+            };
+            out.push(candidate(word, &whole, None, kind));
+        }
     }
 }
 

@@ -65,7 +65,17 @@ const LONGEST: std::time::Duration = std::time::Duration::from_secs(2);
 /// **Drained on a thread of its own**, because polling for exit without reading the pipe means a
 /// command with more than a pipe buffer to say blocks on the write and is then killed for taking
 /// too long — the same fault `lua::api::spawn` had.
-fn bounded(mut process: std::process::Command) -> String {
+fn bounded(process: std::process::Command) -> String {
+    bounded_with_status(process).0
+}
+
+/// [`bounded`], and whether the command actually succeeded.
+///
+/// **An empty answer and a failed one are different things** to a caller that has to choose between
+/// them: an empty directory has been listed and an unreachable machine has not. `bounded` itself
+/// cannot tell them apart, because a macro that prints nothing is a macro that offers nothing
+/// either way — see [`super::remote`], which is the caller that needs the distinction.
+pub(super) fn bounded_with_status(mut process: std::process::Command) -> (String, bool) {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -94,7 +104,7 @@ fn bounded(mut process: std::process::Command) -> String {
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return String::new(),
+        Err(_) => return (String::new(), false),
     };
     let reading = child.stdout.take().map(|mut pipe| {
         std::thread::spawn(move || {
@@ -105,9 +115,13 @@ fn bounded(mut process: std::process::Command) -> String {
     });
 
     let deadline = std::time::Instant::now() + LONGEST;
+    let mut finished = false;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => {
+                finished = status.success();
+                break;
+            }
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -124,9 +138,10 @@ fn bounded(mut process: std::process::Command) -> String {
             Err(_) => break,
         }
     }
-    reading
+    let out = reading
         .and_then(|reader| reader.join().ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (out, finished)
 }
 
 /// Run `command` in this shell, in a subshell, and answer with what it printed.

@@ -51,6 +51,12 @@ pub fn remember(line: &str, language: &str) {
     // The store is about to learn this line too, which is the one thing that can make an answer
     // already given wrong. See [`forget_answers_for`].
     forget_answers_for(line, language);
+    // **A command is the only moment another machine can change.** Connecting a VPN, adding a key,
+    // creating the directory somebody is about to copy into — all of them happen between two
+    // prompts, and a remembered "unreachable" that outlived the command that fixed it would be a
+    // shell insisting a machine is gone after you have just reached it. See
+    // [`crate::spec::remote`], which pays a network round trip for every answer it does not have.
+    crate::spec::remote::forget();
 }
 
 /// Forget everything remembered, in every language.

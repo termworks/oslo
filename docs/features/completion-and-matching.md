@@ -472,6 +472,56 @@ is in `/etc/hosts` on every machine and is never what somebody is half way throu
 zsh asks `getent hosts` and NIS as well. Both are a process, or a network round trip, **on the Tab
 key**; the four files are a `read` each and cover what a person actually types.
 
+### Listing the other machine
+
+```text
+scp report.pdf build:/srv/⇥
+  /srv/www/       directory
+  /srv/backup/    directory
+  /srv/notes.md   remote
+```
+
+**This is the only completion in oslo that opens a connection**, and it is the only one that has
+to be: every other source is a file read because some local file knows the answer — `/proc` for
+processes, `/etc/passwd` for users. No local file says what is on another machine.
+
+Before it existed, `host:/etc/⇥` completed *this* machine's `/etc` and offered it as though it were
+the other one's. Nothing in a menu row says which filesystem it came from, so the name it inserted
+existed and the copy that used it failed somewhere else entirely. A wrong answer in the right shape
+is worse than no answer.
+
+| | |
+|---|---|
+| what runs | `ssh -o BatchMode=yes -o ConnectTimeout=2 -T host 'LC_ALL=C ls -1Ap -- <dir>'` |
+| first ask | ~140 ms on a warm link |
+| same directory again | 0 ms — remembered until the next command |
+| a machine that refuses | ~40 ms, menu stays shut |
+| a machine that hangs | 2 s, then killed — the macro deadline |
+
+**`BatchMode=yes` is the load-bearing flag.** Without it `ssh` prompts — for a password, a
+passphrase, a host key — and a prompt from a child process while the editor holds the terminal in
+raw mode is a shell nobody can type into. With it, a machine that would have asked simply fails and
+the menu stays shut. That is why this works for machines a key already opens, and only those; it is
+the case worth having and the only one that can be made safe on a keystroke.
+
+What is remembered is forgotten when a command runs. Connecting a VPN, adding a key, or creating
+the directory you are about to copy into all happen between two prompts, and a session-long memory
+of "unreachable" would outlive the thing that fixed it.
+
+**No `ControlMaster` is started.** Opening a shared connection behind somebody's back leaves a
+socket and a process they did not ask for. One that already *exists* is used by `ssh` automatically,
+so a person who wants each listing to cost a millisecond can say so in `~/.ssh/config`, where that
+decision belongs.
+
+Two things are deliberately refused. A destination beginning with `-` is not passed to `ssh` at all
+— `scp -oProxyCommand=…⇥` is a word `ssh` would read as a flag rather than a machine, and argv is no
+defence against a program's own option parsing. And the path is single-quoted for the remote shell,
+so a directory called `x; rm -rf /` is one word over there; only a leading `~` is left bare, because
+`'~/'` is a directory named tilde.
+
+It is installed **only at a prompt**. A script has no menu to fill, and a shell that forked `ssh`
+from a `-c` line would be doing it where nobody asked.
+
 ### The rest of what the machine knows
 
 ```text
