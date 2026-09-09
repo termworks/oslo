@@ -142,7 +142,19 @@ pub fn remove_tree(root: &Path, shown: &str, walk: &Walk) -> Outcome {
 
     let level = match open_dir(None, root, walk, shown) {
         Ok(level) => level,
-        Err(()) => return done(1, false),
+        // **A directory that cannot be read may still be empty**, and an empty one in a writable
+        // parent unlinks: the mode on the directory itself says nothing about the parent's. GNU rm
+        // falls back to `rmdir` here, and without it `rm -rf` left every mode-000 or mode-111
+        // directory on disk and returned 1 — test fixtures, extracted archives, and this project's
+        // own sandbox cleanup, which is where it was found. If the directory has anything in it the
+        // unlink fails and the original error is reported, which is what GNU rm says too.
+        Err(e) => match std::fs::remove_dir(root) {
+            Ok(()) => return done(0, false),
+            Err(_) => {
+                report_unopenable(walk, shown, e);
+                return done(1, false);
+            }
+        },
     };
 
     let mut failures = 0usize;
@@ -226,28 +238,33 @@ impl Drop for Descriptors {
 }
 
 /// Open a directory without following a link, reporting and answering `Err` if it will not open.
-fn open_dir(parent: Option<RawFd>, path: &Path, walk: &Walk, shown: &str) -> Result<Level, ()> {
+fn open_dir(parent: Option<RawFd>, path: &Path, walk: &Walk, shown: &str) -> Result<Level, Errno> {
+    let _ = (walk, shown);
     // **`O_NOFOLLOW` is the whole defence.** If the name became a symlink since it was stat-ed,
     // the open fails with `ELOOP` rather than landing somewhere else.
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     match openat(parent, path, flags, Mode::empty()) {
         // SAFETY: `openat` answers a descriptor it does not keep, so this is its only owner.
         Ok(fd) => Ok(Rc::new(unsafe { OwnedFd::from_raw_fd(fd) })),
-        Err(e) => {
-            complain(walk, shown, e);
-            // **The one error whose cause is not in the message.** `Too many open files` under a
-            // path several thousand components long says nothing about why, and the why is the
-            // only actionable part: the tree is deeper than the descriptor limit, and `Descriptors`
-            // has already raised it as far as it is allowed to.
-            if e == Errno::EMFILE || e == Errno::ENFILE {
-                eprintln!(
-                    "{}rm: this tree is deeper than the open-file limit allows; \
-                     raise the hard limit (`ulimit -Hn`) or remove it in parts",
-                    walk.origin
-                );
-            }
-            Err(())
-        }
+        // Not reported here any more: the caller first tries to remove the directory anyway, and a
+        // directory that then unlinks was never a failure to tell anyone about.
+        Err(e) => Err(e),
+    }
+}
+
+/// Say that a directory could not be opened, once the caller has established it cannot go either.
+fn report_unopenable(walk: &Walk, shown: &str, e: Errno) {
+    complain(walk, shown, e);
+    // **The one error whose cause is not in the message.** `Too many open files` under a
+    // path several thousand components long says nothing about why, and the why is the
+    // only actionable part: the tree is deeper than the descriptor limit, and `Descriptors`
+    // has already raised it as far as it is allowed to.
+    if e == Errno::EMFILE || e == Errno::ENFILE {
+        eprintln!(
+            "{}rm: this tree is deeper than the open-file limit allows; \
+             raise the hard limit (`ulimit -Hn`) or remove it in parts",
+            walk.origin
+        );
     }
 }
 
@@ -336,7 +353,11 @@ fn visit(
 
     let level = match open_dir(at, Path::new(name), walk, shown) {
         Ok(level) => level,
-        Err(()) => {
+        // The same fallback as the operand above, for a directory found part-way down: unreadable
+        // does not mean non-empty, and an empty one still unlinks from its parent.
+        Err(_) if unlinkat(at, name.as_os_str(), UnlinkatFlags::RemoveDir).is_ok() => return,
+        Err(e) => {
+            report_unopenable(walk, shown, e);
             *failures += 1;
             return;
         }

@@ -383,3 +383,43 @@ fn a_script_on_stdin_is_not_a_prompt() {
     assert_eq!(run(&mut env, &[&path(&dir, "dir")]), 1);
     assert!(!gone(&dir, "dir"));
 }
+
+/// **Unreadable does not mean non-empty.** `rm -rf` opened every directory before unlinking it, so
+/// a mode-000 or mode-111 directory failed even when it was empty and its parent was writable —
+/// GNU rm falls back to `rmdir` there. Cleanup lines left whole trees on disk and returned 1, which
+/// under `set -e` ends the script; it was found because this project's own sandbox cleanup leaked.
+#[test]
+fn an_unreadable_but_empty_directory_still_goes() {
+    if nix::unistd::geteuid().is_root() {
+        return; // root is not refused the open, so there is nothing to fall back from.
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shut = dir.path().join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o111)).unwrap();
+
+    let mut env = shell(false);
+    let name = shut.display().to_string();
+    assert_eq!(run(&mut env, &["-rf", &name]), 0, "an empty one unlinks");
+    assert!(!shut.exists());
+}
+
+/// And one with something in it still fails, with the error that says why — as GNU rm does.
+#[test]
+fn an_unreadable_directory_with_contents_still_fails() {
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shut = dir.path().join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::write(shut.join("f"), "x").unwrap();
+    std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+
+    let mut env = shell(false);
+    let name = shut.display().to_string();
+    assert_eq!(run(&mut env, &["-rf", &name]), 1);
+    assert!(shut.exists(), "nothing was silently thrown away");
+    // So the temporary directory can be cleaned up when the test ends.
+    let _ = std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o755));
+}
