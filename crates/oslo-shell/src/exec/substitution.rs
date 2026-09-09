@@ -18,6 +18,29 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
         env.get_alias(n).map(str::to_string)
     })?;
 
+    // **`$(<file)` is the file, not a command.** bash and ksh both read it directly: there is no
+    // command to run, so the ordinary path forked a child that ran nothing and captured nothing,
+    // and the substitution quietly became the empty string with status 0. A script doing
+    // `version=$(<VERSION)` got an empty version and no indication anything had gone wrong.
+    if let Some(target) = only_reads_a_file(&ast) {
+        let path = crate::expand::expand_word_to_string(env, target)?;
+        return match std::fs::read_to_string(&path) {
+            // Returned raw: the caller strips trailing newlines, as POSIX says, and doing it
+            // twice here would differ from every other substitution.
+            Ok(text) => {
+                env.note_substitution_status(0);
+                Ok(text)
+            }
+            // bash reports the failure, expands to nothing, and leaves `$?` at 1 without ending
+            // the script — so `x=$(<maybe) || fallback` works the way it is written.
+            Err(e) => {
+                eprintln!("{}{}: {}", env.origin(), path, oslo_base::error::reason(&e));
+                env.note_substitution_status(1);
+                Ok(String::new())
+            }
+        };
+    }
+
     let (reader, writer) =
         pipe().map_err(|e| ShellError::ExecutionError(format!("Pipe failed: {}", e)))?;
 
@@ -69,4 +92,32 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
             Err(e) => Err(ShellError::ExecutionError(format!("Fork failed: {}", e))),
         }
     }
+}
+
+/// The file `$(<file)` names, when that is all the substitution is.
+///
+/// The whole body must be one simple command with no words, no assignments and exactly one `<`
+/// redirection on the default descriptor — `$(<f)` and `$( < f )`, but not `$(<f; echo x)` or
+/// `$(cat <f)`, both of which are ordinary commands that happen to redirect.
+fn only_reads_a_file(list: &oslo_base::ast::CommandList) -> Option<&oslo_base::ast::Word> {
+    use oslo_base::ast::{Command, RedirectKind};
+    let [item] = list.items.as_slice() else {
+        return None;
+    };
+    if !item.and_or.rest.is_empty() || item.and_or.first.negated || item.and_or.first.timed {
+        return None;
+    }
+    let [Command::Simple(simple)] = item.and_or.first.commands.as_slice() else {
+        return None;
+    };
+    if !simple.words.is_empty() || !simple.assignments.is_empty() {
+        return None;
+    }
+    let [redirection] = simple.redirections.as_slice() else {
+        return None;
+    };
+    let plain_input = redirection.kind == RedirectKind::Input
+        && redirection.fd.is_none()
+        && redirection.heredoc_content.is_none();
+    plain_input.then_some(&redirection.target)
 }
