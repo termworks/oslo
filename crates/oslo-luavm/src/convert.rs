@@ -176,7 +176,50 @@ pub fn from_lua<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Own {
 /// table by name, would see nothing to refuse and encode the truncation instead.
 type Brought<'gc> = std::collections::HashMap<Table<'gc>, Own>;
 
+/// A table brought across but not yet filled in: the VM's, and the shell's waiting for its entries.
+type Pending<'gc> = Vec<(Table<'gc>, Rc<RefCell<oslo_base::value::Table>>)>;
+
+/// **Iterative, because the depth is a script's to choose and the stack is not.**
+///
+/// This used to recurse once per level, so a table nested about fifteen thousand deep — which
+/// `for i = 1, 20000 do c.n = {}; c = c.n end` writes in a line — exhausted the interpreter's
+/// 16 MiB stack and aborted the process. Not an error a shell can report: the session is simply
+/// gone, and it happened on the way *in* to any Rust-implemented `oslo.*` function, whatever that
+/// function did with the argument. `oslo.quote`, which only wants a string, died the same way as
+/// `oslo.json.encode`.
+///
+/// The shape is otherwise unchanged, and deliberately so — see [`Brought`]. Each table's `Rc` is
+/// still made and recorded *before* its entries are walked, which is what makes a cycle find
+/// itself; the only difference is that the entries are walked from a queue rather than from the
+/// call stack, so nothing here is bounded by frames. Nothing is truncated and no depth is refused.
 fn from_lua_within<'gc>(ctx: Context<'gc>, value: Value<'gc>, seen: &mut Brought<'gc>) -> Own {
+    let mut waiting: Pending<'gc> = Vec::new();
+    let root = shallow(ctx, value, seen, &mut waiting);
+
+    // Filling one table can discover more, which go on the end of the same queue. A table is
+    // pushed only when it is first seen, so this ends after one visit each.
+    while let Some((from, into)) = waiting.pop() {
+        for (key, item) in from.iter(ctx) {
+            let key = shallow(ctx, key, seen, &mut waiting);
+            let item = shallow(ctx, item, seen, &mut waiting);
+            into.borrow_mut().set(key, item);
+        }
+        if let Some(meta) = from.metatable()
+            && let Own::Table(meta) = shallow(ctx, Value::Table(meta), seen, &mut waiting)
+        {
+            into.borrow_mut().metatable = Some(meta);
+        }
+    }
+    root
+}
+
+/// One value across, queuing a table's contents rather than following them.
+fn shallow<'gc>(
+    ctx: Context<'gc>,
+    value: Value<'gc>,
+    seen: &mut Brought<'gc>,
+    waiting: &mut Pending<'gc>,
+) -> Own {
     match value {
         Value::Nil => Own::Nil,
         Value::Boolean(b) => Own::Bool(b),
@@ -198,16 +241,7 @@ fn from_lua_within<'gc>(ctx: Context<'gc>, value: Value<'gc>, seen: &mut Brought
             // back at this table finds it rather than starting again.
             let out = Rc::new(RefCell::new(oslo_base::value::Table::new()));
             seen.insert(t, Own::Table(Rc::clone(&out)));
-            for (key, value) in t.iter(ctx) {
-                let key = from_lua_within(ctx, key, seen);
-                let value = from_lua_within(ctx, value, seen);
-                out.borrow_mut().set(key, value);
-            }
-            if let Some(meta) = t.metatable()
-                && let Own::Table(meta) = from_lua_within(ctx, Value::Table(meta), seen)
-            {
-                out.borrow_mut().metatable = Some(meta);
-            }
+            waiting.push((t, Rc::clone(&out)));
             Own::Table(out)
         }
         // A thread, or userdata: nothing the shell's value type has a home for.
