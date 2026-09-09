@@ -230,7 +230,12 @@ fn resolve(env: &Environment, name: &str, opts: &Options) -> Vec<Kind> {
     // And the names `$PATH` cannot account for. Vocab first because it is a lookup in a map the
     // prompt already keeps; the autoload directory is asked directly afterwards because a `-c`
     // shell never calls `names::refresh` and so has an empty vocab while still running the file.
-    if opts.all || kinds.is_empty() {
+    //
+    // **Not for a macro already reported above.** `names::stored_into` copies every stored macro
+    // into vocab, so a stored script is in both and `-a` printed it twice — `whereis con` read
+    // `con: stored script script`, one thing named as two.
+    let stored_already = kinds.iter().any(|kind| matches!(kind, Kind::Stored(_)));
+    if (opts.all || kinds.is_empty()) && !stored_already {
         if let Some(kind) = oslo_base::vocab::kind_of(name) {
             kinds.push(Kind::Vocabulary(kind));
         } else if crate::exec::simple::autoload::path_for(env, name).is_some() {
