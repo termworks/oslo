@@ -62,6 +62,7 @@ pub fn spawn(name: &str, cap: u64) -> io::Result<Role> {
     // Before the fork, so a directory we would refuse is reported to the caller rather than to a
     // child that has nowhere to say it.
     dir::open_checked()?;
+    store::room_for_a_socket(name)?;
     if store::alive(name) {
         return Err(io::Error::other(format!("{name} is already running")));
     }
