@@ -86,8 +86,8 @@ pub use make::builtin_make;
 pub use mapfile::builtin_mapfile;
 pub use messages::builtin_messages;
 pub use process::{
-    builtin_kill, builtin_trap, builtin_umask, pending_signal, run_debug_trap, run_exit_trap,
-    run_pending_traps,
+    builtin_kill, builtin_trap, builtin_umask, pending_signal, run_debug_trap, run_err_trap,
+    run_exit_trap, run_pending_traps,
 };
 pub use shopt::builtin_shopt;
 pub use status::builtin_status;

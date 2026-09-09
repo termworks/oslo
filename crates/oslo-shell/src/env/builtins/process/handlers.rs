@@ -236,6 +236,52 @@ pub fn run_debug_trap(env: &mut Environment) {
     }
 }
 
+/// Whether an ERR handler is on the stack, so a failure inside it does not fire it again.
+static IN_ERR_TRAP: AtomicBool = AtomicBool::new(false);
+
+/// Run the ERR trap, for a command that has just failed.
+///
+/// **`set -e; trap cleanup ERR` is the error-handling idiom**, and the condition was refused
+/// outright: the handler was never installed, so every script that relied on it lost its cleanup.
+///
+/// Fired from the one place that already knows which failures count — the `set -e` judgement in
+/// `pipeline::run_and_record`. That is not a convenience: bash exempts a failing command from ERR
+/// under exactly the POSIX 2.9.1 rules errexit uses (an `if`/`while` condition, every command of
+/// an and-or list but the last, anything under `!`), so deriving the two from one condition is
+/// what keeps them from drifting. The difference is that ERR fires whether or not `set -e` is on.
+///
+/// Unlike DEBUG this **propagates**: `trap 'exit 1' ERR` is the point of the condition for many
+/// scripts, and swallowing the `exit` would leave the shell running past the failure it was
+/// written to stop.
+///
+/// # The one place this is not bash
+///
+/// bash does not inherit the ERR trap into a function body unless `set -E` is on; oslo behaves as
+/// though it always is. The two are observable together only under `set -e`: `set -e; trap 'echo
+/// ERR' ERR; f() { false; }; f` prints nothing under bash and `ERR` here, and `bash -E` prints
+/// `ERR` too. Every other shape tested — the call reporting its own failure, `case`, `for`, `if`
+/// bodies, brace groups, pipelines, subshells, `$?` inside the handler, `trap -p`, `trap - ERR`,
+/// the exemptions and the recursion guard — agrees with bash exactly.
+///
+/// Left this way deliberately rather than by omission: `set -E` is a shell option oslo does not
+/// have, and of the two ways to be wrong without it, running a cleanup handler that bash would
+/// have skipped is the one that does not silently drop a script's error handling.
+pub fn run_err_trap(env: &mut Environment) -> Result<()> {
+    if IN_ERR_TRAP.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    let Disposition::Run(text) = disposition(env, "ERR") else {
+        return Ok(());
+    };
+    let action = text.to_string();
+
+    IN_ERR_TRAP.store(true, Ordering::SeqCst);
+    let outcome = run_handler(env, &action);
+    IN_ERR_TRAP.store(false, Ordering::SeqCst);
+
+    outcome.map(|_| ())
+}
+
 /// Run the EXIT trap and give the status the shell should finally exit with.
 ///
 /// Every path out of a shell goes through here — falling off the end of the script, `exit N`, a

@@ -41,7 +41,10 @@ enum Condition {
     /// hexe all install a preexec through it — so it is a condition rather than a signal, fired
     /// from `exec::simple` rather than armed with the kernel.
     Debug,
-    /// `ERR`, `RETURN` — named by bash, not implemented here. Kept as a distinct case so the
+    /// `ERR`: the handler runs for a command that failed, under exactly the exemptions `set -e`
+    /// uses. Fired from `pipeline::run_and_record` rather than armed with the kernel.
+    Err,
+    /// `RETURN` — named by bash, not implemented here. Kept as a distinct case so the
     /// diagnostic can say *why* rather than claiming the name does not exist.
     Unsupported(String),
 }
@@ -59,6 +62,7 @@ impl Condition {
         match self {
             Condition::Exit => "EXIT".to_string(),
             Condition::Debug => "DEBUG".to_string(),
+            Condition::Err => "ERR".to_string(),
             Condition::Signal { name, .. } if posix => name.to_string(),
             Condition::Signal { name, .. } => format!("SIG{name}"),
             Condition::Unsupported(name) => name.to_string(),
@@ -69,6 +73,7 @@ impl Condition {
         match self {
             Condition::Exit => "EXIT",
             Condition::Debug => "DEBUG",
+            Condition::Err => "ERR",
             Condition::Signal { name, .. } => name,
             Condition::Unsupported(name) => name,
         }
@@ -81,7 +86,8 @@ impl Condition {
             // After EXIT and before every signal: it is not a signal, and a listing that sorted it
             // among them by an invented number would imply one.
             Condition::Debug => 1,
-            Condition::Signal { number, .. } => *number + 1,
+            Condition::Err => 2,
+            Condition::Signal { number, .. } => *number + 2,
             Condition::Unsupported(_) => i32::MAX,
         }
     }
@@ -93,13 +99,16 @@ const USAGE: &str = "trap: usage: trap [-lp] [[action] condition ...]";
 
 /// bash's non-POSIX conditions that oslo still does not run. Recognised so the diagnostic can be
 /// truthful rather than claiming the name does not exist.
-const UNSUPPORTED: [&str; 2] = ["ERR", "RETURN"];
+const UNSUPPORTED: [&str; 1] = ["RETURN"];
 
 fn resolve(spec: &str) -> Option<Condition> {
     let upper = spec.to_uppercase();
     let bare = upper.strip_prefix("SIG").unwrap_or(&upper);
     if bare == "EXIT" {
         return Some(Condition::Exit);
+    }
+    if bare == "ERR" {
+        return Some(Condition::Err);
     }
     if bare == "DEBUG" {
         return Some(Condition::Debug);
@@ -357,29 +366,34 @@ mod tests {
     /// Not implemented is reported as not implemented. The previous behaviour — store it, return
     /// 0, never run it — is the failure mode a cleanup handler cannot survive.
     ///
-    /// `DEBUG` used to be on this list and is now real; it is asserted below rather than removed,
-    /// so that implementing `ERR` cannot quietly leave this test passing for the wrong reason.
+    /// `DEBUG` and `ERR` both used to be on this list and are now real; they are asserted below
+    /// rather than removed, so that implementing `RETURN` cannot quietly leave this test passing
+    /// for the wrong reason.
     #[test]
     fn the_bash_only_conditions_refuse_rather_than_pretend() {
         let mut env = Environment::new();
-        for name in ["ERR", "RETURN"] {
+        for name in ["RETURN"] {
             assert_eq!(run(&mut env, &["trap", "echo x", name]), 1, "{name}");
             assert_eq!(env.get_trap(name), None, "{name}");
         }
     }
 
-    /// `DEBUG` is a condition the shell fires itself, so it has to be *stored* like any other —
-    /// the firing is in `exec::simple`, but nothing can fire what `trap` refused to record.
+    /// `DEBUG` and `ERR` are conditions the shell fires itself, so they have to be *stored* like
+    /// any other — the firing is in `exec::simple` and `exec::pipeline`, but nothing can fire what
+    /// `trap` refused to record.
     #[test]
     fn debug_is_recorded_like_any_other_condition() {
         let mut env = Environment::new();
-        assert_eq!(run(&mut env, &["trap", "echo x", "DEBUG"]), 0);
-        assert_eq!(env.get_trap("DEBUG"), Some("echo x"));
-        assert_eq!(run(&mut env, &["trap", "-", "DEBUG"]), 0);
-        assert_eq!(
-            handlers::disposition(&env, "DEBUG"),
-            handlers::Disposition::Default
-        );
+        for name in ["DEBUG", "ERR"] {
+            assert_eq!(run(&mut env, &["trap", "echo x", name]), 0, "{name}");
+            assert_eq!(env.get_trap(name), Some("echo x"), "{name}");
+            assert_eq!(run(&mut env, &["trap", "-", name]), 0, "{name}");
+            assert_eq!(
+                handlers::disposition(&env, name),
+                handlers::Disposition::Default,
+                "{name}"
+            );
+        }
     }
 
     /// An unsigned-integer first operand is a list of conditions to reset, not an action.
