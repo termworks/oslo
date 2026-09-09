@@ -197,12 +197,14 @@ pub fn fatal_signal_waiting() -> Option<i32> {
 ///
 /// # Where this is still short of bash
 ///
-/// A shell blocked inside a *builtin* — `read` from a pipe that never fills — reaches neither of
-/// those two places, so it absorbs the first signal and needs a second. bash dies on the first.
-/// The second always works, because [`handle_fatal`] puts the default disposition back as it runs,
-/// so the failure is a cleanup skipped rather than a process that will not stop. Closing it means
-/// giving the same check to every blocking `EINTR` retry in the builtins, which is a wider change
-/// than the one measured here.
+/// A shell blocked somewhere that reaches neither of those places absorbs the first signal and
+/// needs a second. `read` was the common one and now ends its own wait — see
+/// [`crate::env::builtins::io::read_input`] — which leaves a redirection whose *open* blocks:
+/// `read x < a-fifo-nobody-writes-to` parks in `open(2)`, and `File::open` retries `EINTR` inside
+/// the standard library, so the signal is never seen. bash dies on the first there.
+///
+/// The second always works, because [`handle_fatal`] puts the default disposition back as it runs.
+/// So the residue is a cleanup skipped, never a process that will not stop.
 pub fn catch_fatal_for_exit_trap(catching: bool) {
     let action = match catching {
         true => SigAction::new(
