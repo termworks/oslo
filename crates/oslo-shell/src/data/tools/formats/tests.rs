@@ -118,3 +118,73 @@ fn the_delimiters_are_named() {
     assert_eq!(delimiter("tsv"), Some('\t'));
     assert_eq!(delimiter("psv"), None);
 }
+
+/// Quoting says "this is text", and the reader has to believe it.
+///
+/// Checked against Python's `csv` module, which answers `'007'` and `'  pad  '` for these two
+/// documents. oslo answered `7` and `pad`: the quotes were parsed and then discarded, so a
+/// spreadsheet's zero-padded id came back as a number and its padding came back trimmed.
+#[test]
+fn a_quoted_field_is_text_and_keeps_its_spaces() {
+    let rows = from_delimited("v\n\"007\"\n", ',').expect("valid");
+    assert_eq!(rows[0].get("v"), Some(&Val::Str("007".into())));
+
+    let rows = from_delimited("v\n\"  pad  \"\n", ',').expect("valid");
+    assert_eq!(rows[0].get("v"), Some(&Val::Str("  pad  ".into())));
+}
+
+/// An unquoted field keeps the old rule, spacing included.
+///
+/// `a, 1, 2` is how a CSV gets written by hand, and the space before the `1` is layout rather than
+/// data — so this half deliberately does not change.
+#[test]
+fn an_unquoted_field_still_becomes_a_number() {
+    let rows = from_delimited("v\n 42 \n", ',').expect("valid");
+    assert_eq!(rows[0].get("v"), Some(&Val::Int(42)));
+}
+
+/// The writer's half: a string that would read back as something else is quoted.
+///
+/// Without this the reader's fix buys nothing for a round trip — `007` written bare comes back as
+/// `7` however carefully the quotes are honoured. A string that reads back as itself is still
+/// written bare, so a plain table stays greppable.
+#[test]
+fn a_string_that_looks_like_a_number_is_quoted() {
+    let rows = vec![Record::from_pairs([
+        ("id", Val::Str("007".into())),
+        ("name", Val::Str("plain".into())),
+        ("n", Val::Int(7)),
+    ])];
+    assert_eq!(
+        to_delimited(&rows, ',').lines().nth(1),
+        Some("\"007\",plain,7")
+    );
+}
+
+/// The property the two halves exist for, over the values that break it.
+#[test]
+fn the_awkward_values_survive_a_round_trip() {
+    let awkward = [
+        "007",
+        "  pad  ",
+        "a,b",
+        "he said \"hi\"",
+        "line1\nline2",
+        "a\tb",
+        "--flag",
+        "a=b",
+        "",
+        "9223372036854775807",
+    ];
+    for delimiter in [',', '\t'] {
+        for value in awkward {
+            let rows = vec![Record::from_pairs([("v", Val::Str(value.into()))])];
+            let back = from_delimited(&to_delimited(&rows, delimiter), delimiter).expect("valid");
+            assert_eq!(
+                back[0].get("v"),
+                Some(&Val::Str(value.to_string())),
+                "{value:?} did not survive {delimiter:?}"
+            );
+        }
+    }
+}

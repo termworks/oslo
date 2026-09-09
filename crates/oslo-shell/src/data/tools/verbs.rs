@@ -217,12 +217,15 @@ pub fn to_format(rows: &[Record], format: &str) -> Result<String, String> {
         "table" => Ok(render_display(&Val::table(rows.to_vec()))),
         // For somebody else's program, so a header row and RFC 4180 quoting — where `text` is
         // oslo's own transport and escapes instead. Two audiences, two formats.
-        "csv" | "tsv" => Ok(super::formats::to_delimited(
-            rows,
-            super::formats::delimiter(format).unwrap_or(','),
-        )
-        .trim_end()
-        .to_string()),
+        // The closing newline comes off and nothing else does. `trim_end` took the last *field*
+        // with it whenever that field ended in a space, so a value survived every row but the last.
+        "csv" | "tsv" => {
+            let text = super::formats::to_delimited(
+                rows,
+                super::formats::delimiter(format).unwrap_or(','),
+            );
+            Ok(text.strip_suffix('\n').unwrap_or(&text).to_string())
+        }
         other => Err(format!(
             "to: {other}: unknown format; oslo knows json, csv, tsv, text and table"
         )),
@@ -502,5 +505,22 @@ mod tests {
     #[test]
     fn an_unknown_format_is_refused() {
         assert!(to_format(&rows(), "yaml").is_err());
+    }
+
+    /// Only the closing newline comes off the end of a CSV.
+    ///
+    /// `trim_end` took the trailing spaces of the last row's last field with it, so a value
+    /// survived every row but the final one — invisible in a test that calls `to_delimited`
+    /// directly, because the trimming lives here rather than there.
+    #[test]
+    fn the_last_field_keeps_its_spaces() {
+        let rows = vec![
+            Record::from_pairs([("v", Val::Str("aa  ".into()))]),
+            Record::from_pairs([("v", Val::Str("bb  ".into()))]),
+        ];
+        let csv = to_format(&rows, "csv").expect("csv");
+        assert_eq!(csv.lines().count(), 3, "header and two rows: {csv:?}");
+        assert_eq!(csv.lines().nth(2), Some("\"bb  \""), "{csv:?}");
+        assert!(!csv.ends_with('\n'), "the closing newline still comes off");
     }
 }
