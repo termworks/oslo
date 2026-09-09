@@ -24,7 +24,7 @@
 //! **The trim reads the file** — the one place that does, and the exception to the paragraph above.
 //! It has to: the lines it must keep are the file's own, and the in-memory list is not them. Writing
 //! that list over the file instead is what once replaced a 20,000-line history with a single line on
-//! the first command of the first session. See [`History::trim_file`].
+//! the first command of the first session. See `History::trim_file`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

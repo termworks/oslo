@@ -17,7 +17,7 @@
 //!
 //! # What keeps it from being a hang
 //!
-//! * **[`super::run::bounded_with_status`]**, the same deadline every macro runs under: two seconds,
+//! * **`run::bounded_with_status`**, the same deadline every macro runs under: two seconds,
 //!   its own process group, killed as a group when it expires.
 //! * **`BatchMode=yes`**, which is the load-bearing one. Without it `ssh` prompts — for a password,
 //!   for a passphrase, to accept a host key — and a prompt from a child while the editor holds the

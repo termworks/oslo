@@ -28,15 +28,15 @@
 //!
 //! | | |
 //! |---|---|
-//! | [`hosts`], [`system`] users, groups, shells, services, timezones | read once |
-//! | [`procs`] | read every time — a pid list a minute old is a list of the wrong pids |
-//! | [`disk`], [`net`], [`system`] variables | read every time — the shell itself changes them |
-//! | [`kernel`] sysctls | read once — an 1,800-file walk, and the set does not move |
-//! | [`kernel`] modules | read every time — loading one is often why the next command is typed |
+//! | [`sources::hosts`], [`sources::system`] users, groups, shells, services, timezones | read once |
+//! | [`sources::procs`] | read every time — a pid list a minute old is a list of the wrong pids |
+//! | [`sources::disk`], [`sources::net`], [`sources::system`] variables | read every time — the shell itself changes them |
+//! | [`sources::kernel`] sysctls | read once — an 1,800-file walk, and the set does not move |
+//! | [`sources::kernel`] modules | read every time — loading one is often why the next command is typed |
 //!
 //! # Adding one
 //!
-//! A function answering `Vec<Suggestion>`, and a line in [`offers`]. Then any spec — shipped, or
+//! A function answering `Vec<Suggestion>`, and a line in [`sources::offers`]. Then any spec — shipped, or
 //! one you wrote — can name it as `$whatever` in a positional or a flag's value.
 
 pub mod disk;

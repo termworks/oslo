@@ -199,11 +199,11 @@ pub fn fatal_signal_waiting() -> Option<i32> {
 ///
 /// A shell blocked somewhere that reaches neither of those places absorbs the first signal and
 /// needs a second. `read` was the common one and now ends its own wait — see
-/// [`crate::env::builtins::io::read_input`] — which leaves a redirection whose *open* blocks:
+/// `read_input` — which leaves a redirection whose *open* blocks:
 /// `read x < a-fifo-nobody-writes-to` parks in `open(2)`, and `File::open` retries `EINTR` inside
 /// the standard library, so the signal is never seen. bash dies on the first there.
 ///
-/// The second always works, because [`handle_fatal`] puts the default disposition back as it runs.
+/// The second always works, because `handle_fatal` puts the default disposition back as it runs.
 /// So the residue is a cleanup skipped, never a process that will not stop.
 pub fn catch_fatal_for_exit_trap(catching: bool) {
     let action = match catching {
@@ -337,7 +337,7 @@ fn open_self_pipe() {
 ///
 /// **`trap - INT` means "back to how it was", and how it was is not the system default.**
 /// [`install_shell_signals`] runs once at REPL start and is the only thing that installs
-/// [`handle_sigint`] — the flag and self-pipe the whole interrupt path depends on. The `trap`
+/// `handle_sigint` — the flag and self-pipe the whole interrupt path depends on. The `trap`
 /// builtin wrote `SIG_DFL` straight into the kernel for `Disposition::Default`, so the universal
 /// idiom
 ///
