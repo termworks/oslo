@@ -145,15 +145,25 @@ panic = "abort"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-# **Every crate at "z", measured rather than assumed.** oslo's own crates and every dependency, on
-# the static musl build with nothing else changed: 5,375,616 bytes with `oslo-ui` held back at "s",
-# against 5,199,488 with it at "z". Both are the shipped size, measured after `.make.lua` takes the
-# unwind tables off — a size measured before that step is 850 KB of something nobody ships.
+# **Every crate at "z".** Both profiles built from the same source, shipped size (after `.make.lua`
+# strips the unwind tables — measure before that and you are weighing 850 KB nobody ships):
 #
-# `oslo-ui` is the only one that costs anything, because it is the only crate on the keystroke path.
-# Painting a 57-character line takes 2.41 µs at `opt-level = 3` and 3.02 µs at "s". Keys are ~100 ms
-# apart, so even the larger of those is six ten-thousandths of one percent of the gap between two
-# keystrokes — a cost nobody can perceive, for 176,128 bytes anybody can measure.
+#   shipped binary            5,666,432 at "s"   5,207,680 at "z"    -458,752  (-8.1%)
+#   startup                   ~700 µs            ~700 µs             nothing
+#   200,000-iteration loop    1.507 s            1.561 s             +3.6%
+#   paint, per keystroke      5.42 µs            5.96 µs             +0.54 µs
+#   hint, per keystroke       4.20 µs            4.83 µs             +0.63 µs
+#
+# **Startup is the one that had to be free**, and is: oslo is somebody's `bash`, so every
+# `#!/usr/bin/env bash` script on the machine pays it. Compared by minima over repeated rounds, the
+# sign flips between them — it is exec and page faults, not code speed.
+#
+# The keystroke cost is real and cannot be felt: +1.2 µs against the ~100 ms between two keys.
+#
+# The 3.6% is the one thing given up, and not where it looks. `oslo-shell` was already at "z" (see
+# its note below), so it comes from this line and the dependencies under fat LTO. It is also next to
+# nothing in context: bash runs that same loop in 293 ms against oslo's 1.5 s, so the interpreter is
+# 5x behind for reasons no optimisation level reaches, and 3.6% of it is not the lever worth pulling.
 #
 # No per-package overrides any more, because there is nothing left to override: this line covers the
 # workspace members and the one below covers their dependencies.
