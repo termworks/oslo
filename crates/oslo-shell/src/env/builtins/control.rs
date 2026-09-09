@@ -329,6 +329,14 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     // counter is entered only after the file is known to be readable, so a missing file still
     // costs nothing, and exited on every path out so a `return` cannot leave it drifting.
     env.enter_nested_script()?;
+    // **`. file a b` gives the file `$1` and `$2`**, and the arguments were being dropped: a
+    // sourced file read the *caller's* positional parameters however it was invoked, so the common
+    // `. ./lib.sh --verbose` gave `lib.sh` whatever the outer script happened to be holding.
+    //
+    // Only when there are operands. Bare `. file` deliberately leaves the caller's parameters in
+    // place — that is POSIX, and what bash does; swapping an empty list in would have blanked `$@`
+    // for every file sourced without arguments, which is nearly all of them.
+    let outer = (args.len() > 2).then(|| env.swap_positional(args[2..].to_vec()));
     // `$FUNCNAME`'s outermost entry, as bash spells it: a function called from a sourced file
     // reads `f source`. `eval` gets none, and bash gives it none either.
     env.enter_script_frame("source");
@@ -348,6 +356,10 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
         };
     env.exit_source_file();
     env.exit_script_frame();
+    // Before the status is looked at, so a `return` from inside the file restores them too.
+    if let Some(outer) = outer {
+        env.set_positional(outer);
+    }
     env.exit_nested_script();
 
     // `return` ends a sourced script early and supplies its status.
