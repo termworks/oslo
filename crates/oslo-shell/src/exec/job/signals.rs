@@ -167,6 +167,47 @@ fn open_self_pipe() {
 /// touching the terminal, cannot stop the shell that is supposed to arbitrate it. Ignoring
 /// SIGTTOU also makes the shell's own `tcsetpgrp` safe; `without_sigttou` blocks it as well,
 /// because a `trap` may legitimately replace the disposition later.
+/// Put back the disposition an interactive shell installed for itself, if it owns one for `signum`.
+///
+/// **`trap - INT` means "back to how it was", and how it was is not the system default.**
+/// [`install_shell_signals`] runs once at REPL start and is the only thing that installs
+/// [`handle_sigint`] — the flag and self-pipe the whole interrupt path depends on. The `trap`
+/// builtin wrote `SIG_DFL` straight into the kernel for `Disposition::Default`, so the universal
+/// idiom
+///
+/// ```sh
+/// trap 'cleanup' INT ; … ; trap - INT
+/// ```
+///
+/// left the session with no SIGINT handler at all: the next Ctrl-C killed the shell instead of
+/// returning to the prompt, and the terminal went with it.
+///
+/// Only for an interactive shell. A script's `trap - INT` really does mean the system default, and
+/// that is what bash gives it.
+///
+/// Answers whether it installed anything, so the caller can fall through to `SIG_DFL`.
+pub fn restore_shell_signal(signum: i32) -> bool {
+    if !crate::exec::pipeline::is_interactive() {
+        return false;
+    }
+    let interruptible = SigAction::new(
+        SigHandler::Handler(handle_sigint),
+        SaFlags::empty(),
+        SigSet::empty(),
+    );
+    let ignored = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+    // The four the shell claims for itself, and nothing else — see `install_shell_signals`.
+    let (signal, action) = match signum {
+        libc::SIGINT => (Signal::SIGINT, interruptible),
+        libc::SIGTSTP => (Signal::SIGTSTP, ignored),
+        libc::SIGTTIN => (Signal::SIGTTIN, ignored),
+        libc::SIGTTOU => (Signal::SIGTTOU, ignored),
+        _ => return false,
+    };
+    // SAFETY: the same call `install_shell_signals` makes, with the same handler.
+    unsafe { signal::sigaction(signal, &action).is_ok() }
+}
+
 pub fn install_shell_signals() {
     // Before the handler is installed, so a signal delivered a moment later already has somewhere
     // to write. See `interrupt_fd`.
@@ -377,5 +418,30 @@ mod tests {
             after.contains(Signal::SIGTTOU),
             "the mask was not restored"
         );
+    }
+
+    /// **A non-interactive shell's `trap - INT` really does mean the system default**, which is
+    /// what bash gives a script — so the restore must decline there and let `SIG_DFL` through.
+    #[test]
+    fn a_script_gets_the_system_default_back() {
+        assert!(
+            !crate::exec::pipeline::is_interactive(),
+            "a test binary is not a REPL"
+        );
+        assert!(
+            !super::restore_shell_signal(libc::SIGINT),
+            "nothing is restored where the shell installed nothing"
+        );
+    }
+
+    /// And only the four the shell claims for itself — everything else is the trap's to set.
+    #[test]
+    fn only_the_shells_own_signals_are_restorable() {
+        for other in [libc::SIGTERM, libc::SIGHUP, libc::SIGUSR1, libc::SIGQUIT] {
+            assert!(
+                !super::restore_shell_signal(other),
+                "signal {other} is not one the shell installs"
+            );
+        }
     }
 }
