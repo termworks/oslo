@@ -47,8 +47,8 @@ pub use sentinel::started as watcher_started;
 pub(crate) use sentinel::{Orders, stand_down, take_events, watch};
 
 pub(crate) use control::{
-    give_terminal_to, join_foreground_group, join_group_in_child, place_child,
-    place_foreground_child, reclaim_terminal,
+    give_terminal_to, join_foreground_group, join_group_in_child, left_it_deliberately,
+    place_child, place_foreground_child, reclaim_terminal,
 };
 
 /// The interactive shell's one-time claim on the terminal and on its own signal policy.

@@ -143,7 +143,11 @@ pub(crate) fn run_external(
                 }
                 // Taken back with SIGTTOU blocked: at this moment the shell is not the foreground
                 // group, so an unguarded `tcsetpgrp` would stop the shell itself.
-                job::reclaim_terminal();
+                //
+                // A status under 128 is a program that exited on its own, so whatever it did to the
+                // terminal it meant — `stty` is exactly such a program. Above that it was killed or
+                // stopped and had no chance to tidy.
+                job::reclaim_terminal(job::left_it_deliberately(status));
                 Ok(status)
             }
             Err(e) => Err(ShellError::ExecutionError(format!("Fork failed: {}", e))),

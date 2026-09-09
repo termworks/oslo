@@ -393,7 +393,14 @@ fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
         stopped |= was_stopped;
         stage_statuses.push(status);
     }
-    job::reclaim_terminal();
+    // Every stage exited on its own, and none was stopped: the terminal is as they left it on
+    // purpose. See `job::reclaim_terminal`.
+    job::reclaim_terminal(
+        !stopped
+            && stage_statuses
+                .iter()
+                .all(|status| job::left_it_deliberately(*status)),
+    );
     if stopped && let Some(pgid) = pgid {
         jobs::remember_stopped_pipeline(pgid, &pids, pipeline);
     }
