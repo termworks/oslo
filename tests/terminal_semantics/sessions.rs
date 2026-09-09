@@ -440,7 +440,11 @@ fn an_abbreviation_still_expands_on_space() {
 ///
 /// On a pty, because expanding an abbreviation is the line editor's job and a shell fed from a pipe
 /// has no editor to do it.
+///
+/// Needs `direnv`: the test allows the directory through the `direnv` builtin, which a
+/// default-feature build does not have — and CI builds with default features.
 #[test]
+#[cfg(feature = "direnv")]
 fn a_directory_may_define_an_abbreviation_and_leaving_takes_it_back() {
     let project = tempfile::tempdir().expect("dir");
     std::fs::write(
@@ -494,7 +498,12 @@ fn a_directory_may_define_an_abbreviation_and_leaving_takes_it_back() {
 /// * `ls` says `["$files", "$directories"]`, and the second marker overwrote the first — so
 ///   "anything on disk" became "directories only" and every file vanished. 225 specs say it that
 ///   way.
+///
+/// Needs `compgen`: without it the shell has no spec reader, so there is no spec for the assertion
+/// to be about. CI builds with default features — see `tests/spec_file_tests.rs`, which gates the
+/// whole file the same way.
 #[test]
+#[cfg(feature = "compgen")]
 fn a_spec_that_names_no_paths_still_completes_them() {
     let data = tempfile::tempdir().expect("data");
     let comp = data.path().join("oslo/completion");

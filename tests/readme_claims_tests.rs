@@ -45,6 +45,9 @@ fn built_into_this_binary(name: &str) -> bool {
         // without this the README naming one failed the very check that is meant to keep the two
         // in step. The list is every gated tool, and a tool that grows a feature belongs in it.
         "make" => cfg!(feature = "make"),
+        // And `watch`, missed the same way for the same reason — the list above is only as current
+        // as the last tool that grew a feature, which is why this comment keeps being added to.
+        "watch" => cfg!(feature = "watch"),
         _ => true,
     }
 }

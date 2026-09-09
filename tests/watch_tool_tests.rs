@@ -1,3 +1,11 @@
+//! The `watch` tool, end to end.
+//!
+//! Requires the `watch` feature: without it the binary has no such tool, so every one of these
+//! drives a command that does not exist. **CI builds with default features** (`default = []`), so
+//! an unguarded file here is a suite that is red on every push and green on every desk — the same
+//! trap `tests/sync_tests.rs` documents. `tests/spec_file_tests.rs` gates itself the same way.
+#![cfg(feature = "watch")]
+
 mod common;
 
 use common::oslo_bin;
