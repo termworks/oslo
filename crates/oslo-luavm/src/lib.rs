@@ -536,4 +536,6 @@ pub fn run(source: &str, chunk_name: &str) -> i32 {
 }
 
 #[cfg(test)]
+mod deep_tests;
+#[cfg(test)]
 mod tests;
