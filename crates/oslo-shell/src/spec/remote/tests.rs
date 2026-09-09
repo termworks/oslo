@@ -37,6 +37,52 @@ fn a_path_cannot_become_a_command() {
     assert_eq!(quoted_for_remote("/`id`"), "'/`id`'");
 }
 
+/// The same claim put to a real shell, because the assertions above only say what the encoding
+/// *is*, not what a shell does with it.
+///
+/// The command built here is parsed over there, by a shell this side never sees. So the test that
+/// matters is the round trip: hand the quoted word to `sh` as the argument of an `echo` and require
+/// exactly the original path back, on one line. An encoding that is self-consistent but wrong —
+/// one word that becomes two, a `$(…)` that runs — fails this and passes a string comparison.
+#[test]
+fn a_real_shell_reads_the_quoted_path_as_one_word() {
+    // Every shape the encoder treats differently, and the ones that would run something if it
+    // did not: a separator, a substitution both ways, a quote, a newline, a leading dash.
+    for path in [
+        "/srv/www",
+        "/a b",
+        "/it's",
+        "/x; rm -rf /",
+        "/$(whoami)",
+        "/`id`",
+        "/a\nb",
+        "/-not-a-flag",
+        "/back\\slash",
+        "/quote\"mark",
+        "/tab\there",
+    ] {
+        let quoted = quoted_for_remote(path);
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            // `printf %s\\n` rather than `echo`, whose treatment of a leading `-` and of
+            // backslashes is exactly the thing that differs between shells.
+            .arg(format!("printf '%s\\n' {quoted}"))
+            .output()
+            .expect("/bin/sh");
+        assert!(out.status.success(), "{path}: sh refused the command");
+        let seen = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            seen.strip_suffix('\n').unwrap_or(&seen),
+            path,
+            "{path} came back as something else, so it was not one literal word"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{path}: the far shell had something to say, so more than `printf` ran"
+        );
+    }
+}
+
 /// A leading `~` is left for the far shell to expand — `'~/'` would be a directory called tilde —
 /// and everything after it is still quoted.
 #[test]

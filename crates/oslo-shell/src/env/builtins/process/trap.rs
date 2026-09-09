@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn the_bash_only_conditions_refuse_rather_than_pretend() {
         let mut env = Environment::new();
-        for name in ["RETURN"] {
+        for name in super::UNSUPPORTED {
             assert_eq!(run(&mut env, &["trap", "echo x", name]), 1, "{name}");
             assert_eq!(env.get_trap(name), None, "{name}");
         }
