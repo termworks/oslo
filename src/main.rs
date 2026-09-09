@@ -548,7 +548,25 @@ fn exit_error_status(env: &Environment, err: ShellError) -> i32 {
         // inside a subshell or a pipeline stage it is just a failed command, worth 1, and an
         // interactive shell only sets `$?` and carries on.
         e => {
-            let status = match env.option(ShellOption::CommandString) {
+            // **`set -e` unwinds as a failed command, and carries that command's status.**
+            // Checked against bash 5.3:
+            //
+            // ```text
+            //   bash -c 'set -u;  echo $nope'   ->  127
+            //   bash -c 'set -eu; echo $nope'   ->  1
+            //   bash -c 'set -e;  echo $(if)'   ->  127
+            // ```
+            //
+            // The unset variable failed the command and `-e` ended the script on that failure, so
+            // the status is the failure's. A syntax error keeps 127 either way, because it never
+            // became a command that could fail.
+            //
+            // It matters because 127 means "command not found" to make, to a CI runner and to
+            // `case $? in 127)` — and `set -eu` is the standard opening line of a careful script,
+            // where an unset variable is the commonest thing to go wrong.
+            let unwound_by_errexit =
+                env.option(ShellOption::ErrExit) && matches!(e, ShellError::UnsetParameter(_));
+            let status = match env.option(ShellOption::CommandString) && !unwound_by_errexit {
                 true => e.fatal_exit_status(env.posix()),
                 false => e.failure_status(),
             };
