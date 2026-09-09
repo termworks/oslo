@@ -199,6 +199,7 @@ pub fn restore_shell_signal(signum: i32) -> bool {
     // The four the shell claims for itself, and nothing else — see `install_shell_signals`.
     let (signal, action) = match signum {
         libc::SIGINT => (Signal::SIGINT, interruptible),
+        libc::SIGQUIT => (Signal::SIGQUIT, ignored),
         libc::SIGTSTP => (Signal::SIGTSTP, ignored),
         libc::SIGTTIN => (Signal::SIGTTIN, ignored),
         libc::SIGTTOU => (Signal::SIGTTOU, ignored),
@@ -220,11 +221,27 @@ pub fn install_shell_signals() {
     let ignored = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
     unsafe {
         let _ = signal::sigaction(Signal::SIGINT, &interruptible);
-        for sig in [Signal::SIGTSTP, Signal::SIGTTIN, Signal::SIGTTOU] {
+        for sig in IGNORED_AT_A_PROMPT {
             let _ = signal::sigaction(sig, &ignored);
         }
     }
 }
+
+/// The signals an interactive shell ignores for itself.
+///
+/// **SIGQUIT is here because Ctrl-\ killed the session.** POSIX says an interactive shell shall
+/// ignore it, and bash and dash both do — read out of `/proc/<pid>/status` for a real pty session,
+/// `SigIgn` carries it in both. oslo left it at the system default, so the key that dumps core
+/// killed the shell and took the terminal with it, from any prompt.
+///
+/// Safe to ignore here precisely because [`RESET_IN_CHILD`] already lists it: a program the shell
+/// starts still gets `SIG_DFL`, so Ctrl-\ still quits the thing that is running.
+const IGNORED_AT_A_PROMPT: [Signal; 4] = [
+    Signal::SIGQUIT,
+    Signal::SIGTSTP,
+    Signal::SIGTTIN,
+    Signal::SIGTTOU,
+];
 
 thread_local! {
     /// An interrupt raised by *this* thread rather than delivered by the kernel.
@@ -441,6 +458,30 @@ mod tests {
             assert!(
                 !super::restore_shell_signal(other),
                 "signal {other} is not one the shell installs"
+            );
+        }
+    }
+
+    /// **Ctrl-\ must not kill the session.** POSIX says an interactive shell ignores SIGQUIT, and
+    /// both bash and dash do — `SigIgn` in `/proc/<pid>/status` carries it for a real pty session.
+    /// oslo left it at the system default, so the key that dumps core killed the shell and took the
+    /// terminal with it.
+    #[test]
+    fn the_shell_ignores_quit_and_hands_the_default_to_children() {
+        assert!(
+            super::IGNORED_AT_A_PROMPT.contains(&Signal::SIGQUIT),
+            "the shell ignores it for itself"
+        );
+        assert!(
+            super::RESET_IN_CHILD.contains(&Signal::SIGQUIT),
+            "and every child gets SIG_DFL back, or Ctrl-\\ would stop quitting the job"
+        );
+        // Everything the prompt ignores has to be undone in a child, or a program oslo starts
+        // inherits a disposition it never asked for.
+        for ignored in super::IGNORED_AT_A_PROMPT {
+            assert!(
+                super::RESET_IN_CHILD.contains(&ignored),
+                "{ignored:?} is ignored at the prompt and never reset in a child"
             );
         }
     }
