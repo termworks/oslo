@@ -284,6 +284,14 @@ impl OsloHelper {
             None => (word, Vec::new()),
         };
 
+        // **Nothing at all once the word names another machine.** Not the local filesystem, and not
+        // a second host either: after `tron:` every row would splice into `tron:othermachine`, a
+        // word naming neither. The position was declared, so this still answers `true` and the
+        // caller does not fall back to ordinary path completion.
+        if names_another_machine(action, &word) {
+            return true;
+        }
+
         let fold = self.case_sensitive();
         for offer in &resolved.offers {
             if resolved.unique && taken.contains(&offer.value) {
@@ -308,6 +316,36 @@ impl OsloHelper {
         }
         true
     }
+}
+
+/// Whether the word being completed is a path on a *different* machine.
+///
+/// **`scp f host:/etc/<Tab>` listed the local `/etc`** — 265 entries off this machine, offered as
+/// though they were the other one's. Nothing in the menu says which filesystem a row came from, so
+/// a wrong answer in the right shape is worse here than no answer: the name it inserts exists, and
+/// the copy that uses it fails somewhere else entirely.
+///
+/// oslo cannot list the far side yet. That needs an `ssh` round trip, and this runs on the Tab
+/// keystroke with the terminal in raw mode — the reason every macro that *can* fork is given a
+/// deadline. Until it can, the honest answer is nothing.
+///
+/// **Keyed on the position offering `$hosts`**, which is what marks an operand as one that may name
+/// a machine: `ssh`, `scp`, `sftp`, `rsync`, and any spec written the same way. Everywhere else a
+/// colon is an ordinary character and a file called `a:b` still completes. The `:` is already a word
+/// break — bash's `COMP_WORDBREAKS` — so by here it is the word's *prefix* and the stem is only what
+/// follows it.
+fn names_another_machine(action: &Action, word: &Word<'_>) -> bool {
+    let Action::List(list) = action else {
+        return false;
+    };
+    if !list.iter().any(|entry| entry.trim() == "$hosts") {
+        return false;
+    }
+    let Some(before) = word.prefix.strip_suffix(':') else {
+        return false;
+    };
+    // `:/tmp` names no machine, and `./a:b` and `/a:b` are local files with a colon in the name.
+    !before.is_empty() && !before.contains('/')
 }
 
 /// Whether the word being typed is a flag still being named.
