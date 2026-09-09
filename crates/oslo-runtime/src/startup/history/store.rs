@@ -20,6 +20,11 @@
 //!
 //! Trimming on every append would mean rewriting the file per command, so it is allowed to grow past
 //! the limit and rewritten once per `max / 4` commands beyond it.
+//!
+//! **The trim reads the file** — the one place that does, and the exception to the paragraph above.
+//! It has to: the lines it must keep are the file's own, and the in-memory list is not them. Writing
+//! that list over the file instead is what once replaced a 20,000-line history with a single line on
+//! the first command of the first session. See [`History::trim_file`].
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -113,11 +118,40 @@ impl History {
         // history worth having in the first place.
         let slack = self.max / 4;
         if self.max > 0 && self.file_lines > self.max + slack {
-            let kept: Vec<String> = self.entries.iter().map(|line| escape(line)).collect();
-            match std::fs::write(&path, kept.join("\n") + "\n") {
-                Ok(()) => self.file_lines = self.entries.len(),
-                Err(e) => self.report(&path, e),
-            }
+            self.trim_file(&path);
+        }
+    }
+
+    /// Cut `$HISTFILE` back to its last `max` lines.
+    ///
+    /// **The file's own lines, which is the whole correction here.** This used to write
+    /// `self.entries` over the file — oslo's in-memory list, seeded from the profile database and
+    /// not from the file, because [`Self::open`] counts the file's lines without reading them. On a
+    /// fresh profile that list holds only what this session has typed, so the first command of the
+    /// first session replaced an existing history with one line:
+    ///
+    /// ```text
+    ///   before: 20000 lines          after: 1 line
+    /// ```
+    ///
+    /// Silent and irreversible, and pointed straight at years of accumulated history by the
+    /// ordinary `HISTFILE=~/.bash_history` — which on a machine where oslo is `bash` is the default
+    /// rather than an unusual setting. bash trims the same file to `HISTSIZE` lines and keeps their
+    /// content; so does this now.
+    ///
+    /// Lines are carried across as they are: they were escaped on the way in, and escaping them a
+    /// second time would turn every `\n` in a stored line into a literal backslash.
+    fn trim_file(&mut self, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            // Unreadable, so there is nothing to preserve and nothing to say: the append above
+            // already succeeded, and refusing to trim only means trying again next time.
+            return;
+        };
+        let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+        let kept = &lines[lines.len().saturating_sub(self.max)..];
+        match std::fs::write(path, kept.join("\n") + "\n") {
+            Ok(()) => self.file_lines = kept.len(),
+            Err(e) => self.report(path, e),
         }
     }
 
@@ -325,5 +359,55 @@ mod tests {
                 .contains("kept"),
             "the file is the record of what ran"
         );
+    }
+
+    /// **Trimming keeps the file's own lines.** It used to write oslo's in-memory list over the
+    /// file — a list seeded from the profile database, not from the file — so on a fresh profile
+    /// the first command of the first session replaced an existing history with one line. Silent,
+    /// irreversible, and aimed straight at `HISTFILE=~/.bash_history`.
+    #[test]
+    fn trimming_keeps_what_the_file_already_held() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hist");
+        let old: Vec<String> = (1..=200).map(|n| format!("old_command_{n}")).collect();
+        std::fs::write(&path, old.join("\n") + "\n").expect("write");
+
+        // A fresh profile: the database is empty, so nothing seeds `entries`.
+        let mut history = History::open(Some(path.clone()), 100);
+        assert!(history.entries().is_empty(), "nothing is read back in");
+        history.add("echo NEWCMD");
+
+        let text = std::fs::read_to_string(&path).expect("file");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            100,
+            "trimmed to the limit, not to this session"
+        );
+        assert_eq!(
+            lines.last(),
+            Some(&"echo NEWCMD"),
+            "the new line is the newest"
+        );
+        assert!(
+            lines.iter().any(|line| line.starts_with("old_command_")),
+            "the earlier history survived: {lines:?}"
+        );
+        assert_eq!(
+            lines[0], "old_command_102",
+            "the oldest lines are the ones cut"
+        );
+    }
+
+    /// A file smaller than the limit is left alone entirely.
+    #[test]
+    fn a_short_file_is_not_rewritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hist");
+        std::fs::write(&path, "one\ntwo\n").expect("write");
+        let mut history = History::open(Some(path.clone()), 100);
+        history.add("three");
+        let text = std::fs::read_to_string(&path).expect("file");
+        assert_eq!(text.lines().collect::<Vec<_>>(), ["one", "two", "three"]);
     }
 }
