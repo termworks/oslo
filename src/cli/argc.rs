@@ -40,7 +40,14 @@ pub fn eval(words: &[String]) -> i32 {
         eprintln!("usage: oslo --argc-eval <SCRIPT> [ARG]...");
         return 1;
     };
-    let Ok(source) = std::fs::read_to_string(path) else {
+    use argc::Runtime;
+    let mut env = oslo_shell::env::Environment::new();
+    let runtime = Shell::new(&mut env);
+    // **The macro store first, then the disk**, which is what the builtin's runtime already does.
+    // Reading the path alone could not see a stored script at all — the one case with no file, and
+    // the one this exists to cover: a bash script keeps the `argc` idiom when it is stored, and its
+    // `$0` is then a name rather than a path.
+    let Some(source) = runtime.read_to_string(path) else {
         eprintln!("oslo: --argc-eval: {path}: cannot be read");
         return 1;
     };
@@ -53,8 +60,6 @@ pub fn eval(words: &[String]) -> i32 {
     let mut words = words.to_vec();
     words[0] = path.rsplit('/').next().unwrap_or(path).to_string();
 
-    let mut env = oslo_shell::env::Environment::new();
-    let runtime = Shell::new(&mut env);
     match argc::eval(runtime, &source, &words, Some(path), width()) {
         Ok(values) => {
             print!("{}", argc::ArgcValue::to_bash(&values));

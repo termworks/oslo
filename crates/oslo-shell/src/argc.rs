@@ -40,6 +40,14 @@ pub use runtime::Shell;
 /// The status is the shell's: `0` when the parse succeeded, and whatever `argc` asked for when it
 /// did not — `0` for `--help`, which printed what was wanted, and `1` for a real mistake.
 pub fn builtin_argc(env: &mut Environment, args: &[String]) -> oslo_base::error::Result<i32> {
+    // **`eval "$(argc --argc-eval "$0" "$@")"` reaches here too**, and has to be answered rather
+    // than parsed as arguments. It is what every bash script written against `argc` says, and oslo
+    // is what runs one whenever `#!/usr/bin/env bash` finds an oslo named `bash` on `$PATH` — or
+    // whenever a stored script is run at all. Parsed as arguments it produced `unexpected argument
+    // `--argc-eval``, on a script that works in every other shell.
+    if args.get(1).is_some_and(|word| word == "--argc-eval") {
+        return Ok(eval_text(env, args.get(2..).unwrap_or_default()));
+    }
     // `$0` is the script's name, which is what a stored macro has instead of a path and what a file
     // on disk has as well as one. The runtime tries the macro store first and the filesystem after.
     let name = env.shell_name.clone();
@@ -270,6 +278,40 @@ fn set_array(env: &mut Environment, name: &str, values: &[String]) {
 }
 
 /// The script's source, by name.
+/// `argc --argc-eval <script> [arg]…` — the parse as *text*, for an `eval` to apply.
+///
+/// The difference from the builtin above is only what happens to the answer: bash cannot be handed
+/// a parse, so the program prints assignments and the `eval` around the call runs them. Same parser,
+/// same store-then-disk lookup, so a script gets the same answer whichever idiom it was written
+/// with.
+fn eval_text(env: &mut Environment, words: &[String]) -> i32 {
+    let Some(path) = words.first().cloned() else {
+        eprintln!("usage: argc --argc-eval <SCRIPT> [ARG]...");
+        return 1;
+    };
+    let Some(source) = source_of(env, &path) else {
+        eprintln!("oslo: argc: {path}: cannot be read");
+        return 1;
+    };
+    // The base name, for the same reason as above: it is what the generated usage calls the command.
+    let mut words = words.to_vec();
+    words[0] = basename(&path);
+
+    let runtime = Shell::new(env);
+    match argc::eval(runtime, &source, &words, Some(&path), width()) {
+        Ok(values) => {
+            print!("{}", argc::ArgcValue::to_bash(&values));
+            0
+        }
+        // Not reported here: `argc` renders a usage error as shell code that prints it and exits, so
+        // the script complains in its own name rather than oslo complaining in ours.
+        Err(problem) => {
+            eprintln!("oslo: argc: {problem}");
+            1
+        }
+    }
+}
+
 fn source_of(env: &mut Environment, name: &str) -> Option<String> {
     use argc::Runtime;
     Shell::new(env).read_to_string(name)
