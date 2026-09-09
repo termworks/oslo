@@ -228,3 +228,33 @@ fn a_build_tree_under_tmp_is_ordinary_work() {
     // And the component rules still reach inside it.
     assert!(is_excluded("/tmp/p/node_modules/react"));
 }
+
+/// **An ordinary assignment is not a key.** `WAYLAND_DISPLAY=wayland-0` is 25 characters with upper
+/// case, lower case and a digit in it — every test `looks_like_a_key` applies — but only because
+/// the name is glued to the value. Judging `NAME=value` as one word reduced the line to `export`,
+/// so a variable somebody exported never appeared in their history again.
+#[test]
+fn an_assignment_is_judged_on_its_value() {
+    for line in [
+        "export WAYLAND_DISPLAY=wayland-0",
+        "export XDG_RUNTIME_DIR=/run/user/1000",
+        "export EDITOR=nvim",
+        "export LC_ALL=en_US.UTF-8",
+        "env SOME_LONG_VARIABLE_NAME=1 ls",
+    ] {
+        assert!(!is_risky(line), "{line} was reduced to its head");
+        assert_eq!(prepare(line).0, line, "{line} did not survive whole");
+    }
+}
+
+/// The value still decides, so a key assigned to an innocent name is still caught.
+#[test]
+fn a_key_in_an_assignment_is_still_a_key() {
+    for line in [
+        "export GITHUB_TOKEN=ghp_AbCd0123456789AbCd0123",
+        "export SOMENAME=AbCdEf0123456789AbCdEf01",
+    ] {
+        assert!(is_risky(line), "{line} was written down whole");
+        assert_eq!(prepare(line).0, "export");
+    }
+}
