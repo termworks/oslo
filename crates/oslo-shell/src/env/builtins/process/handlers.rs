@@ -90,6 +90,9 @@ pub fn disposition<'a>(env: &'a Environment, condition: &str) -> Disposition<'a>
 /// they cannot be caught or ignored by anything, and a shell that claimed otherwise would be
 /// promising cleanup it can never perform.
 pub fn arm(signum: i32, disposition: &Disposition<'_>) -> bool {
+    // An ignored signal is inherited by everything the shell forks, which is what `trap '' INT`
+    // is *for*; the child reset would otherwise undo it. See `job::signals::note_deliberate_ignore`.
+    crate::exec::job::note_deliberate_ignore(signum, matches!(disposition, Disposition::Ignore));
     // **"Back to how it was" is not the system default in an interactive shell.** The shell
     // installs its own SIGINT handler once, at REPL start, and writing `SIG_DFL` over it left the
     // session with none — the next Ctrl-C killed the shell. See `job::signals::restore_shell_signal`.

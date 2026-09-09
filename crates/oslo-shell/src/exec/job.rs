@@ -38,7 +38,8 @@ pub use report::describe;
 pub use resume::{continue_in_background, foreground_job};
 pub use signals::{
     drain_interrupt_fd, forget_interrupt, install_shell_signals, interrupt_fd, interrupt_pending,
-    interrupt_waiting, note_interrupt, reset_signals_for_child, restore_shell_signal,
+    interrupt_waiting, note_deliberate_ignore, note_interrupt, reset_signals_for_child,
+    restore_shell_signal,
 };
 pub use table::{Job, JobState, JobTable, with_jobs};
 

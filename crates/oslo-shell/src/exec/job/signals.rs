@@ -24,6 +24,40 @@ const RESET_IN_CHILD: [Signal; 6] = [
     Signal::SIGTTOU,
 ];
 
+/// The signals a `trap '' SIG` has deliberately ignored, one bit per signal number.
+///
+/// **An ignored signal is inherited, and that is the point of ignoring it.** POSIX says a child
+/// starts with the dispositions its parent had, save that *caught* signals become the default;
+/// `trap '' INT` is how a script makes a long job immune to a stray Ctrl-C, and bash and dash both
+/// pass it on (`SigIgn` carries SIGINT in `/proc/<pid>/status`). oslo reset every signal in
+/// [`RESET_IN_CHILD`] unconditionally, which wiped the one thing the user asked for.
+///
+/// A bitmask rather than the trap table because the read happens between `fork` and `execv`, where
+/// a `HashMap` behind a lock the parent's other threads may hold is not touchable. An atomic load
+/// is; bit `n - 1` is signal `n`, the same shape [`super::super::super::env::builtins::process`]
+/// uses for pending signals.
+static IGNORED_ON_PURPOSE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record whether `signum` is ignored because a trap said so. Called by the `trap` builtin.
+pub fn note_deliberate_ignore(signum: i32, deliberate: bool) {
+    if !(1..=64).contains(&signum) {
+        return;
+    }
+    let bit = 1u64 << (signum - 1);
+    if deliberate {
+        IGNORED_ON_PURPOSE.fetch_or(bit, Ordering::SeqCst);
+    } else {
+        IGNORED_ON_PURPOSE.fetch_and(!bit, Ordering::SeqCst);
+    }
+}
+
+/// Whether a child should keep `sig` ignored rather than get `SIG_DFL` back.
+fn ignored_on_purpose(sig: Signal) -> bool {
+    let signum = sig as i32;
+    (1..=64).contains(&signum)
+        && IGNORED_ON_PURPOSE.load(Ordering::SeqCst) & (1u64 << (signum - 1)) != 0
+}
+
 /// Restore the signal state a freshly-started program is entitled to assume.
 ///
 /// Call this in the child between `fork` and `execv`, and in any forked subshell before it starts
@@ -44,6 +78,9 @@ pub fn reset_signals_for_child() {
     super::reap::forgot_which_process_i_am();
     let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
     for sig in RESET_IN_CHILD {
+        if ignored_on_purpose(sig) {
+            continue;
+        }
         // Errors are unreportable here (the child has not exec'd yet and stderr may belong to a
         // pipe the parent is about to close); a failure leaves the inherited disposition, which
         // is no worse than not trying.
@@ -341,8 +378,12 @@ mod tests {
     /// write to a closed pipe, and libtest runs these on shared threads. The child never
     /// allocates — only `sigaction`, `sigprocmask` and `_exit`, all async-signal-safe — so it is
     /// safe in the post-fork window even though the parent is multi-threaded.
+    /// Both tests below drive the same process-wide mask, so they may not overlap.
+    static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn every_ignored_signal_comes_back_as_sig_dfl() {
+        let _alone = ALONE.lock().unwrap_or_else(|held| held.into_inner());
         let child = unsafe { fork() }.expect("fork");
         match child {
             ForkResult::Child => {
@@ -400,6 +441,69 @@ mod tests {
             for sig in RESET_IN_CHILD {
                 if libc::sigismember(&mask, sig as i32) != 0 {
                     return 15;
+                }
+            }
+            0
+        }
+    }
+
+    /// **`trap '' INT` has to survive into the child**, or it protects nothing.
+    ///
+    /// POSIX: a child inherits its parent's dispositions, save that *caught* signals go back to the
+    /// default. bash and dash both hand SIGINT on as ignored — `SigIgn: …2` in the child's
+    /// `/proc/<pid>/status`. oslo reset it, so `trap '' INT; ./long-job` left the job killable by
+    /// the very keystroke the trap was written to survive.
+    #[test]
+    fn a_deliberate_ignore_reaches_the_child() {
+        let _alone = ALONE.lock().unwrap_or_else(|held| held.into_inner());
+        super::note_deliberate_ignore(libc::SIGINT, true);
+        let child = unsafe { fork() }.expect("fork");
+        match child {
+            ForkResult::Child => {
+                let status = unsafe { child_checks_the_kept_ignore() };
+                unsafe { libc::_exit(status) };
+            }
+            ForkResult::Parent { child } => {
+                let seen = waitpid(child, None).expect("waitpid");
+                super::note_deliberate_ignore(libc::SIGINT, false);
+                assert_eq!(
+                    seen,
+                    WaitStatus::Exited(child, 0),
+                    "the trap's ignore was undone, or another signal kept one it was not given"
+                );
+            }
+        }
+    }
+
+    /// Ignore everything, reset, and read back: SIGINT stays ignored, the rest do not.
+    ///
+    /// # Safety
+    ///
+    /// Only for use in a forked child: it changes process-wide signal state.
+    unsafe fn child_checks_the_kept_ignore() -> i32 {
+        unsafe {
+            let mut ign: libc::sigaction = std::mem::zeroed();
+            ign.sa_sigaction = libc::SIG_IGN;
+            for sig in RESET_IN_CHILD {
+                if libc::sigaction(sig as i32, &ign, std::ptr::null_mut()) != 0 {
+                    return 10;
+                }
+            }
+
+            reset_signals_for_child();
+
+            for sig in RESET_IN_CHILD {
+                let mut cur: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(sig as i32, std::ptr::null(), &mut cur) != 0 {
+                    return 11;
+                }
+                let want = if sig == Signal::SIGINT {
+                    libc::SIG_IGN
+                } else {
+                    libc::SIG_DFL
+                };
+                if cur.sa_sigaction != want {
+                    return 12;
                 }
             }
             0
