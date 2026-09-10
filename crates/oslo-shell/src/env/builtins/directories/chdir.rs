@@ -266,7 +266,8 @@ pub fn report_failure(origin: &str, caller: &str, operand: &str, e: &io::Error) 
         eprintln!("{origin}{caller}: {NULL_DIRECTORY}");
     } else {
         eprintln!(
-            "{origin}{caller}: {operand}: {}",
+            "{origin}{caller}: {}: {}",
+            oslo_base::shown::shown(operand),
             oslo_base::error::reason(e)
         );
     }

@@ -42,7 +42,10 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
         crate::env::complain(
             args,
             name,
-            &format!("printf: `{name}': not a valid identifier"),
+            &format!(
+                "printf: `{}': not a valid identifier",
+                oslo_base::shown::shown(name)
+            ),
             "not a name",
             Some(
                 "a name starts with a letter or underscore and continues with letters, digits or underscores",

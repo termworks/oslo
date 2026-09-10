@@ -141,6 +141,9 @@ fn output_is_taken_verbatim_less_the_trailing_newline() {
 /// door a late arrival is supposed to come through and must stay open.
 #[test]
 fn nothing_is_re_run_until_the_content_could_have_changed() {
+    // The content generation is one number for the whole process, and this test's subject is
+    // whether a reading of it still holds. See `crate::serial`.
+    let _serial = crate::serial::generation();
     let key = "prompt.test.unchanged";
     remember(key, "drawn".to_string());
 
@@ -243,6 +246,7 @@ fn an_interval_belongs_to_the_spec_not_to_a_run() {
 /// frame, which at the 100 ms floor is not a wait anybody can see.
 #[test]
 fn an_interval_holds_even_when_the_content_changes() {
+    let _serial = crate::serial::generation();
     let key = "prompt.test.rate_limit";
     let every = Some(Duration::from_secs(30));
     remember(key, "held".to_string());

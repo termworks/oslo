@@ -63,6 +63,8 @@ pub mod prompts;
 pub mod quiet;
 #[cfg(feature = "secrets")]
 pub mod secrets;
+/// Untrusted text on its way into a diagnostic, with what the terminal would obey spelled out.
+pub mod shown;
 /// A database a config or a plugin owns, kept apart from oslo's own.
 pub mod store;
 /// The shell's version, as one number rather than one per crate.

@@ -46,6 +46,8 @@ pub use lua::LuaEngine;
 /// command; keeping it above everything the shell can be driven through is what makes that
 /// impossible rather than merely unlikely.
 mod history_expand;
+#[cfg(test)]
+mod serial;
 
 use history_expand::Expansion;
 use oslo_base::{Result, ShellError};

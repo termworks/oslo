@@ -49,7 +49,10 @@ fn not_an_identifier(args: &[String], builtin: &str, word: &str) {
     crate::env::complain(
         args,
         word,
-        &format!("{builtin}: `{word}': not a valid identifier"),
+        &format!(
+            "{builtin}: `{}': not a valid identifier",
+            oslo_base::shown::shown(word)
+        ),
         "not a name",
         Some(IDENTIFIER),
     );

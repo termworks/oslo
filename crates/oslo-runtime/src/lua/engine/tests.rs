@@ -110,6 +110,7 @@ fn an_unset_key_renders_nothing() {
 /// between. The animated one runs each time; the other runs once.
 #[test]
 fn only_an_animated_segment_re_runs_between_real_changes() {
+    let _serial = crate::serial::generation();
     crate::lua::api::segment::cache::forget();
     let lua = engine_with(
         r#"

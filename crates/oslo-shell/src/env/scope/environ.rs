@@ -25,7 +25,10 @@ pub(super) fn is_environ_safe(name: &str, value: &str) -> bool {
 /// caller has it and this does not, which is the only reason it is a parameter.
 pub(super) fn reject_unrepresentable(origin: &str, name: &str, value: &str) -> bool {
     if name.is_empty() || name.contains(['=', '\0']) {
-        eprintln!("{origin}{name}: not a valid identifier");
+        eprintln!(
+            "{origin}{}: not a valid identifier",
+            oslo_base::shown::shown(name)
+        );
         true
     } else if value.contains('\0') {
         eprintln!("{origin}{name}: value contains a NUL byte");

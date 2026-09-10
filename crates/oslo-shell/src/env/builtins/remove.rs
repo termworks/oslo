@@ -153,12 +153,16 @@ fn remove_operand(
             if options.force {
                 return Removal::Gone;
             }
-            eprintln!("{origin}rm: cannot remove '{shown}': No such file or directory");
+            eprintln!(
+                "{origin}rm: cannot remove {}: No such file or directory",
+                oslo_base::shown::quoted(shown)
+            );
             return Removal::Failed;
         }
         Err(e) => {
             eprintln!(
-                "{origin}rm: cannot remove '{shown}': {}",
+                "{origin}rm: cannot remove {}: {}",
+                oslo_base::shown::quoted(shown),
                 oslo_base::error::reason(&e)
             );
             return Removal::Failed;
@@ -271,7 +275,10 @@ fn refuse(
     if options.recursive || options.dir || mode.loose {
         return None;
     }
-    Some(format!("cannot remove '{shown}': Is a directory"))
+    Some(format!(
+        "cannot remove {}: Is a directory",
+        oslo_base::shown::quoted(shown)
+    ))
 }
 
 /// Whether the last component of an operand is `.` or `..`.

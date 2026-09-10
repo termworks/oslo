@@ -100,7 +100,7 @@ pub fn makes_redirections_permanent(cmd_name: &str, words: &[String]) -> bool {
 /// the wording — and the `exec: ` prefix — that bash gives it.
 fn unavailable(name: &str) -> String {
     if !name.contains('/') {
-        return format!("exec: {name}: not found");
+        return format!("exec: {}: not found", oslo_base::shown::shown(name));
     }
     let reason = match std::fs::metadata(name) {
         Err(e) => oslo_base::error::reason(&e),

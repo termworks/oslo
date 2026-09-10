@@ -307,7 +307,7 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
         Err(e) => {
             eprintln!(
                 "oslo: source: {}: {}",
-                file_path,
+                oslo_base::shown::shown(file_path),
                 oslo_base::error::reason(&e)
             );
             // `.` is a special builtin, so a file it cannot read ends a non-interactive shell in

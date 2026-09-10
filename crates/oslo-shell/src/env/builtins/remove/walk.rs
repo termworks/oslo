@@ -438,8 +438,9 @@ fn report(removed: std::io::Result<()>, shown: &str, directory: bool, walk: &Wal
         }
         Err(e) => {
             eprintln!(
-                "{}rm: cannot remove '{shown}': {}",
+                "{}rm: cannot remove {}: {}",
                 walk.origin,
+                oslo_base::shown::quoted(shown),
                 oslo_base::error::reason(&e)
             );
             1
@@ -473,7 +474,12 @@ fn announce(shown: &str, directory: bool, walk: &Walk) {
 }
 
 fn complain(walk: &Walk, shown: &str, e: Errno) {
-    eprintln!("{}rm: cannot remove '{shown}': {}", walk.origin, e.desc());
+    eprintln!(
+        "{}rm: cannot remove {}: {}",
+        walk.origin,
+        oslo_base::shown::quoted(shown),
+        e.desc()
+    );
 }
 
 fn done(failures: usize, interrupted: bool) -> Outcome {

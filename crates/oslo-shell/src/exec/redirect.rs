@@ -4,6 +4,7 @@ use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 use nix::unistd::dup2;
 use oslo_base::ast::{RedirectKind, Redirection};
 use oslo_base::error::{Result, ShellError, reason};
+use oslo_base::shown::shown;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::RawFd;
@@ -91,7 +92,11 @@ impl RedirectGuard {
             match redir.kind {
                 RedirectKind::Input => {
                     let file = File::open(&target_str).map_err(|e| {
-                        ShellError::ExecutionError(format!("{}: {}", target_str, reason(&e)))
+                        ShellError::ExecutionError(format!(
+                            "{}: {}",
+                            shown(&target_str),
+                            reason(&e)
+                        ))
                     })?;
                     install(file, target_fd)?;
                 }
@@ -110,7 +115,11 @@ impl RedirectGuard {
                         .append(true)
                         .open(&target_str)
                         .map_err(|e| {
-                            ShellError::ExecutionError(format!("{}: {}", target_str, reason(&e)))
+                            ShellError::ExecutionError(format!(
+                                "{}: {}",
+                                shown(&target_str),
+                                reason(&e)
+                            ))
                         })?;
                     install(file, target_fd)?;
                 }
@@ -122,7 +131,11 @@ impl RedirectGuard {
                         .truncate(false)
                         .open(&target_str)
                         .map_err(|e| {
-                            ShellError::ExecutionError(format!("{}: {}", target_str, reason(&e)))
+                            ShellError::ExecutionError(format!(
+                                "{}: {}",
+                                shown(&target_str),
+                                reason(&e)
+                            ))
                         })?;
                     install(file, target_fd)?;
                 }
@@ -136,7 +149,7 @@ impl RedirectGuard {
                         dup2(src_fd, target_fd).map_err(|_| {
                             ShellError::ExecutionError(format!(
                                 "{}: Bad file descriptor",
-                                target_str
+                                shown(&target_str)
                             ))
                         })?;
                     } else if redir.kind == RedirectKind::DupOutput && redir.fd.is_none() {
@@ -156,7 +169,7 @@ impl RedirectGuard {
                     } else {
                         return Err(ShellError::ExecutionError(format!(
                             "Invalid file descriptor for dup: {}",
-                            target_str
+                            shown(&target_str)
                         )));
                     }
                 }
@@ -257,7 +270,7 @@ fn open_for_output(path: &str, refuse_existing: bool) -> Result<File> {
             .create(true)
             .truncate(true)
             .open(path)
-            .map_err(|e| ShellError::ExecutionError(format!("{}: {}", path, reason(&e))));
+            .map_err(|e| ShellError::ExecutionError(format!("{}: {}", shown(path), reason(&e))));
     }
 
     match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -269,17 +282,17 @@ fn open_for_output(path: &str, refuse_existing: bool) -> Result<File> {
             if regular {
                 return Err(ShellError::ExecutionError(format!(
                     "{}: cannot overwrite existing file",
-                    path
+                    shown(path)
                 )));
             }
             OpenOptions::new()
                 .write(true)
                 .open(path)
-                .map_err(|e| ShellError::ExecutionError(format!("{}: {}", path, reason(&e))))
+                .map_err(|e| ShellError::ExecutionError(format!("{}: {}", shown(path), reason(&e))))
         }
         Err(e) => Err(ShellError::ExecutionError(format!(
             "{}: {}",
-            path,
+            shown(path),
             reason(&e)
         ))),
     }

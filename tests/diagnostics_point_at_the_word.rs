@@ -99,8 +99,8 @@ const KEPT: &[(&str, &str)] = &[
         "an errno from `kill(2)`: the pid is fine, the call failed",
     ),
     (
-        "rm: cannot remove '{shown}': {}",
-        "an errno; the path is already quoted in the message",
+        "rm: cannot remove {}: {}",
+        "an errno; the path is quoted by `shown::quoted`, which supplies its own",
     ),
     (
         "read: {}: {err}",
