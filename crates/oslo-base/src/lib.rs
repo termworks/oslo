@@ -65,6 +65,8 @@ pub mod quiet;
 pub mod secrets;
 /// Untrusted text on its way into a diagnostic, with what the terminal would obey spelled out.
 pub mod shown;
+/// How much stack is left, for the constructs that re-enter the interpreter.
+pub mod stack;
 /// A database a config or a plugin owns, kept apart from oslo's own.
 pub mod store;
 /// The shell's version, as one number rather than one per crate.

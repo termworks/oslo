@@ -24,3 +24,22 @@ pub(crate) fn block_every_signal() -> SigSet {
 pub(crate) fn restore_signal_mask(mask: &SigSet) {
     let _ = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(mask), None);
 }
+
+/// The stack the process itself was given, for the run that never gets a worker thread.
+///
+/// The fallback path runs the shell on `main`'s own stack, which is `RLIMIT_STACK` rather than
+/// [`oslo::INTERPRETER_STACK`] and usually half the size. `oslo_base::stack` has to be told which,
+/// or its headroom is measured against a budget this thread does not have.
+///
+/// Unlimited is not a number to measure against, and neither is a claim larger than the worker
+/// would have had, so both answer the interpreter's own size: the guard wants a floor it can trust.
+pub(crate) fn inherited_stack_limit() -> usize {
+    let Ok((soft, _)) = nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_STACK)
+    else {
+        return oslo::INTERPRETER_STACK;
+    };
+    match usize::try_from(soft) {
+        Ok(bytes) if bytes > 0 && bytes < oslo::INTERPRETER_STACK => bytes,
+        _ => oslo::INTERPRETER_STACK,
+    }
+}

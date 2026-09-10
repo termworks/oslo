@@ -12,7 +12,7 @@ use oslo_runtime::absorb_loop_control;
 use oslo_runtime::startup;
 
 use cli::{Action, Invocation};
-use handoff::{block_every_signal, restore_signal_mask};
+use handoff::{block_every_signal, inherited_stack_limit, restore_signal_mask};
 use oslo::env::Environment;
 use oslo::env::builtins::run_exit_trap;
 use oslo::env::options::ShellOption;
@@ -106,6 +106,10 @@ fn main() {
         .name("oslo".to_string())
         .stack_size(oslo::INTERPRETER_STACK)
         .spawn(move || {
+            // First, so the base is the top of this thread rather than partway down it. What it is
+            // for is in `oslo_base::stack`: the constructs that re-enter the interpreter ask how
+            // much is left instead of each counting its own levels against a limit of its own.
+            oslo_base::stack::mark(oslo::INTERPRETER_STACK);
             // Anything raised in the gap is merely pending, and arrives the moment this returns.
             restore_signal_mask(&inherited);
             dispatch();
@@ -117,6 +121,10 @@ fn main() {
     // both ways of recursing are bounded anyway (`nesting::MAX_INPUT_NESTING`, and the
     // nested-script counter), so the fallback runs the same programs with less headroom.
     let Ok(worker) = worker else {
+        // The fallback has whatever stack the process was given, which is `ulimit -s` and usually
+        // half the worker's. Marked with that rather than with `INTERPRETER_STACK`, or the guard
+        // would be measuring against a budget this thread does not have.
+        oslo_base::stack::mark(inherited_stack_limit());
         restore_signal_mask(&inherited);
         dispatch();
         return;

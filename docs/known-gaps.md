@@ -144,43 +144,6 @@ layer has no operation for.
 
 ---
 
-## The three nesting limits share a stack but are measured separately
-
-`env::nesting` bounds shell-function recursion and `source`/`eval` chains; `oslo_base::nesting`
-bounds how deeply nested the *input* may be. All three run on the same 16 MiB interpreter stack, and
-each counter is checked against its own limit as though it were the only one spending it. Any one of
-them alone stops well short of the stack. Together they do not.
-
-Measured against this build, with a `source` chain 49 deep calling a function that recurses inside
-45 levels of `{ ( … ) }`:
-
-```console
-$ oslo top.sh          # recursion 20, nesting 45, source 49
-thread 'oslo' has overflowed its stack
-fatal runtime error: stack overflow, aborting
-f-status=134
-```
-
-Twenty levels of recursion — a fifth of what the old limit allowed and a fiftieth of today's. It
-predates the function limit rising from 100 to 1000: 20 is under both, so neither value is what
-admits it.
-
-The failure *is* reported — the call answers 134, the status of a child killed by `SIGABRT`, and the
-runtime says why on standard error. What is missing is the diagnostic the counters exist to give:
-`maximum nesting level exceeded`, from a shell that is still running. A crash the caller can see is
-better than a silent one and worse than an error.
-
-**What to do about it today**: nothing catches this, and no combination of the three constants
-closes it, because the shape of the input decides how much stack a level costs. Lowering them far
-enough to be safe against the worst case would refuse ordinary scripts.
-
-The fix is one budget rather than three: a single counter every interpreter re-entry passes through
-— a function call, a `source`, an `eval`, a compound command — or a guard that asks how much stack
-is actually left instead of counting proxies for it. Both change what the shell accepts, so neither
-is a constant to edit.
-
----
-
 ## A `SIGSEGV` or `SIGBUS` *sent* to oslo does not kill it
 
 Every other signal behaves: `SIGKILL` answers 137, `SIGABRT` 134, `SIGILL` 132, `SIGFPE` 136, and a
@@ -221,6 +184,22 @@ exit status of a signal nobody sends on purpose.
 | `( ( cmd ) )` read as an arithmetic command | only *adjacent* parens open one; spaced parens are nested subshells |
 | A structured tool at the head of a pipeline | `printf 'a\nb\n' \| oslo -c 'lines \| length'` answers 2, not 0 |
 | Process substitution generally | works wherever `/dev/fd` exists, which is every ordinary Linux system |
+| Three nesting limits sharing one stack, each measured alone | the stack is asked directly, so a combined workload gets an error rather than an abort |
+
+The nesting one is worth a word too, because the counters looked adequate and were not. A function
+calling itself, a `source`/`eval` chain and a nested compound command each had a limit measured
+while the other two were idle; together they are not idle. A `source` chain 49 deep, calling a
+function recursing 20 deep inside 45 levels of `{ ( … ) }`, overflowed the 16 MiB interpreter stack
+and aborted — while the counter still said ninety-odd levels were free. No setting of the three
+constants closes that, because how much stack a level costs depends on the *shape* of what is
+nested rather than on how many levels there are.
+
+`oslo_base::stack` asks the stack instead: the interpreter thread records where its stack starts,
+and the two places that re-enter the evaluator — `DepthGuard::enter` and `eval_command_list` —
+refuse when less than 256 KiB of it is left. Twenty-five combined shapes that used to abort now
+answer `maximum nesting level exceeded`, and a plain recursion still reaches the depth the counter
+permits. A thread that never recorded a base measures nothing and refuses nothing, so the guard can
+only ever fire where it knows the answer.
 
 The first two share a shape, which is why it is worth a word: both were the tokenizer's longest
 match disagreeing with the grammar. `( (` and `((` produce the same two `(` tokens, so the

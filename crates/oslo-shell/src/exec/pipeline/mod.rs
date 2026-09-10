@@ -55,6 +55,16 @@ pub use waiting::{
 /// error one. See the `interrupt` submodule for why the outermost frame is where a Ctrl-C
 /// stops being an unwind and becomes a status.
 pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> {
+    // **The third spender of the stack, and the one nothing counted.** A function call and a
+    // `source` chain each had a counter; a nested compound command had only the *parse-time* limit
+    // on how deep the input may be, which says nothing about how much stack running it costs. This
+    // is where `{ … }`, `( … )`, a loop body and a branch all re-enter, so it is where the question
+    // is asked. See `oslo_base::stack`.
+    if oslo_base::stack::exhausted() {
+        return Err(ShellError::ExecutionError(
+            "maximum nesting level exceeded".to_string(),
+        ));
+    }
     let frame = ListFrame::enter();
     frame.absorb(run_list_items(env, cmd_list))
 }
