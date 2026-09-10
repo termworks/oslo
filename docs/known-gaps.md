@@ -156,16 +156,19 @@ Measured against this build, with a `source` chain 49 deep calling a function th
 
 ```console
 $ oslo top.sh          # recursion 20, nesting 45, source 49
+thread 'oslo' has overflowed its stack
 fatal runtime error: stack overflow, aborting
-survived
-$ echo $?
-0
+f-status=134
 ```
 
-Twenty levels of recursion — a fifth of what the old limit allowed and a fiftieth of today's. The
-abort lands in a forked subshell, so the parent finishes the script and exits `0`: the shell reports
-success over a process that died. This is what the counters exist to prevent, and it predates the
-function limit rising from 100 to 1000 — 20 is under both, so neither value is what admits it.
+Twenty levels of recursion — a fifth of what the old limit allowed and a fiftieth of today's. It
+predates the function limit rising from 100 to 1000: 20 is under both, so neither value is what
+admits it.
+
+The failure *is* reported — the call answers 134, the status of a child killed by `SIGABRT`, and the
+runtime says why on standard error. What is missing is the diagnostic the counters exist to give:
+`maximum nesting level exceeded`, from a shell that is still running. A crash the caller can see is
+better than a silent one and worse than an error.
 
 **What to do about it today**: nothing catches this, and no combination of the three constants
 closes it, because the shape of the input decides how much stack a level costs. Lowering them far
@@ -175,6 +178,38 @@ The fix is one budget rather than three: a single counter every interpreter re-e
 — a function call, a `source`, an `eval`, a compound command — or a guard that asks how much stack
 is actually left instead of counting proxies for it. Both change what the shell accepts, so neither
 is a constant to edit.
+
+---
+
+## A `SIGSEGV` or `SIGBUS` *sent* to oslo does not kill it
+
+Every other signal behaves: `SIGKILL` answers 137, `SIGABRT` 134, `SIGILL` 132, `SIGFPE` 136, and a
+non-oslo child that dies of `SIGSEGV` answers 139, all matching bash and dash. Two do not.
+
+```console
+$ bash -c 'kill -SEGV $$; echo alive'; echo $?
+139
+$ oslo -c 'kill -SEGV $$; echo alive'; echo $?
+alive
+0
+$ oslo -c '( kill -SEGV $$ ); exit $?'; echo $?      # bash and dash: 139
+0
+```
+
+`SIGBUS` is the same; a subshell is affected because it inherits the disposition across `fork`.
+
+The cause is the Rust runtime, not oslo: `std` installs a `SIGSEGV`/`SIGBUS` handler to recognise a
+stack overflow, and that is what prints `fatal runtime error: stack overflow` — the diagnostic the
+gap above depends on. When the faulting address is *not* in a guard page the handler returns, which
+is right for a real fault (the instruction re-runs and dies) and wrong for a signal that was sent,
+where there is no faulting instruction to re-run, so the process simply carries on.
+
+**What to do about it today**: nothing, and the reason is the trade. Restoring the default
+disposition would make these two faithful and would take the stack-overflow message with them —
+losing the only thing that currently says what happened when the nesting limits are exceeded
+together. Keeping both means chaining a handler of oslo's own behind `std`'s, which is a signal
+handler running after a memory fault: the least forgiving code in the shell, written to fix the
+exit status of a signal nobody sends on purpose.
 
 ---
 
