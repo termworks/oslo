@@ -363,7 +363,7 @@ impl OsloHelper {
         quote: Quote,
         out: &mut Vec<CompletionCandidate>,
     ) {
-        let env = self.env.lock().unwrap();
+        let env = self.env.lock().unwrap_or_else(|held| held.into_inner());
         for name in env.vars().keys() {
             if matches_prefix(name, prefix, self.case_sensitive()) {
                 let value = match braced {
@@ -395,7 +395,7 @@ impl OsloHelper {
         // its own kind rather than a `builtin`: they behave differently, and lumping them meant
         // the badge told you `builtin` about something you had defined yourself a minute earlier.
         let (path, shell_names) = {
-            let env = self.env.lock().unwrap();
+            let env = self.env.lock().unwrap_or_else(|held| held.into_inner());
             let mut names: Vec<(String, &str, Option<String>)> = Vec::new();
             for b in env.builtin_names() {
                 if matches_prefix(&b, stem, self.case_sensitive()) {

@@ -100,7 +100,7 @@ impl CommandIndex {
     /// entirely, and the caller got names that were not on its `$PATH` or none at all.
     fn both(path: &str) -> (Arc<HashSet<String>>, Arc<Vec<String>>) {
         let generation = GENERATION.load(Ordering::Relaxed);
-        let mut guard = cache().lock().unwrap();
+        let mut guard = cache().lock().unwrap_or_else(|held| held.into_inner());
 
         if let Some(entry) = guard.as_ref() {
             let fresh = entry.key.generation == generation

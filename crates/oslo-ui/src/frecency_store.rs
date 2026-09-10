@@ -68,7 +68,7 @@ impl FrecencyStore {
     /// Takes the counts rather than the database so that what is tested is the folding, and so that
     /// this crate does not have to build a store to have an opinion about one.
     pub fn seed_from(&self, commands: impl IntoIterator<Item = (String, i64, i64)>) {
-        let mut tracker = self.tracker.lock().unwrap();
+        let mut tracker = self.tracker.lock().unwrap_or_else(|held| held.into_inner());
         for (line, runs, last_at) in commands {
             // The command *name*, so `cargo build` and `cargo test` both rank `cargo` — which is
             // what the dropdown offers. `head_of` has already dropped `sudo` and `VAR=x`.
@@ -89,7 +89,7 @@ impl FrecencyStore {
             return;
         }
         {
-            let mut seeded = self.seeded.lock().unwrap();
+            let mut seeded = self.seeded.lock().unwrap_or_else(|held| held.into_inner());
             if *seeded {
                 return;
             }
@@ -120,13 +120,19 @@ impl FrecencyStore {
             return;
         }
         self.ensure_seeded();
-        self.tracker.lock().unwrap().record_use(name);
+        self.tracker
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .record_use(name);
     }
 
     /// This command's rank, higher being better. Zero for anything never used.
     pub fn score(&self, name: &str) -> f64 {
         self.ensure_seeded();
-        self.tracker.lock().unwrap().get_score(name)
+        self.tracker
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .get_score(name)
     }
 }
 
@@ -220,14 +226,14 @@ mod tests {
     #[test]
     fn seeding_happens_at_most_once() {
         let store = FrecencyStore::in_memory();
-        assert!(*store.seeded.lock().unwrap());
+        assert!(*store.seeded.lock().unwrap_or_else(|held| held.into_inner()));
         store.score("anything");
 
         let live = FrecencyStore::from_history();
-        assert!(!*live.seeded.lock().unwrap());
+        assert!(!*live.seeded.lock().unwrap_or_else(|held| held.into_inner()));
         // No store is installed in a test process, so this folds nothing — and still only tries the
         // once, which is the property that matters on the keystroke path.
         live.score("anything");
-        assert!(*live.seeded.lock().unwrap());
+        assert!(*live.seeded.lock().unwrap_or_else(|held| held.into_inner()));
     }
 }
