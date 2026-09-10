@@ -26,7 +26,27 @@
 /// runs Lua pays nothing for this. `oslo_lua` refuses at a depth chosen to fit well inside it, and
 /// `lua_eval_tests` runs its depth cases on a thread of exactly this size so the limit is checked
 /// against the stack oslo actually provides.
-pub const INTERPRETER_STACK: usize = 16 * 1024 * 1024;
+///
+/// # Why 64 MiB, measured on the binary that ships
+///
+/// It was 16 MiB, and every figure justifying that had been taken from a **debug** build. The
+/// release profile is `opt-level = "z"` with fat LTO, and its frames are about four times larger, so
+/// the shipped shell ran out four times sooner: a shell function could recurse about 230 deep, where
+/// bash and dash both manage `f 500` without noticing. The counter permitted a thousand and the
+/// stack refused at a fifth of it.
+///
+/// Measured on the static musl release, by bisecting the depth a plain recursion reaches:
+///
+/// ```text
+///            depth    VmSize    VmRSS
+///  16 MiB    ~230     21.8 MB   4.46 MB
+///  64 MiB    ~968     71.0 MB   4.47 MB
+/// ```
+///
+/// **Resident memory does not move**, which is the paragraph above holding up under measurement
+/// rather than being taken on trust: the cost is address space, and address space is not scarce on
+/// the 64-bit target this builds for. What it buys is the limit the counter already claimed.
+pub const INTERPRETER_STACK: usize = 64 * 1024 * 1024;
 
 pub mod editor;
 pub mod lua;

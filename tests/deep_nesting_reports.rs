@@ -16,14 +16,33 @@ mod common;
 use common::oslo_bin;
 use std::process::{Command, Output};
 
-/// A script whose function recursion sits *inside* `nesting` levels of `{ ( … ) }`, so every level's
+/// A script whose function recursion sits *inside* `nesting` levels of `{ … ; }`, so every level's
 /// compound frames are live at once rather than unwinding between calls.
+///
+/// **Braces rather than subshells, and it is the difference between a test and a coffee break.**
+/// `( … )` forks, so `{ ( … ) }` nested forty-five deep around a recursion of a thousand spawns tens
+/// of thousands of processes: the same coverage took 537 seconds that way and 66 milliseconds this
+/// way. What is being tested is how much *stack* a level costs, and a brace group costs the
+/// evaluator frames without costing a process. `wrap_in_subshell` adds the one fork that the
+/// containment case actually needs.
 fn nested_recursion(nesting: usize, depth: usize) -> String {
-    let open = " { ( ".repeat(nesting);
-    let close = " ) } ".repeat(nesting);
+    let open = " { ".repeat(nesting);
+    let close = " ; } ".repeat(nesting);
     format!(
         "f() {{ [ \"$1\" -eq 0 ] && return 0;{open} f $(( $1 - 1 )) {close}; }}\n\
          f {depth}\n\
+         echo \"status=$?\"\n\
+         echo alive\n"
+    )
+}
+
+/// The same, with the recursion inside a subshell so its failure is that subshell's status.
+fn nested_recursion_in_subshell(nesting: usize, depth: usize) -> String {
+    let open = " { ".repeat(nesting);
+    let close = " ; } ".repeat(nesting);
+    format!(
+        "f() {{ [ \"$1\" -eq 0 ] && return 0;{open} f $(( $1 - 1 )) {close}; }}\n\
+         ( f {depth} )\n\
          echo \"status=$?\"\n\
          echo alive\n"
     )
@@ -50,36 +69,39 @@ fn aborted(out: &Output) -> bool {
 /// counting levels could not work.
 #[test]
 fn no_combination_of_depth_and_nesting_aborts() {
-    // Four shapes rather than a grid: shallow nesting with the deepest recursion, the deepest
-    // nesting with the shallowest recursion — which is the pair that used to abort — and the two
-    // corners between them. A full sweep took over a minute and found nothing the corners did not.
-    for (nesting, depth) in [(1, 999), (45, 20), (10, 300), (45, 999)] {
+    // Corners rather than a grid: shallow nesting with the deepest recursion, the deepest nesting
+    // with the shallowest, and the two between. A full sweep found nothing the corners did not.
+    for (nesting, depth) in [(1, 5000), (45, 20), (10, 300), (45, 5000)] {
         let out = run(&nested_recursion(nesting, depth));
         assert!(
             !aborted(&out),
             "nesting {nesting}, depth {depth} aborted: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        // Whatever it decided, the shell lived to say so and to run the next command.
-        let stdout = String::from_utf8_lossy(&out.stdout);
+        // Exceeding the limit ends the script, as it does in bash — so what is asserted is that it
+        // ended by *reporting*, with an ordinary status, and not by dying of a signal.
         assert!(
-            stdout.contains("alive"),
-            "nesting {nesting}, depth {depth} did not reach the next command: {stdout}"
+            out.status.code().is_some(),
+            "nesting {nesting}, depth {depth} was signalled, not reported"
         );
     }
 }
 
-/// When it does refuse, it refuses by name.
+/// When it does refuse, it refuses by name — and inside a subshell the parent carries on.
+///
+/// The containment is the reason the two cases read differently: a nesting failure ends the script
+/// it happened in, and in a `( … )` that script is the subshell. Its status is 1, the shell around
+/// it is untouched, and the next command runs.
 #[test]
 fn going_too_deep_is_reported_and_survivable() {
-    let out = run(&nested_recursion(45, 999));
+    let out = run(&nested_recursion_in_subshell(45, 5000));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("maximum nesting level exceeded"),
         "expected the nesting diagnostic, got: {stderr}"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("status=1"), "the call failed: {stdout}");
+    assert!(stdout.contains("status=1"), "the subshell failed: {stdout}");
     assert!(stdout.contains("alive"), "the shell carried on: {stdout}");
 }
 
