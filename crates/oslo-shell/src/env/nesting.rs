@@ -10,11 +10,23 @@ use oslo_base::error::{Result, ShellError};
 
 /// Deepest shell-function nesting, in the spirit of bash's `FUNCNEST`.
 ///
-/// Measured, not guessed: a debug build overflows its 8 MiB stack somewhere between 300 and 400
-/// levels of plain function recursion, and a nested *program* burns the same stack at the same
-/// time, so the limits here and in [`oslo_base::nesting`] have to fit in one budget together.
-/// 100 is an order of magnitude more than recursive shell code actually uses.
-pub const MAX_FUNCTION_DEPTH: usize = 100;
+/// Measured, not guessed, and measured **again** because the first numbers went stale: the
+/// interpreter runs on its own thread with a fixed 16 MiB stack, so `ulimit -s` does not reach it
+/// and a debug build overflows at about 1,010 levels of plain function recursion — not the 300 to
+/// 400 on 8 MiB this comment used to claim. Both figures were checked by lifting the cap and
+/// bisecting, under `ulimit -s 8192` and `16384` alike, which answered identically.
+///
+/// **100 was refusing ordinary code.** `f 500` runs in bash and in dash; oslo alone answered
+/// `maximum nesting level exceeded`, and recursive shell functions — a tree walk, a parser — reach
+/// a few hundred without trying.
+///
+/// **The three limits do not actually fit in one budget, and did not before this rose.** A `source`
+/// chain 49 deep, calling a function that recurses 20 deep inside 45 levels of `{ ( … ) }`, overflows
+/// the stack and aborts — at the old 100 exactly as at this 1000, because 20 is under both. Each
+/// counter is measured on its own while the stack is shared, so the guard holds for one deep thing
+/// at a time and not for three. Raising this does not cause that and lowering it would not cure it;
+/// see `docs/known-gaps.md`.
+pub const MAX_FUNCTION_DEPTH: usize = 1000;
 
 /// Deepest nesting of `source` and `eval`, which re-enter the parser as well as the evaluator.
 ///

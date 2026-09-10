@@ -144,6 +144,40 @@ layer has no operation for.
 
 ---
 
+## The three nesting limits share a stack but are measured separately
+
+`env::nesting` bounds shell-function recursion and `source`/`eval` chains; `oslo_base::nesting`
+bounds how deeply nested the *input* may be. All three run on the same 16 MiB interpreter stack, and
+each counter is checked against its own limit as though it were the only one spending it. Any one of
+them alone stops well short of the stack. Together they do not.
+
+Measured against this build, with a `source` chain 49 deep calling a function that recurses inside
+45 levels of `{ ( … ) }`:
+
+```console
+$ oslo top.sh          # recursion 20, nesting 45, source 49
+fatal runtime error: stack overflow, aborting
+survived
+$ echo $?
+0
+```
+
+Twenty levels of recursion — a fifth of what the old limit allowed and a fiftieth of today's. The
+abort lands in a forked subshell, so the parent finishes the script and exits `0`: the shell reports
+success over a process that died. This is what the counters exist to prevent, and it predates the
+function limit rising from 100 to 1000 — 20 is under both, so neither value is what admits it.
+
+**What to do about it today**: nothing catches this, and no combination of the three constants
+closes it, because the shape of the input decides how much stack a level costs. Lowering them far
+enough to be safe against the worst case would refuse ordinary scripts.
+
+The fix is one budget rather than three: a single counter every interpreter re-entry passes through
+— a function call, a `source`, an `eval`, a compound command — or a guard that asks how much stack
+is actually left instead of counting proxies for it. Both change what the shell accepts, so neither
+is a constant to edit.
+
+---
+
 ## Closed since this list was first written
 
 | Was | Now |
