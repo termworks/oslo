@@ -128,7 +128,9 @@ pub(super) fn read_command(
                 ctx.continuation = true;
                 ctx
             })
-            .or_else(|| rc::ps2_if_set(&mut env_struct.lock().unwrap()))
+            .or_else(|| {
+                rc::ps2_if_set(&mut env_struct.lock().unwrap_or_else(|held| held.into_inner()))
+            })
             .unwrap_or_else(|| {
                 oslo_ui::prompt::continuation_marker(
                     reading.name(),
@@ -222,7 +224,11 @@ pub(super) fn read_command(
                             ctx.continuation = true;
                             ctx
                         })
-                        .or_else(|| rc::ps2_if_set(&mut env_struct.lock().unwrap()))
+                        .or_else(|| {
+                            rc::ps2_if_set(
+                                &mut env_struct.lock().unwrap_or_else(|held| held.into_inner()),
+                            )
+                        })
                         .unwrap_or_else(|| {
                             oslo_ui::prompt::continuation_marker(reading_now.name(), nesting)
                         })
@@ -232,7 +238,11 @@ pub(super) fn read_command(
                     let facts = prompt::segment_context(last_status, reading_now, None);
                     let right = lua
                         .render_with("prompt.right", &facts)
-                        .or_else(|| rc::rps1(&mut env_struct.lock().unwrap()))
+                        .or_else(|| {
+                            rc::rps1(
+                                &mut env_struct.lock().unwrap_or_else(|held| held.into_inner()),
+                            )
+                        })
                         .unwrap_or_else(|| {
                             oslo_ui::prompt::render_default_right_prompt(
                                 last_status,

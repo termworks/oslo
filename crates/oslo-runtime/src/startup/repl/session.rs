@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 pub(super) fn publish_terminal_size(env: &Arc<Mutex<Environment>>) {
     let cols = oslo_ui::dropdown::terminal_cols();
     let rows = oslo_ui::dropdown::width::terminal_rows();
-    let mut guard = env.lock().unwrap();
+    let mut guard = env.lock().unwrap_or_else(|held| held.into_inner());
     guard.set_var("COLUMNS", &cols.to_string(), true);
     guard.set_var("LINES", &rows.to_string(), true);
 }

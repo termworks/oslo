@@ -145,7 +145,7 @@ pub(crate) fn exit_refused(reason: &str, status: i32) -> bool {
 /// `None` means the variable is unset and Ctrl-D exits immediately, as it always has. bash's
 /// documented fallback for a value that is not a number is 10.
 pub(crate) fn ignore_eof_limit(env_struct: &Arc<Mutex<Environment>>) -> Option<usize> {
-    let guard = env_struct.lock().unwrap();
+    let guard = env_struct.lock().unwrap_or_else(|held| held.into_inner());
     if let Some(raw) = guard.get_var("IGNOREEOF") {
         return Some(raw.trim().parse::<usize>().unwrap_or(10));
     }
