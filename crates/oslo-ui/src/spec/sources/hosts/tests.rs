@@ -100,12 +100,12 @@ fn patterns_hashes_and_addresses_are_not_offered() {
     assert!(usable("host1.example.com"));
 }
 
-/// Reading is a `OnceLock`, so the second Tab costs nothing and both answers are the same list.
+/// While the files are unchanged the second Tab reads nothing and gets the same list.
 #[test]
-fn the_list_is_read_once() {
+fn the_list_is_read_once_per_change() {
     let first = all();
     let second = all();
-    assert!(std::ptr::eq(first, second));
+    assert!(Arc::ptr_eq(&first, &second));
 }
 
 /// Every name carries where it was found, and the first source to claim a name keeps it.
@@ -119,7 +119,7 @@ fn a_name_is_credited_to_the_first_source_that_had_it() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), before, "a host was offered twice");
-    for host in all {
+    for host in all.iter() {
         assert!(!host.source.is_empty(), "{} has no source", host.name);
         assert!(usable(&host.name), "{} should not be offered", host.name);
     }

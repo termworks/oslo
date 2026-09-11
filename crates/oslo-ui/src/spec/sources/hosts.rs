@@ -53,16 +53,45 @@
 //! evidence than a file: a name in `known_hosts` is a machine that answered once, while a name
 //! after `ssh` is a machine they meant.
 //!
-//! # Read once
+//! # Read again when a file changes
 //!
-//! A session's hosts do not change while you are typing, and this is on the Tab path. The files are
-//! read on the first completion that asks and remembered; nothing re-reads them. The history is
-//! already in memory — the editor seeds it at startup — so it costs no read either.
+//! This is on the Tab path, so the answer is remembered — but only for as long as the four files
+//! are as they were. It was read once per session, and a name added to `/etc/hosts` in a shell that
+//! was already open was never offered. A Tab now costs four `stat`s; a changed file costs a read.
 
 use std::collections::BTreeSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
-static HOSTS: OnceLock<Vec<Host>> = OnceLock::new();
+/// When each file was last written, in [`files`] order — `None` for one that is not there.
+type Stamp = Vec<Option<SystemTime>>;
+
+static HOSTS: Mutex<Option<(Stamp, Arc<Vec<Host>>)>> = Mutex::new(None);
+
+/// The files the names are read from.
+fn files() -> Vec<String> {
+    let mut found = vec![
+        "/etc/ssh/ssh_known_hosts".to_string(),
+        "/etc/hosts".to_string(),
+    ];
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() {
+        found.push(format!("{home}/.ssh/config"));
+        found.push(format!("{home}/.ssh/known_hosts"));
+    }
+    found
+}
+
+fn stamp() -> Stamp {
+    files()
+        .iter()
+        .map(|file| {
+            std::fs::metadata(file)
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .collect()
+}
 
 /// One machine, and where its name was found.
 pub struct Host {
@@ -85,9 +114,20 @@ pub fn offers(word: &str) -> Vec<super::Suggestion> {
         .collect()
 }
 
-/// Every host name this machine knows.
-pub fn all() -> &'static [Host] {
-    HOSTS.get_or_init(gather)
+/// Every host name this machine knows, read again if any of the files has changed since.
+pub fn all() -> Arc<Vec<Host>> {
+    let now = stamp();
+    let mut held = HOSTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((was, hosts)) = held.as_ref()
+        && *was == now
+    {
+        return Arc::clone(hosts);
+    }
+    let hosts = Arc::new(gather());
+    *held = Some((now, Arc::clone(&hosts)));
+    hosts
 }
 
 fn gather() -> Vec<Host> {
