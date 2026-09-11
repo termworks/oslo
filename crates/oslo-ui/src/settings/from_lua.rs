@@ -323,6 +323,24 @@ pub fn read_lua_settings(whole: &Value) -> (Settings, Vec<String>) {
         if let Some(n) = number(&table, "limit") {
             settings.finder.limit = n.max(1) as usize;
         }
+        if let Value::Str(name) = table.get_str("scope") {
+            use crate::finder::Scope;
+            settings.finder.scope = match &*name {
+                "auto" => None,
+                "global" => Some(Scope::Global),
+                "host" => Some(Scope::Host),
+                "session" => Some(Scope::Session),
+                "directory" => Some(Scope::Directory),
+                "workspace" => Some(Scope::Workspace),
+                _ => {
+                    problems.push(format!(
+                        "oslo.finder.scope: '{name}' is not auto, global, host, session, \
+                         directory or workspace"
+                    ));
+                    settings.finder.scope
+                }
+            };
+        }
         flag(
             &table,
             "confirm_delete",

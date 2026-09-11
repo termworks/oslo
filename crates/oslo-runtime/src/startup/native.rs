@@ -143,7 +143,14 @@ fn open_finder(seed: &str) -> Option<oslo_ui::finder::Outcome> {
     // the finder because everything above can decline — no store, nothing remembered, disabled by
     // config — and a hook that fired for a search that never appeared would be lying.
     fire(hooks::at::HISTORY_OPEN, &[("seed", seed)]);
-    let outcome = oslo_ui::finder::open(&commands, &cwd, now, settings.completion.fuzzy, seed);
+    let outcome = oslo_ui::finder::open(
+        &commands,
+        &cwd,
+        now,
+        settings.completion.fuzzy,
+        seed,
+        settings.finder.scope,
+    );
     match &outcome {
         Some(oslo_ui::finder::Outcome::Chosen { line, .. }) => {
             fire(hooks::at::HISTORY_SELECT, &[("line", line)]);

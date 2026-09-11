@@ -352,6 +352,9 @@ pub struct Finder {
     /// cannot lose something by a mistyped keystroke. Turn it off if you are clearing a lot at
     /// once and the question is in the way.
     pub confirm_delete: bool,
+    /// The scope it opens in. `None` is `"auto"`: the workspace inside a git worktree that has
+    /// history of its own, global everywhere else.
+    pub scope: Option<crate::finder::Scope>,
 }
 
 impl Default for Finder {
@@ -366,6 +369,7 @@ impl Default for Finder {
             // Far more than anyone has, so the list is "everything" in practice, and still a bound
             // rather than an unbounded read on a store that has been collecting for years.
             limit: 10_000,
+            scope: None,
         }
     }
 }
