@@ -435,3 +435,18 @@ fn a_declared_position_does_not_fall_through_to_the_filesystem() {
     assert!(!displays(&h, "unknown-command ").is_empty());
     custom::forget();
 }
+
+/// **`\cp` is the command, not the alias.** A backslash or quotes are how a shell is told to skip
+/// the alias table, and completion followed the alias anyway — `\cp <Tab>` offered the hosts of the
+/// `rsync` that `cp` was aliased to.
+#[test]
+fn a_quoted_command_word_does_not_complete_as_its_alias() {
+    let mut env = Environment::new();
+    env.set_alias("g", "git");
+    let h = helper(env);
+    assert!(displays(&h, "g comm").contains(&"commit".to_string()));
+    for line in [r"\g comm", "'g' comm", "\"g\" comm"] {
+        let names = displays(&h, line);
+        assert!(!names.contains(&"commit".to_string()), "{line}: {names:?}");
+    }
+}

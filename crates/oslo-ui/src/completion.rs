@@ -484,7 +484,7 @@ impl OsloHelper {
         let Some(primary) = word.prior_words.first() else {
             return boosts;
         };
-        let command = self.resolve_head(&unquote(primary));
+        let command = self.resolve_head(primary);
         let ctx = provider::Ctx {
             command,
             words: word.prior_words.iter().map(|w| unquote(w)).collect(),

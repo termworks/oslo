@@ -61,12 +61,25 @@ impl OsloHelper {
         words
     }
 
+    /// The words a command word runs, as written on the line.
+    ///
+    /// **Through the alias table only when written plainly.** `\cp`, `'cp'` and `"cp"` are how a
+    /// shell is told to skip the alias, so `\cp <Tab>` completed as the `cp` alias's `rsync` —
+    /// offering hosts to a command that has never heard of one.
+    fn resolve_written(&self, raw: &str) -> Vec<String> {
+        let name = unquote(raw);
+        match raw == name {
+            true => self.resolve_alias(&name),
+            false => vec![name],
+        }
+    }
+
     /// Just the name, for callers that only need to know what is being run.
-    pub(super) fn resolve_head(&self, name: &str) -> String {
-        self.resolve_alias(name)
+    pub(super) fn resolve_head(&self, raw: &str) -> String {
+        self.resolve_written(raw)
             .first()
             .cloned()
-            .unwrap_or_else(|| name.to_string())
+            .unwrap_or_else(|| unquote(raw))
     }
 
     /// Answer from the spec for this command, if it has one.
@@ -87,7 +100,7 @@ impl OsloHelper {
         // Through the alias table first. Everyone aliases `git`, and `g comm<TAB>` offering
         // nothing is a gap the shell has no excuse for: the alias table is already loaded and this
         // function is already holding the environment.
-        let expanded = self.resolve_alias(&unquote(primary));
+        let expanded = self.resolve_written(primary);
         let Some((head, from_alias)) = expanded.split_first() else {
             return false;
         };
