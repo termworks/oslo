@@ -217,6 +217,25 @@ impl DropdownMenu {
     }
 }
 
+/// One dim line under the word, instead of a menu, until the next key — which is then handled as
+/// it would have been.
+///
+/// For a Tab that found nothing *and knows why*: a remote listing that failed. Without it the menu
+/// stayed shut and a refused key, a wrong name and a slow link all looked the same.
+pub fn notice(text: &str, indent_cols: usize, typed: &str, keys: &mut Keys) {
+    let room = terminal_cols().saturating_sub(indent_cols + 1).max(1);
+    let shown: String = text.chars().take(room).collect();
+    let row = format!("\r\n{}\x1b[2m{shown}\x1b[0m\x1b[K", " ".repeat(indent_cols));
+    let column = indent_cols + display_width(typed);
+    let mut reserved = 0usize;
+    write_fd(keys.fd(), reserve_rows(1, &mut reserved).as_bytes());
+    write_fd(keys.fd(), draw_below(&row, 1, column).as_bytes());
+    if let Some(event) = keys.read_event() {
+        keys.unread_event(event);
+    }
+    write_fd(keys.fd(), erase_below(reserved, column).as_bytes());
+}
+
 fn write_fd(fd: i32, mut bytes: &[u8]) {
     while !bytes.is_empty() {
         // SAFETY: `bytes` is live and the editor owns a writable terminal descriptor.

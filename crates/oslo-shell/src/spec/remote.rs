@@ -1,7 +1,7 @@
 //! Listing a directory on another machine, so `scp host:/pa<Tab>` can answer.
 //!
 //! ```text
-//!   ssh -o BatchMode=yes -o ConnectTimeout=2 build  LC_ALL=C ls -1Ap -- '/srv/'
+//!   ssh -o BatchMode=yes -o ConnectTimeout=5 build  LC_ALL=C ls -1Ap -- '/srv/'
 //! ```
 //!
 //! This is the one completion source in oslo that runs a program and talks to a network, and it is
@@ -17,8 +17,8 @@
 //!
 //! # What keeps it from being a hang
 //!
-//! * **`run::bounded_with_status`**, the same deadline every macro runs under: two seconds,
-//!   its own process group, killed as a group when it expires.
+//! * **`run::bounded_within`**, the runner every macro uses, with a longer deadline — ten seconds,
+//!   see `WAIT` — its own process group, killed as a group when it expires.
 //! * **`BatchMode=yes`**, which is the load-bearing one. Without it `ssh` prompts — for a password,
 //!   for a passphrase, to accept a host key — and a prompt from a child while the editor holds the
 //!   terminal in raw mode is a shell nobody can type into. With it, a machine that would have asked
@@ -34,27 +34,35 @@
 //! and a process they did not ask for; one that *exists* is used automatically by `ssh` itself, and
 //! a person who wants the speed can say so in their `~/.ssh/config` — where it belongs.
 
+use super::run::Ran;
 use oslo_ui::spec::remote::Entry;
 
 /// How long `ssh` may spend on the connection itself.
 ///
-/// Under the deadline, so a machine that is simply not there ends as a failure with a status rather
-/// than as a killed process — the difference between "no such machine" and "gave up", which the
-/// caller remembers differently.
-const CONNECT_SECONDS: &str = "2";
+/// Under the deadline, so a machine that is simply not there ends as a failure with ssh's own
+/// reason rather than as a killed process.
+const CONNECT_SECONDS: &str = "5";
 
-/// The names in `dir` on `host`, or `None` if the machine could not be asked.
-pub fn list(host: &str, dir: &str) -> Option<Vec<Entry>> {
+/// How long a whole listing may take: connect, authenticate, `ls`.
+///
+/// **Not the macro deadline.** Two seconds is plenty for a local program and too little for a
+/// handshake to a slow or distant machine — which then offered nothing, while bash and zsh, which
+/// wait as long as it takes, listed it. This is only ever reached on Tab, so it is a wait somebody
+/// asked for.
+const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The names in `dir` on `host`, or why they could not be read.
+pub fn list(host: &str, dir: &str) -> Result<Vec<Entry>, String> {
     if !a_plausible_destination(host) {
-        return None;
+        return Err(format!("'{host}' is not a machine ssh can be asked"));
     }
     let mut ssh = std::process::Command::new("ssh");
     ssh.arg("-o")
         .arg("BatchMode=yes")
         .arg("-o")
         .arg(format!("ConnectTimeout={CONNECT_SECONDS}"))
-        // Warnings about a changed key or an added host are not completions, and stderr is
-        // discarded anyway; this keeps them out of the pipe if a version ever writes them to stdout.
+        // Warnings about a changed key or an added host are not completions or reasons, so only
+        // errors reach stderr — whose last line is what a failure is explained with.
         .arg("-o")
         .arg("LogLevel=ERROR")
         // No terminal: this is a child of a shell whose terminal is in raw mode, and a pty here
@@ -63,8 +71,27 @@ pub fn list(host: &str, dir: &str) -> Option<Vec<Entry>> {
         .arg(host)
         .arg(remote_command(dir));
 
-    let (out, ok) = super::run::bounded_with_status(ssh);
-    ok.then(|| entries_from(&out))
+    let ran = super::run::bounded_within(ssh, WAIT);
+    match ran.ok {
+        true => Ok(entries_from(&ran.out)),
+        false => Err(why_not(host, &ran)),
+    }
+}
+
+/// One line saying why a listing failed: ssh's or `ls`'s own last word, or the deadline.
+fn why_not(host: &str, ran: &Ran) -> String {
+    if ran.expired {
+        return format!("{host}: no answer in {}s", WAIT.as_secs());
+    }
+    match ran
+        .err
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+    {
+        Some(line) => line.to_string(),
+        None => format!("{host}: could not be listed"),
+    }
 }
 
 /// The command run on the far side.

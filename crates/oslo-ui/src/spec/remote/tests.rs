@@ -19,7 +19,7 @@ fn a_directory_is_listed_once_per_command() {
     let count = Rc::clone(&asked);
     set_lister(Some(Rc::new(move |_host: &str, _dir: &str| {
         count.set(count.get() + 1);
-        Some(vec![Entry {
+        Ok(vec![Entry {
             name: "log".into(),
             directory: true,
         }])
@@ -34,26 +34,24 @@ fn a_directory_is_listed_once_per_command() {
     set_lister(None);
 }
 
-/// **A machine that cannot be reached is remembered too**, or every keystroke pays the deadline.
-/// `None` and an empty list are different answers: one was never read, the other is empty.
+/// **A machine that could not be listed is asked again on the next Tab**, and says why once.
+/// A slow link that missed the deadline once stayed "unreachable" until the next command.
 #[test]
-fn an_unreachable_machine_is_not_asked_twice() {
+fn an_unreachable_machine_is_asked_again_and_explained() {
     let asked = Rc::new(std::cell::Cell::new(0));
     let count = Rc::clone(&asked);
     set_lister(Some(Rc::new(move |_h: &str, _d: &str| {
         count.set(count.get() + 1);
-        None
+        Err("gone: no answer in 10s".to_string())
     })));
 
     assert_eq!(entries("gone", "/"), None);
-    assert_eq!(entries("gone", "/"), None);
-    assert_eq!(asked.get(), 1);
-
-    // …until a command runs, because connecting a VPN is a thing done between two prompts.
-    forget();
+    assert_eq!(take_failure().as_deref(), Some("gone: no answer in 10s"));
+    assert_eq!(take_failure(), None, "shown once");
     assert_eq!(entries("gone", "/"), None);
     assert_eq!(asked.get(), 2);
     set_lister(None);
+    let _ = take_failure();
 }
 
 /// With nothing installed there is no remote completion, and asking is not an error.

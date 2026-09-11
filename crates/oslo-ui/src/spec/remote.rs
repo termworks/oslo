@@ -22,12 +22,11 @@
 //! * **A directory is asked for once.** The answer is remembered for the rest of the command, so
 //!   walking `host:/usr/<Tab>lib/<Tab>` costs one connection per directory and none for a second
 //!   look at the same one.
-//! * **A failure is remembered too.** A machine that is not reachable would otherwise cost the
-//!   lister's full deadline on *every* keystroke, which is a shell that freezes each time Tab is
-//!   pressed rather than once.
-//! * **Both are forgotten when a command runs** — see [`forget`]. Connecting a VPN, adding a key
-//!   or creating the directory are all things somebody does between two prompts, and a session-long
-//!   memory of "unreachable" would outlive the reason for it.
+//! * **A failure is not remembered.** This is reached on Tab and nowhere else, so the next Tab is
+//!   somebody asking again — a slow link that missed the deadline once should get another try.
+//!   What went wrong is kept for [`take_failure`], so the menu can say so rather than stay shut.
+//! * **Listings are forgotten when a command runs** — see [`forget`]. Creating the directory you
+//!   are about to copy into is a thing somebody does between two prompts.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -41,22 +40,20 @@ pub struct Entry {
     pub directory: bool,
 }
 
-/// Given an ssh destination and a directory, the names in it — or `None` when it could not be read.
+/// Given an ssh destination and a directory, the names in it — or one line saying why not.
 ///
-/// `None` and `Some(vec![])` are different answers: an empty directory has been listed, and a
-/// machine that could not be reached has not. Only the first is worth showing as "nothing here".
-pub type Lister = Rc<dyn Fn(&str, &str) -> Option<Vec<Entry>>>;
+/// An error and `Ok(vec![])` are different answers: an empty directory has been listed, and a
+/// machine that could not be reached has not.
+pub type Lister = Rc<dyn Fn(&str, &str) -> Result<Vec<Entry>, String>>;
 
 /// A machine and a directory on it — what one listing is remembered under.
 type Asked = (String, String);
 
-/// What came back, `None` being a machine that could not be reached.
-type Answer = Option<Vec<Entry>>;
-
 thread_local! {
     /// Thread-local for the reason the command completer is: only the editor's thread completes.
     static LISTER: RefCell<Option<Lister>> = const { RefCell::new(None) };
-    static SEEN: RefCell<HashMap<Asked, Answer>> = RefCell::new(HashMap::new());
+    static SEEN: RefCell<HashMap<Asked, Vec<Entry>>> = RefCell::new(HashMap::new());
+    static FAILED: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Install the lister. `None` removes it, and remote completion goes quiet.
@@ -74,14 +71,26 @@ pub fn available() -> bool {
 pub fn entries(host: &str, dir: &str) -> Option<Vec<Entry>> {
     let key = (host.to_string(), dir.to_string());
     if let Some(known) = SEEN.with(|seen| seen.borrow().get(&key).cloned()) {
-        return known;
+        return Some(known);
     }
     // Cloned out before the call: the lister runs a command, which can complete another word, and
     // that would come back through here onto the outstanding borrow.
     let lister = LISTER.with(|slot| slot.borrow().clone())?;
-    let found = lister(host, dir);
-    SEEN.with(|seen| seen.borrow_mut().insert(key, found.clone()));
-    found
+    match lister(host, dir) {
+        Ok(found) => {
+            SEEN.with(|seen| seen.borrow_mut().insert(key, found.clone()));
+            Some(found)
+        }
+        Err(why) => {
+            FAILED.with(|failed| *failed.borrow_mut() = Some(why));
+            None
+        }
+    }
+}
+
+/// Why the last listing failed, if it did — taken, so it is shown once.
+pub fn take_failure() -> Option<String> {
+    FAILED.with(|failed| failed.borrow_mut().take())
 }
 
 /// Forget every listing. Called once per command — see the module docs.

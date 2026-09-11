@@ -492,11 +492,11 @@ is worse than no answer.
 
 | | |
 |---|---|
-| what runs | `ssh -o BatchMode=yes -o ConnectTimeout=2 -T host 'LC_ALL=C ls -1Ap -- <dir>'` |
+| what runs | `ssh -o BatchMode=yes -o ConnectTimeout=5 -T host 'LC_ALL=C ls -1Ap -- <dir>'` |
 | first ask | ~140 ms on a warm link |
 | same directory again | 0 ms — remembered until the next command |
-| a machine that refuses | ~40 ms, menu stays shut |
-| a machine that hangs | 2 s, then killed — the macro deadline |
+| a machine that refuses | ~40 ms, ssh's reason shown under the word |
+| a machine that hangs | 10 s, then killed — `host: no answer in 10s` under the word |
 
 **`BatchMode=yes` is the load-bearing flag.** Without it `ssh` prompts — for a password, a
 passphrase, a host key — and a prompt from a child process while the editor holds the terminal in
@@ -504,9 +504,12 @@ raw mode is a shell nobody can type into. With it, a machine that would have ask
 the menu stays shut. That is why this works for machines a key already opens, and only those; it is
 the case worth having and the only one that can be made safe on a keystroke.
 
-What is remembered is forgotten when a command runs. Connecting a VPN, adding a key, or creating
-the directory you are about to copy into all happen between two prompts, and a session-long memory
-of "unreachable" would outlive the thing that fixed it.
+A listing is remembered until the next command runs; creating the directory you are about to copy
+into happens between two prompts. **A failure is not remembered**: the next Tab asks again, so a
+slow link that missed the deadline once gets another try, and the one-line reason under the word —
+ssh's own, `ls`'s, or the deadline — says which of a refused key, a wrong name or a slow link it
+was. The deadline is ten seconds rather than the macro's two, because a handshake to a distant
+machine takes longer than any local program should.
 
 **No `ControlMaster` is started.** Opening a shared connection behind somebody's back leaves a
 socket and a process they did not ask for. One that already *exists* is used by `ssh` automatically,

@@ -173,17 +173,36 @@ fn a_real_directory_is_listed() {
     );
 }
 
-/// **A machine that cannot be reached answers `None`, not an empty listing**, and it does so within
-/// the deadline rather than hanging the editor. `192.0.2.1` is TEST-NET-1: routable-looking and
-/// guaranteed to go nowhere, so the connection stalls instead of being refused — the case the
+/// **A machine that cannot be reached answers an error, not an empty listing**, and it does so
+/// within the deadline rather than hanging the editor. `192.0.2.1` is TEST-NET-1: routable-looking
+/// and guaranteed to go nowhere, so the connection stalls instead of being refused — the case the
 /// deadline exists for.
 #[test]
 fn an_unreachable_machine_gives_up_in_time() {
     let started = std::time::Instant::now();
-    assert_eq!(list("192.0.2.1", "/etc/"), None);
+    assert!(list("192.0.2.1", "/etc/").is_err());
     let took = started.elapsed();
     assert!(
-        took < std::time::Duration::from_secs(5),
+        took < WAIT + std::time::Duration::from_secs(1),
         "the editor was held for {took:?}"
     );
+}
+
+/// **A failure says why**, in ssh's own words when it has any: the menu showing nothing was the
+/// whole bug report, and it could have been a key, a name or a slow link.
+#[test]
+fn a_failure_is_explained_in_one_line() {
+    let ran = |err: &str, expired| Ran {
+        out: String::new(),
+        err: err.to_string(),
+        ok: false,
+        expired,
+    };
+    let refused = "Warning: x\nbox: Permission denied (publickey).\n\n";
+    assert_eq!(
+        why_not("box", &ran(refused, false)),
+        "box: Permission denied (publickey)."
+    );
+    assert_eq!(why_not("box", &ran("", true)), "box: no answer in 10s");
+    assert_eq!(why_not("box", &ran("", false)), "box: could not be listed");
 }

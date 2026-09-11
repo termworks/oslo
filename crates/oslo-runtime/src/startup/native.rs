@@ -283,10 +283,18 @@ impl Assist for ShellAssist<'_> {
         // The dropdown works in bytes; the editor's cursor is in characters.
         let pos: usize = line.chars().take(cursor).map(char::len_utf8).sum();
         let (start, candidates) = helper.complete_word(line, pos);
+        // Taken whatever happens, so a failure from this Tab is never shown on a later one.
+        let failure = oslo_ui::spec::remote::take_failure();
         // `on-completion-start` fires only once there is something to choose from. Tab on a word
         // nothing matches has not started a completion — it has done nothing, and a hook that said
         // otherwise would fire on every stray Tab.
         if candidates.is_empty() {
+            // Nothing, but for a reason worth saying: `host:/dir/` that could not be listed.
+            if let Some(why) = failure {
+                let cells = self.prompt_cols + dropdown::visible_len(&line[..start]);
+                let indent = cells % dropdown::terminal_cols().max(1);
+                dropdown::notice(&why, indent, &line[start..pos], keys);
+            }
             return None;
         }
         fire(
