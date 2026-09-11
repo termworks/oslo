@@ -1033,8 +1033,6 @@ the list.
 
 ## From the first round
 
-* **completion preview** — a preview pane beside the completion menu. It is fzf-tab with a Lua
-  hook, and oslo should not ship someone else's plugin with the serial numbers filed off.
 * **check** — shellcheck's job against oslo's own tree, value-aware at the prompt. Scored highest
   of the twenty and was still cut: it overlaps `plan` on the danger warnings and `explain` on the
   per-word rendering, and at large effort it should not be the third thing in that neighbourhood.
