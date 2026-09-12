@@ -30,6 +30,7 @@ mod edit;
 mod emit;
 mod exec;
 mod getopts;
+mod glob;
 mod hash;
 mod io;
 mod jobs;
@@ -247,6 +248,8 @@ pub fn register_default_builtins(env: &mut Environment) {
     env.register_custom_builtin("shopt", builtin_shopt);
     // `compgen` — `-G`, `-W`, `-f` and `-d`, for scripts and completion functions that call it.
     env.register_custom_builtin("compgen", compgen::builtin_compgen);
+    // `glob` — pathname expansion as a command, with the prompt's qualifiers and regex.
+    env.register_custom_builtin("glob", glob::builtin_glob);
     env.register_custom_builtin("caller", builtin_caller);
     // `chain` — what each link of the last `a && b` did. See its module docs: the shell already
     // computed this and dropped it, and `$PIPESTATUS` only answers one level down.
@@ -292,6 +295,7 @@ mod tests {
             "typeset",
             "shopt",
             "compgen",
+            "glob",
             "mapfile",
             "readarray",
             "caller",

@@ -17,6 +17,7 @@
 //! expands cannot disagree.
 
 pub mod collate;
+pub mod qualify;
 pub mod walk;
 
 /// One element of a compiled pattern.
