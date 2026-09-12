@@ -93,6 +93,17 @@ pub fn compile_items(chars: &[(char, bool)]) -> (Vec<Item>, bool) {
 
     while i < chars.len() {
         let (ch, globs) = chars[i];
+        // **An unquoted backslash escapes the next character.** Source-level backslashes are
+        // quoting and never arrive here live; one that does came out of an unquoted expansion —
+        // `v='a\*'; case 'a*' in $v)` — and bash 5.2 reads it as an escape, not a character.
+        if globs
+            && ch == '\\'
+            && let Some(&(next, _)) = chars.get(i + 1)
+        {
+            items.push(Item::Ch(next));
+            i += 2;
+            continue;
+        }
         if globs {
             match ch {
                 '*' => {
@@ -155,9 +166,25 @@ fn parse_class(chars: &[(char, bool)], start: usize) -> Option<(Item, usize)> {
         if ch == ']' && globs && !members.is_empty() {
             return Some((Item::Class { negated, members }, i + 1));
         }
+        // An escaped character is a member, whatever it is: `[a\-c]` is three characters, not a
+        // range, and `[\]]` holds a `]`.
+        if globs
+            && ch == '\\'
+            && let Some(&(next, _)) = chars.get(i + 1)
+        {
+            members.push(Member::Ch(next));
+            i += 2;
+            continue;
+        }
         // `[[:digit:]]` nests a named class inside the bracket, so its `]` is not the closer.
         if let Some((name, next)) = parse_named_class(chars, i) {
             members.push(Member::Named(name));
+            i = next;
+            continue;
+        }
+        // `[[.a.]]` and `[[=e=]]`: a collating symbol and an equivalence class.
+        if let Some((member, next)) = parse_symbol(chars, i) {
+            members.push(member);
             i = next;
             continue;
         }
@@ -190,6 +217,26 @@ fn parse_named_class(chars: &[(char, bool)], start: usize) -> Option<(String, us
         i += 1;
     }
     None
+}
+
+/// Parse `[.x.]` or `[=x=]` at `start`: the member, and the index just past its closing `]`.
+///
+/// Only single characters are named, and both forms name exactly that character. An equivalence
+/// class could in principle take in accented forms, but bash 5.3 in `en_US.UTF-8` answers
+/// `case émile in [[=e=]]mile)` with no, so `[=e=]` is `e` and nothing else.
+fn parse_symbol(chars: &[(char, bool)], start: usize) -> Option<(Member, usize)> {
+    if chars.get(start)?.0 != '[' {
+        return None;
+    }
+    let kind = chars.get(start + 1)?.0;
+    if kind != '.' && kind != '=' {
+        return None;
+    }
+    let &(named, _) = chars.get(start + 2)?;
+    if chars.get(start + 3)?.0 != kind || chars.get(start + 4)?.0 != ']' {
+        return None;
+    }
+    Some((Member::Ch(named), start + 5))
 }
 
 /// Whether the whole of `name` matches a compiled item list.
@@ -413,6 +460,34 @@ mod tests {
         assert!(ShellPattern::from_unquoted("[!a]").matches("b"));
         assert!(!ShellPattern::from_unquoted("[!a]").matches("a"));
         assert!(ShellPattern::from_unquoted("[^a]").matches("b"));
+    }
+
+    /// bash 5.2: a backslash that reaches the matcher unquoted — out of an unquoted expansion —
+    /// escapes the next character, at the top level and inside a bracket.
+    #[test]
+    fn a_live_backslash_escapes_the_next_character() {
+        assert!(ShellPattern::from_unquoted("a\\*").matches("a*"));
+        assert!(!ShellPattern::from_unquoted("a\\*").matches("abc"));
+        assert!(ShellPattern::from_unquoted("star\\*n*").matches("star*name"));
+        assert!(ShellPattern::from_unquoted("[a\\-c]").matches("-"));
+        assert!(
+            !ShellPattern::from_unquoted("[a\\-c]").matches("b"),
+            "not a range"
+        );
+        // A quoted backslash is only a backslash.
+        let quoted = ShellPattern::from_chars(&[('\\', false), ('*', true)]);
+        assert!(quoted.matches("\\x"));
+    }
+
+    #[test]
+    fn collating_symbols_and_equivalence_classes() {
+        assert!(ShellPattern::from_unquoted("[[.a.]]*").matches("abc"));
+        assert!(!ShellPattern::from_unquoted("[[.a.]]*").matches("bcd"));
+        // bash 5.3 in en_US.UTF-8: `[[=e=]]` is `e`, and not `é`.
+        let e = ShellPattern::from_unquoted("[[=e=]]mile");
+        assert!(e.matches("emile"));
+        assert!(!e.matches("émile"));
+        assert!(!e.matches("amile"));
     }
 
     /// **A pattern a user typed must not be able to hang the shell.**

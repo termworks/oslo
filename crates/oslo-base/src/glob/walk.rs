@@ -121,7 +121,16 @@ fn compile(chars: &[(char, bool)], options: &Options) -> Component {
     if has_metacharacter {
         return Component::Pattern(items);
     }
-    Component::Literal(chars.iter().map(|&(c, _)| c).collect())
+    // From the items, not the characters: an escaped `\*` names a file called `*`.
+    Component::Literal(
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Ch(c) => Some(*c),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 /// Whether a directory entry named `name` matches, with the pathname-only leading-dot rule.

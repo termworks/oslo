@@ -91,7 +91,7 @@ impl Key {
 }
 
 /// A character's base letter, lowercased, and its accent rank.
-fn fold(ch: char) -> (char, u8) {
+pub(crate) fn fold(ch: char) -> (char, u8) {
     let lower = ch.to_lowercase().next().unwrap_or(ch);
     FOLDS
         .iter()
