@@ -41,39 +41,44 @@ fn offers(line: &str) -> Vec<String> {
     names
 }
 
-/// **The case this exists for.** Tab on a glob shows what the glob matches.
+/// **The case this exists for.** Tab on a glob shows what the glob matches — and, since the menu
+/// became the engine's, a first row that takes every match at once.
 #[test]
 fn a_glob_offers_what_it_matches() {
     let root = tree();
     let base = root.path().display();
 
     let line = format!("rm {base}/one/tw*");
-    assert_eq!(offers(&line), vec!["two-alpha", "two-beta"], "{line}");
+    assert_eq!(
+        offers(&line),
+        vec!["all 2 matches", "two-alpha", "two-beta"],
+        "{line}"
+    );
 
     // And the replacement is the whole path, so accepting one leaves a line that runs.
     let (start, candidates) = helper().candidates(&line, line.len());
-    let first = candidates.first().expect("a candidate");
+    let alpha = candidates
+        .iter()
+        .find(|c| c.display == "two-alpha")
+        .expect("a candidate");
     assert_eq!(start, line.find(&format!("{base}")).expect("the word"));
-    assert!(
-        first.replacement.ends_with("two-alpha"),
-        "{:?}",
-        first.replacement
-    );
-    assert!(
-        first.replacement.starts_with(&format!("{base}/one/")),
-        "{:?}",
-        first.replacement
+    assert_eq!(alpha.replacement, format!("{base}/one/two-alpha"));
+    assert_eq!(
+        candidates[0].replacement,
+        format!("{base}/one/two-alpha {base}/one/two-beta"),
+        "the first row is every match"
     );
 }
 
 /// **A `*` in the directory part too.** `read_dir("/x/*/")` simply fails, so this offered nothing.
+/// The literal `fo` is taken as the start of a name, and the row says which directory it is in.
 #[test]
 fn a_glob_in_the_directory_part_is_walked() {
     let root = tree();
     let base = root.path().display();
 
     let line = format!("ls {base}/*/fo");
-    assert_eq!(offers(&line), vec!["four"], "{line}");
+    assert_eq!(offers(&line), vec!["three/four"], "{line}");
 }
 
 /// **A quoted glob is a filename, not a pattern.** The shell will not expand it, so completion must

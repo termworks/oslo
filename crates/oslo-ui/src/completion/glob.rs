@@ -208,13 +208,17 @@ impl OsloHelper {
                 return true;
             }
         }
+        // Shown from where the pattern starts globbing — `rm /one/tw*` lists `two-alpha`, and
+        // `src/**/*.rs` lists `main.rs` and `sub/deep.rs` — while what is written is the whole path.
+        let base = oslo_base::glob::qualify::base_of(stem);
         for (found, is_dir) in rows {
-            let display = match is_dir && !found.typed.ends_with('/') {
+            let whole = match is_dir && !found.typed.ends_with('/') {
                 true => format!("{}/", found.typed),
                 false => found.typed.clone(),
             };
+            let display = whole.strip_prefix(base).unwrap_or(&whole).to_string();
             out.push(CompletionCandidate {
-                replacement: quote_replacement(&written(&display), word.quote),
+                replacement: quote_replacement(&written(&whole), word.quote),
                 display,
                 description: None,
                 kind: Some(if is_dir { "dir" } else { "file" }.to_string()),

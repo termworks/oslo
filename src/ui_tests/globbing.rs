@@ -57,10 +57,8 @@ fn a_globstar_reaches_every_depth_and_offers_them_all_first() {
     let dir = tree();
     let h = helper(Environment::new());
     let rows = tab(&h, dir.path(), "src/**/*.rs");
-    assert_eq!(
-        displays(&rows),
-        ["all 2 matches", "src/main.rs", "src/sub/deep.rs"]
-    );
+    // Shown from where the pattern starts globbing; written as the whole path.
+    assert_eq!(displays(&rows), ["all 2 matches", "main.rs", "sub/deep.rs"]);
     assert_eq!(
         rows[0].1, "src/main.rs src/sub/deep.rs",
         "the first row is every match"
