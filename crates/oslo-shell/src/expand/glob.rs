@@ -4,17 +4,45 @@
 //! answers and cannot see this crate. What stays here is what only the shell has: the quoting each
 //! expanded run carries, which decides per character whether `*` is a metacharacter.
 
-use crate::expand::word::{Run, field_text};
+use crate::expand::word::{Origin, Run, field_text};
+use oslo_base::error::ShellError;
 use oslo_base::glob::walk;
 
 pub use oslo_base::glob::ShellPattern;
 pub use oslo_base::glob::walk::{
-    set_dotglob, set_failglob, set_globstar, set_nocaseglob, set_nocasematch, set_nullglob,
+    set_dotglob, set_extglob, set_failglob, set_globstar, set_nocaseglob, set_nocasematch,
+    set_nullglob,
 };
 
 /// A pattern that matched nothing while `failglob` is on, as the text it was written as.
 #[derive(Debug)]
 pub struct NoMatch(pub String);
+
+/// Refuse an `extglob` group the script wrote while `extglob` is off, with bash's parse error.
+///
+/// bash reads `@(a|b)` as a pattern only with the option on and refuses the line otherwise. The
+/// parser here always reads it, so the refusal is made where the option is known. Only text the
+/// script wrote counts: a `$p` holding `@(a|b)` is data and matches as the characters it is.
+pub fn refuse_extglob(field: &[Run]) -> oslo_base::error::Result<()> {
+    let written = |run: &&Run| run.origin == Origin::Literal;
+    if !walk::extglob()
+        && field
+            .iter()
+            .filter(written)
+            .any(|run| opens_group(&run.text))
+    {
+        return Err(ShellError::SyntaxError(
+            "syntax error near unexpected token `('".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn opens_group(text: &str) -> bool {
+    text.as_bytes()
+        .windows(2)
+        .any(|pair| matches!(pair, [b'?' | b'*' | b'+' | b'@' | b'!', b'(']))
+}
 
 /// Compile a pattern from expanded runs, honouring the quoting each run carries.
 ///
@@ -48,7 +76,7 @@ pub fn expand_field(field: &[Run], globignore: Option<&str>) -> Result<Vec<Strin
     // must not cost a character vector per argument of every command.
     if !field
         .iter()
-        .any(|run| run.globs() && run.text.contains(['*', '?', '[']))
+        .any(|run| run.globs() && (run.text.contains(['*', '?', '[']) || opens_group(&run.text)))
     {
         return Ok(vec![field_text(field)]);
     }

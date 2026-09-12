@@ -59,7 +59,11 @@ pub fn find_all(line: &str) -> Vec<Qualified> {
                 let close = (attached && globbed).then(|| closing(line, at)).flatten();
                 if let Some(close) = close {
                     let qualifiers = line[at + 1..close].trim();
-                    if !qualifiers.is_empty() {
+                    // `*(a|b)` is bash's extglob, and is qualifiers only when it opens with one.
+                    let first = qualifiers.split([' ', '\t', ',']).next().unwrap_or("");
+                    let extglob =
+                        line[..at].ends_with(['?', '*', '+', '@', '!']) && !qualify::is_name(first);
+                    if !qualifiers.is_empty() && !extglob {
                         out.push(Qualified {
                             start: word_start,
                             end: close + 1,
@@ -211,6 +215,14 @@ mod tests {
             [("*".to_string(), "re 'a)b'".to_string())],
             "a `)` inside quotes does not close the list"
         );
+    }
+
+    /// An extglob group is left for the shell unless it reads as qualifiers.
+    #[test]
+    fn an_extglob_group_is_not_taken_for_qualifiers() {
+        assert!(spans("ls *(a|b)").is_empty());
+        assert!(spans("ls *.@(txt|md) ?(x)").is_empty());
+        assert_eq!(spans("ls *(file)"), [("*".to_string(), "file".to_string())]);
     }
 
     #[test]

@@ -364,6 +364,7 @@ fn expand_word_at(env: &mut Environment, word: &Word, place: Place) -> Result<Ve
             crate::expand::sugar::equals_field(env, field).map_err(ShellError::ExpansionError)?;
         for split in split_field(ifs, field) {
             if glob {
+                crate::expand::glob::refuse_extglob(&split)?;
                 // `failglob` is bash's `no match: zz*`: the command does not run, status 1.
                 let words = expand_field(&split, globignore.as_deref())
                     .map_err(|NoMatch(text)| ShellError::NoMatch(text))?;

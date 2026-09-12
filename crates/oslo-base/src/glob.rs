@@ -17,6 +17,7 @@
 //! expands cannot disagree.
 
 pub mod collate;
+pub mod ext;
 pub mod qualify;
 pub mod walk;
 
@@ -31,6 +32,11 @@ pub enum Item {
     Star,
     /// `[abc]`, `[a-z]`, `[!abc]`.
     Class { negated: bool, members: Vec<Member> },
+    /// `@(a|b)` and the other `extglob` groups: each alternative compiled on its own.
+    Ext {
+        kind: ext::ExtKind,
+        alts: Vec<Vec<Item>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,8 +80,8 @@ impl Item {
         match self {
             Item::Ch(c) => *c == ch || (nocase && same_letter(*c, ch)),
             Item::Any => true,
-            // `*` is handled by the outer loop; it never consumes a single character on its own.
-            Item::Star => false,
+            // `*` and a group are handled by the matcher; neither is one character on its own.
+            Item::Star | Item::Ext { .. } => false,
             Item::Class { negated, members } => {
                 let hit = members.iter().any(|m| {
                     member_has(m, ch)
@@ -109,6 +115,11 @@ fn same_letter(a: char, b: char) -> bool {
 /// The flag is what lets pathname expansion skip the directory walk for a word that only *looks*
 /// like a pattern, and what makes an unterminated `[` fall back to literal text.
 pub fn compile_items(chars: &[(char, bool)]) -> (Vec<Item>, bool) {
+    compile_items_with(chars, walk::extglob())
+}
+
+/// [`compile_items`], with `extglob` decided by the caller rather than by `shopt`.
+pub fn compile_items_with(chars: &[(char, bool)], extglob: bool) -> (Vec<Item>, bool) {
     let mut items = Vec::new();
     let mut has_metacharacter = false;
     let mut i = 0;
@@ -124,6 +135,15 @@ pub fn compile_items(chars: &[(char, bool)]) -> (Vec<Item>, bool) {
         {
             items.push(Item::Ch(next));
             i += 2;
+            continue;
+        }
+        if globs
+            && extglob
+            && let Some((group, next)) = ext::parse(chars, i)
+        {
+            items.push(group);
+            has_metacharacter = true;
+            i = next;
             continue;
         }
         if globs {
@@ -263,8 +283,9 @@ fn parse_symbol(chars: &[(char, bool)], start: usize) -> Option<(Member, usize)>
 
 /// Whether the whole of `name` matches a compiled item list.
 ///
-/// Backtracking on the most recent `*` only: shell patterns have no alternation, so one
-/// resumption point is enough and the match stays linear in practice.
+/// Backtracking on the most recent `*` only: without an `extglob` group there is no alternation,
+/// so one resumption point is enough and the match stays linear in practice. A pattern with a
+/// group goes to [`ext`].
 pub fn matches_items(items: &[Item], name: &str) -> bool {
     matches_items_with(items, name, false)
 }
@@ -272,6 +293,9 @@ pub fn matches_items(items: &[Item], name: &str) -> bool {
 /// [`matches_items`], case-insensitively when `nocase`.
 pub fn matches_items_with(items: &[Item], name: &str, nocase: bool) -> bool {
     let name: Vec<char> = name.chars().collect();
+    if items.iter().any(|item| matches!(item, Item::Ext { .. })) {
+        return ext::matches(items, &name, nocase);
+    }
     let (mut i, mut j) = (0, 0);
     // The most recent `*` and how much of the name it had swallowed, for backtracking.
     let mut star: Option<(usize, usize)> = None;
@@ -336,7 +360,10 @@ fn shortcuts(items: &[Item]) -> (Option<String>, Option<usize>) {
             _ => None,
         })
         .collect::<Option<String>>();
-    let fixed = (!items.iter().any(|item| matches!(item, Item::Star))).then_some(items.len());
+    let fixed = (!items
+        .iter()
+        .any(|item| matches!(item, Item::Star | Item::Ext { .. })))
+    .then_some(items.len());
     (literal, fixed)
 }
 
@@ -360,6 +387,12 @@ impl ShellPattern {
     /// metacharacter if it looks like one.
     pub fn from_chars(chars: &[(char, bool)]) -> Self {
         Self::of(compile_items(chars).0)
+    }
+
+    /// [`Self::from_chars`] with `extglob` decided by the caller: `[[ == ]]` has it whatever
+    /// `shopt` says, as in bash.
+    pub fn from_chars_with(chars: &[(char, bool)], extglob: bool) -> Self {
+        Self::of(compile_items_with(chars, extglob).0)
     }
 
     /// Build from compiled items, reading the shortcuts off them once.

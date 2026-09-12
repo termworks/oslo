@@ -215,7 +215,8 @@ fn marked_pattern(right: &str) -> ShellPattern {
             _ => chars.push((ch, !quoted)),
         }
     }
-    ShellPattern::from_chars(&chars)
+    // bash reads `[[ x == @(a|b) ]]` as an extended pattern whatever `shopt` says.
+    ShellPattern::from_chars_with(&chars, true)
 }
 
 /// Operand of an arithmetic comparison.

@@ -65,6 +65,16 @@ static NOCASEGLOB: AtomicBool = AtomicBool::new(false);
 static NULLGLOB: AtomicBool = AtomicBool::new(false);
 static FAILGLOB: AtomicBool = AtomicBool::new(false);
 static NOCASEMATCH: AtomicBool = AtomicBool::new(false);
+static EXTGLOB: AtomicBool = AtomicBool::new(false);
+
+/// `shopt -s extglob`: `@(a|b)` and the other groups are patterns, not text.
+pub fn set_extglob(on: bool) {
+    EXTGLOB.store(on, Ordering::Relaxed);
+}
+
+pub fn extglob() -> bool {
+    EXTGLOB.load(Ordering::Relaxed)
+}
 
 /// `shopt -s globstar` / `shopt -u globstar`.
 pub fn set_globstar(on: bool) {

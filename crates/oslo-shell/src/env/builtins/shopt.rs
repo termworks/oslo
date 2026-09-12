@@ -71,7 +71,7 @@ const OPTIONS: &[ShoptOption] = &[
     fixed("cdspell", false, "cd does not correct spelling"),
     hook("dotglob", crate::expand::glob::set_dotglob),
     fixed("expand_aliases", true, "oslo expands aliases in every shell, not only interactive ones"),
-    fixed("extglob", false, "the extended pattern operators are not implemented"),
+    hook("extglob", crate::expand::glob::set_extglob),
     hook("failglob", crate::expand::glob::set_failglob),
     hook("globstar", crate::expand::glob::set_globstar),
     fixed("huponexit", false, "the shell does not signal its jobs on exit"),
@@ -355,18 +355,18 @@ mod tests {
     }
 
     /// The rule this builtin exists to keep: an option oslo does not implement must not report
-    /// success when asked to turn it on. Reporting 0 for `extglob` would mean every later `@(a|b)`
-    /// silently matched the wrong files.
+    /// success when asked to turn it on. Reporting 0 for `lastpipe` would mean `echo x | read v`
+    /// silently left `v` unset in a script that asked for the opposite.
     ///
-    /// `globstar` was this test's example until it was implemented — which is the outcome the rule
-    /// is for. It is now a real option and lives in the test below.
+    /// `globstar` and then `extglob` were this test's example until each was implemented — which
+    /// is the outcome the rule is for.
     #[test]
     fn an_option_oslo_cannot_honour_is_refused_not_faked() {
         let mut env = Environment::new();
-        assert_eq!(run(&mut env, &["shopt", "-s", "extglob"]), 1);
-        assert_eq!(run(&mut env, &["shopt", "-q", "extglob"]), 1);
+        assert_eq!(run(&mut env, &["shopt", "-s", "lastpipe"]), 1);
+        assert_eq!(run(&mut env, &["shopt", "-q", "lastpipe"]), 1);
         // Asking for the state it is already in is not a failure: there is nothing to do.
-        assert_eq!(run(&mut env, &["shopt", "-u", "extglob"]), 0);
+        assert_eq!(run(&mut env, &["shopt", "-u", "lastpipe"]), 0);
     }
 
     /// An option oslo *does* implement is switchable both ways and reports what it is.

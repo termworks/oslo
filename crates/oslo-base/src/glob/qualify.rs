@@ -106,6 +106,11 @@ pub const VALUED: &[&str] = &[
     "depth", "by", "first", "last", "newest", "oldest", "largest", "smallest",
 ];
 
+/// Whether `word` names a qualifier — how the prompt tells `*(file)` from bash's `*(a|b)`.
+pub fn is_name(word: &str) -> bool {
+    word == "path" || VALUED.contains(&word) || from_items(&[vec![word.to_string()]]).is_ok()
+}
+
 /// Split at top-level commas and then into words, honouring `'…'` and `"…"`.
 fn items(text: &str) -> Result<Vec<Vec<String>>, String> {
     let mut out = vec![Vec::new()];
