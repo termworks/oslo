@@ -35,6 +35,14 @@ pub enum ShellError {
     /// which is why "the expansion failed" is three variants and not one.
     MalformedExpansion(String),
 
+    /// A pattern that matched nothing while `failglob` is on, as the text it was written as.
+    ///
+    /// Its own variant because bash abandons **the top-level command** it occurred in — the rest
+    /// of that line, the whole `if` around it, the function it was called from — and then carries
+    /// on with the next one, where every other expansion error ends a script. Only the outermost
+    /// command list catches it; see `exec::pipeline`.
+    NoMatch(String),
+
     ExecutionError(String),
 
     Io(std::io::Error),
@@ -131,6 +139,7 @@ impl std::fmt::Display for ShellError {
             ShellError::ExpansionError(m)
             | ShellError::UnsetParameter(m)
             | ShellError::MalformedExpansion(m) => write!(f, "{m}"),
+            ShellError::NoMatch(pattern) => write!(f, "no match: {pattern}"),
             ShellError::ExecutionError(m) => write!(f, "{m}"),
             ShellError::Io(e) => write!(f, "{}", reason(e)),
             ShellError::Lua(e) => write!(f, "Lua error: {e}"),

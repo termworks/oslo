@@ -66,13 +66,19 @@ pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Resul
         ));
     }
     let frame = ListFrame::enter();
-    frame.absorb(run_list_items(env, cmd_list))
+    let outermost = frame.is_outermost();
+    frame.absorb(run_list_items(env, cmd_list, outermost))
 }
 
-fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> {
+fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool) -> Result<i32> {
     let mut last_status = 0;
+    // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
+    let mut abandoned: Option<u32> = None;
 
     for item in &cmd_list.items {
+        if abandoned.is_some_and(|line| line > 0 && item.line == line) {
+            continue;
+        }
         // `set -n`: read the program, run none of it. Checked per command rather than once before
         // the list so that `set -n` *within* a script stops execution from that point, which is
         // where bash stops too — and so that `oslo -n script` never reaches a command at all.
@@ -115,7 +121,19 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> 
             last_status = 0;
             env.last_status = 0;
         } else {
-            last_status = eval_and_or_list(env, &item.and_or)?;
+            last_status = match eval_and_or_list(env, &item.and_or) {
+                // **`failglob` abandons the top-level command, not the script.** bash drops the
+                // rest of that line — the whole `if` around the miss, the function it was in —
+                // reports it with status 1, and carries on with the next line. Only the outermost
+                // list catches it; everywhere below, it unwinds like any other error.
+                Err(error @ ShellError::NoMatch(_)) if outermost => {
+                    eprintln!("{}{error}", env.origin());
+                    abandoned = Some(item.line);
+                    env.last_status = 1;
+                    1
+                }
+                other => other?,
+            };
         }
     }
 

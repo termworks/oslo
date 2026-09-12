@@ -365,10 +365,8 @@ fn expand_word_at(env: &mut Environment, word: &Word, place: Place) -> Result<Ve
         for split in split_field(ifs, field) {
             if glob {
                 // `failglob` is bash's `no match: zz*`: the command does not run, status 1.
-                let words =
-                    expand_field(&split, globignore.as_deref()).map_err(|NoMatch(text)| {
-                        ShellError::ExpansionError(format!("no match: {text}"))
-                    })?;
+                let words = expand_field(&split, globignore.as_deref())
+                    .map_err(|NoMatch(text)| ShellError::NoMatch(text))?;
                 out.extend(words);
             } else {
                 out.push(field_text(&split));
