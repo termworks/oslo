@@ -1,9 +1,10 @@
 //! Builds completion candidates for Tab.
 
+mod glob;
 pub mod lua;
 mod paths;
+pub(crate) use glob::glob_matches_anything;
 pub(crate) use paths::executable;
-pub(crate) use paths::glob_matches_anything;
 pub(crate) use paths::takes_only_directories;
 pub mod provider;
 mod segment;
@@ -328,6 +329,15 @@ impl OsloHelper {
         // `git checkout` first. Frecency still orders candidates that matched equally well.
         let by_name = crate::settings::current().completion.sort == crate::settings::Sort::Alpha;
         out.sort_by(|a, b| {
+            // **The row that takes every match of a glob stays on top.** It matches nothing the way
+            // a name does — `all 3 matches` is no prefix of `*.log` — so a fuzzy pass sank it to
+            // the bottom of the very menu it heads.
+            let whole = |c: &CompletionCandidate| c.kind.as_deref() == Some("glob");
+            match (whole(a), whole(b)) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {}
+            }
             if by_name {
                 return a.display.cmp(&b.display);
             }

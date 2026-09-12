@@ -39,6 +39,20 @@ pub struct Options {
     pub collate: bool,
     /// Match names case-insensitively: `nocaseglob`.
     pub nocase: bool,
+    /// The most directory entries one expansion may read, for callers on a keystroke. `None` —
+    /// the shell's own — reads everything.
+    pub budget: Option<usize>,
+}
+
+/// What a bounded expansion found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expansion {
+    /// Sorted and without duplicates.
+    pub paths: Vec<String>,
+    /// False when the budget ran out, so `paths` may be missing some.
+    pub complete: bool,
+    /// Directory entries read to answer, for a caller spending one budget across several patterns.
+    pub read: usize,
 }
 
 /// The shell's own settings, switched by `shopt`.
@@ -101,6 +115,7 @@ pub fn shell_options() -> Options {
         dotglob: DOTGLOB.load(Ordering::Relaxed),
         collate: super::collate::locale_collates(),
         nocase: NOCASEGLOB.load(Ordering::Relaxed),
+        budget: None,
     }
 }
 
@@ -120,6 +135,11 @@ enum Component {
 /// matches, sorted and without duplicates — possibly none, which the caller turns into the literal
 /// text, nothing, or an error, as `nullglob` and `failglob` decide.
 pub fn expand(chars: &[(char, bool)], options: &Options) -> Option<Vec<String>> {
+    expand_counted(chars, options).map(|expansion| expansion.paths)
+}
+
+/// [`expand`], saying whether [`Options::budget`] let it finish.
+pub fn expand_counted(chars: &[(char, bool)], options: &Options) -> Option<Expansion> {
     let (components, trailing_slash) = split(chars, options);
     if !components
         .iter()
@@ -127,10 +147,18 @@ pub fn expand(chars: &[(char, bool)], options: &Options) -> Option<Vec<String>> 
     {
         return None;
     }
-    let mut found = walk(&components, trailing_slash, options);
+    let mut dirs = Dirs {
+        left: options.budget,
+        ..Dirs::default()
+    };
+    let mut found = walk(&components, trailing_slash, options, &mut dirs);
     super::collate::sort(&mut found, options.collate);
     found.dedup();
-    Some(found)
+    Some(Expansion {
+        paths: found,
+        complete: !dirs.exhausted,
+        read: dirs.total,
+    })
 }
 
 /// Cut at every `/` and compile each piece; the flag records a trailing `/`.
@@ -197,6 +225,12 @@ struct Entry {
 #[derive(Default)]
 struct Dirs {
     read: HashMap<String, Rc<[Entry]>>,
+    /// Entries still allowed to be read, when there is a budget.
+    left: Option<usize>,
+    /// The budget ran out, so some directory was read short or not at all.
+    exhausted: bool,
+    /// Entries read so far.
+    total: usize,
 }
 
 impl Dirs {
@@ -205,10 +239,16 @@ impl Dirs {
         if let Some(known) = self.read.get(prefix) {
             return Rc::clone(known);
         }
+        if self.left == Some(0) {
+            self.exhausted = true;
+            return Rc::from(Vec::new());
+        }
         let dir = if prefix.is_empty() { "." } else { prefix };
+        let allowed = self.left.unwrap_or(usize::MAX);
         let entries: Rc<[Entry]> = match fs::read_dir(dir) {
             Ok(entries) => entries
                 .flatten()
+                .take(allowed)
                 .map(|entry| Entry {
                     name: name_of(&entry.file_name()),
                     kind: match entry.file_type() {
@@ -220,6 +260,14 @@ impl Dirs {
                 .collect(),
             Err(_) => Rc::from(Vec::new()),
         };
+        self.total += entries.len();
+        if let Some(left) = self.left.as_mut() {
+            *left -= entries.len();
+            // Reading exactly up to the limit is indistinguishable from being cut short there.
+            if *left == 0 {
+                self.exhausted = true;
+            }
+        }
         self.read.insert(prefix.to_string(), Rc::clone(&entries));
         entries
     }
@@ -248,8 +296,12 @@ fn hidden(entry: &Entry, options: &Options) -> bool {
 ///
 /// The accumulator holds path prefixes built from the pattern's own text, so `./a*` comes back as
 /// `./a1`: nothing round-trips through a normalising path type.
-fn walk(components: &[Component], trailing_slash: bool, options: &Options) -> Vec<String> {
-    let mut dirs = Dirs::default();
+fn walk(
+    components: &[Component],
+    trailing_slash: bool,
+    options: &Options,
+    dirs: &mut Dirs,
+) -> Vec<String> {
     // Each prefix, and whether the pattern named it outright rather than matched it.
     let mut current = vec![Prefix {
         path: String::new(),
@@ -285,7 +337,7 @@ fn walk(components: &[Component], trailing_slash: bool, options: &Options) -> Ve
                     }
                 }
                 Component::Globstar => {
-                    globstar(base, last, trailing_slash, options, &mut dirs, &mut next);
+                    globstar(base, last, trailing_slash, options, dirs, &mut next);
                 }
             }
         }

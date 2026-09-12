@@ -115,6 +115,16 @@ pub fn read_lua_settings(whole: &Value) -> (Settings, Vec<String>) {
             &mut settings.completion.fuzzy,
             &mut problems,
         );
+        if let Value::Str(name) = table.get_str("glob") {
+            match name.as_ref() {
+                "menu" => settings.completion.glob = super::GlobTab::Menu,
+                "expand" => settings.completion.glob = super::GlobTab::Expand,
+                "literal" => settings.completion.glob = super::GlobTab::Literal,
+                other => problems.push(format!(
+                    "oslo.completion.glob: '{other}' is not a mode; use 'menu', 'expand' or 'literal'"
+                )),
+            }
+        }
     }
 
     if let Value::Table(table) = oslo.get_str("lua") {

@@ -248,6 +248,20 @@ pub struct Completion {
     /// wrong for one of them. A shell filter naming `file` and `option` would have silently
     /// emptied every Lua dropdown.
     pub lua_sources: Option<Vec<String>>,
+    /// What Tab does with a word that globs.
+    pub glob: GlobTab,
+}
+
+/// `oslo.completion.glob`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlobTab {
+    /// A menu whose first row, `all 12 matches`, puts every match on the line.
+    #[default]
+    Menu,
+    /// Tab puts every match on the line at once, as zsh's `expand-or-complete` does.
+    Expand,
+    /// The pattern's matches one level at a time, each replacing the whole pattern.
+    Literal,
 }
 
 /// `oslo.completion.sort`.
@@ -276,6 +290,7 @@ impl Default for Completion {
             sort: Sort::default(),
             sh_sources: None,
             lua_sources: None,
+            glob: GlobTab::Menu,
         }
     }
 }
