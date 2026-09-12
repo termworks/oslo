@@ -53,6 +53,7 @@ character `x`, and so is `[[=x=]]`: bash does not fold `é` into `e` there eithe
 | `nocaseglob` | pathname matching ignores case |
 | `nocasematch` | `case`, `[[ == ]]` and `[[ =~ ]]` ignore case |
 | `GLOBIGNORE` | colon-separated patterns removed from every result; setting it implies `dotglob` |
+| `extglob` | the five groups below |
 
 `shopt -p` prints them; `BASHOPTS` is not kept up to date. `compgen -G`, `-W`, `-f` and `-d`
 answer from the same engine, because scripts and bash completion functions call them.
@@ -78,6 +79,29 @@ next 1
 oslo does the same, in a script file and under `-c`: the outermost command list catches the miss
 and skips the items that share its line. A `( … )`, a `$( … )` or a pipeline stage it happened in
 all come apart with it, exactly as in bash.
+
+### Extended patterns
+
+With `shopt -s extglob`, five groups join the pattern language — in pathnames, `case`, `${v#…}` and
+`GLOBIGNORE` alike:
+
+| group | matches |
+|---|---|
+| `?(a\|b)` | zero or one of them |
+| `*(a\|b)` | zero or more |
+| `+(a\|b)` | one or more |
+| `@(a\|b)` | exactly one |
+| `!(a\|b)` | anything none of them matches: `!(*.txt)` is every name but the text files |
+
+Inside `[[ == ]]` they work whatever `shopt` says, as in bash. With the option off, a group the
+script wrote is refused with bash's `` syntax error near unexpected token `(' ``, and one that
+arrived in a variable is plain text — also what bash does.
+
+**The parser reads a group whether or not the option is on**, because it reads the whole script
+before any of it runs; bash refuses these with the option off, so no working script is read
+differently. `!(` is the one ambiguity: where a command can start, `!(cmd)` is `!` and a subshell,
+exactly as bash reads it with `extglob` off. Matching backtracks with a memo on each piece and span,
+so `+(a|aa)+(a|aa)b` against two hundred `a`s answers at once rather than exponentially.
 
 ### Order
 
@@ -182,7 +206,8 @@ is the names, never the qualifier. A script never passes through the editor: in 
 **Regex lives only here**, and in the two places below. `foo.*` in a bare word is a glob and a
 perfectly good filename; reading it as a regex would change what existing scripts mean.
 `*(re '^test_[0-9]+\.rs$')` is "any name, filtered by a regex", which is regex matching with no new
-syntax.
+syntax. A group that does not open with a qualifier's name — `*(a|b)` — is bash's `extglob`, and is
+left for the shell.
 
 ## In scripts and in Lua
 
@@ -232,9 +257,9 @@ on output and status.
 
 ## What it cannot do
 
-**extglob** — `@(a|b)`, `*(…)`, `+(…)`, `?(…)`, `!(…)` — is not implemented. It needs the grammar
-first, because the parser reads `@(a|b)` as a word followed by a subshell. See
-[known gaps](../known-gaps.md#extglob).
+A group refused because `extglob` is off exits 2 from a script file, as bash does, but 127 under
+`-c`, where bash still answers 2: the refusal is made when the line runs rather than when it is
+parsed, and `-c` reports a syntax error found that late the way it reports one inside `$( )`.
 
 The shell options are process-wide rather than per shell: a subshell inherits them as it should, but
 two interpreters in one process would share them.
@@ -253,6 +278,7 @@ ask first.
 | path | what is in it |
 |---|---|
 | `crates/oslo-base/src/glob.rs` | the matcher: `ShellPattern`, classes, quoting per character |
+| `crates/oslo-base/src/glob/ext.rs` | `extglob` groups and their memoised matcher |
 | `crates/oslo-base/src/glob/walk.rs` | the walker: `**`, the readdir cache, budgets, dedup |
 | `crates/oslo-base/src/glob/collate.rs` | the collation key and when it applies |
 | `crates/oslo-base/src/glob/qualify.rs` | the qualifier parser and filter, for all three surfaces |
