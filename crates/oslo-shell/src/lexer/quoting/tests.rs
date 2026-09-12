@@ -15,6 +15,27 @@ fn parts(src: &str) -> Vec<WordPart> {
     }
 }
 
+/// **An `extglob` group is part of its word**, spaces and `|` included, and quotes and `$` inside
+/// it keep their meaning. rune reads it that way; re-lexing the word must not undo that.
+#[test]
+fn an_extglob_group_keeps_its_word_together() {
+    let got = parts("@(\"a b\"|$v)");
+    assert!(
+        matches!(
+            got.as_slice(),
+            [WordPart::Literal(open), WordPart::DoubleQuoted(_), WordPart::Literal(bar), _, WordPart::Literal(close)]
+                if open == "@(" && bar == "|" && close == ")"
+        ),
+        "{got:?}"
+    );
+    let mut lexer = Lexer::new("+(a b) next");
+    assert!(matches!(lexer.next(), Ok(Token::Word(_))));
+    assert!(
+        matches!(lexer.next(), Ok(Token::Word(w)) if w.parts == [WordPart::Literal("next".into())]),
+        "the space after the group still ends the word"
+    );
+}
+
 /// **A comment inside a `$( … )` inside a heredoc body is not shell.**
 ///
 /// A lone apostrophe in one opened a quote that ran to the end of the file, so the `)` closing

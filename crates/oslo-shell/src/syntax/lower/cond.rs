@@ -182,9 +182,9 @@ fn operand(word: &str, coordinates: Coordinates) -> Result<oslo_ast::Word> {
     // written twice: `test {0:0} = alpha` was true and `[[ {0:0} == alpha ]]` false, because the
     // wrapping hid the coordinate from the substitution that runs over literal words. It is safe
     // to leave bare on the same grounds — a substituted value arrives already quoted and cannot
-    // split or glob however many spaces are in it.
+    // split or glob however many spaces are in it. `@(a|b)` is an `extglob` group, not a name.
     if let [oslo_ast::WordPart::Literal(text)] = inner.parts.as_slice()
-        && (text.starts_with('@')
+        && ((text.starts_with('@') && !text.starts_with("@("))
             || (coordinates == Coordinates::Substituted
                 && crate::exec::streams::holds_a_coordinate(text)))
     {

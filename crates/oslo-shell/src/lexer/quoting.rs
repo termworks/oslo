@@ -89,8 +89,28 @@ impl Lexer<'_> {
     fn scan_word_parts(&mut self, to_eof: bool, inside_quotes: bool) -> Result<Vec<WordPart>> {
         let mut parts = Vec::new();
         let mut current_lit = String::new();
+        // How deep inside an `extglob` group the scan is: `@(a b|c)` is one word, spaces and all.
+        let mut group = 0usize;
 
         while let Some(ch) = self.current_char() {
+            // Inside a group, spaces, `|` and parentheses are the pattern's own; quoting and
+            // expansions keep their meaning and fall through to the arms below.
+            if group > 0 && !matches!(ch, '\\' | '\'' | '"' | '$' | '`') {
+                match ch {
+                    '(' => group += 1,
+                    ')' => group -= 1,
+                    _ => {}
+                }
+                current_lit.push(ch);
+                self.advance();
+                continue;
+            }
+            if ch == '(' && !to_eof && current_lit.ends_with(['?', '*', '+', '@', '!']) {
+                group = 1;
+                current_lit.push(ch);
+                self.advance();
+                continue;
+            }
             // `is_blank`, not `char::is_whitespace`: the two must name the same set as
             // `skip_whitespace` or a character in the gap ends the word here and is then skipped
             // by nobody, which is a lexer that cannot advance. `\n` is covered by
