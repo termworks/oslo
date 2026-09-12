@@ -16,6 +16,7 @@
 //! answering both is the only arrangement in which what completion offers and what the shell then
 //! expands cannot disagree.
 
+pub mod collate;
 pub mod walk;
 
 /// One element of a compiled pattern.

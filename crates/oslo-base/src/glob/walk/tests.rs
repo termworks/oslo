@@ -7,6 +7,7 @@ use std::path::Path;
 const GLOBSTAR: Options = Options {
     globstar: true,
     dotglob: false,
+    collate: false,
 };
 
 /// The audit's tree: nested dirs, a hidden dir, an empty dir, and links to a dir, a file and nowhere.
@@ -183,6 +184,7 @@ fn dotglob_opens_hidden_entries_at_every_depth() {
     let both = Options {
         globstar: true,
         dotglob: true,
+        collate: false,
     };
     assert_eq!(
         glob(dir.path(), "**/*.txt", both),

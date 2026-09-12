@@ -35,6 +35,8 @@ pub struct Options {
     pub globstar: bool,
     /// `*`, `?` and `**` match names that begin with a dot (never `.` or `..`).
     pub dotglob: bool,
+    /// Sort matches by the locale's rules rather than by bytes; see [`super::collate`].
+    pub collate: bool,
 }
 
 /// The shell's own settings, switched by `shopt`.
@@ -59,6 +61,7 @@ pub fn shell_options() -> Options {
     Options {
         globstar: GLOBSTAR.load(Ordering::Relaxed),
         dotglob: DOTGLOB.load(Ordering::Relaxed),
+        collate: super::collate::locale_collates(),
     }
 }
 
@@ -86,7 +89,7 @@ pub fn expand(chars: &[(char, bool)], options: &Options) -> Option<Vec<String>> 
         return None;
     }
     let mut found = walk(&components, trailing_slash, options);
-    found.sort_unstable();
+    super::collate::sort(&mut found, options.collate);
     found.dedup();
     Some(found)
 }
