@@ -58,6 +58,14 @@ pub trait Assist {
         None
     }
 
+    /// `expand-glob`: the word under the cursor replaced by every match, quoted.
+    fn expand_glob(&mut self, _line: &str, _cursor: usize) -> Option<(String, usize)> {
+        None
+    }
+
+    /// `list-glob`: what the word under the cursor matches, below the line until the next key.
+    fn list_glob(&mut self, _line: &str, _cursor: usize, _keys: &mut Keys) {}
+
     /// Open the tab finder, and say whether the terminal was handed to something else while it
     /// was open.
     ///

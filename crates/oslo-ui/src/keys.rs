@@ -26,6 +26,10 @@ pub enum Action {
     Complete,
     /// Hand the line to `$EDITOR` and take back what it wrote.
     EditExternally,
+    /// Replace the glob under the cursor with every match, quoted — bash's `glob-expand-word`.
+    ExpandGlob,
+    /// Show what the glob under the cursor matches, leaving the line alone.
+    ListGlob,
     /// A function the config supplied. The function itself lives in [`super::editor`]; this only
     /// records that the key has one, because an `Action` has to stay plain data.
     LuaHandler,
@@ -57,6 +61,8 @@ impl Action {
             // readline calls this `edit-and-execute-command`; oslo's does not execute, so it is
             // named for the half it does.
             "edit-line" | "edit-command-line" => Some(Action::EditExternally),
+            "expand-glob" | "glob-expand-word" => Some(Action::ExpandGlob),
+            "list-glob" | "glob-list-expansions" => Some(Action::ListGlob),
             "none" | "nothing" => Some(Action::Nothing),
             _ => None,
         }

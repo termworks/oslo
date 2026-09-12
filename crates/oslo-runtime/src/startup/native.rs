@@ -345,6 +345,33 @@ impl Assist for ShellAssist<'_> {
         Some((out, at))
     }
 
+    fn expand_glob(&mut self, line: &str, cursor: usize) -> Option<(String, usize)> {
+        let helper = self.helper?;
+        let pos: usize = line.chars().take(cursor).map(char::len_utf8).sum();
+        let (start, words) = helper.glob_words(line, pos)?;
+        let mut out = String::with_capacity(line.len() + 64);
+        out.push_str(&line[..start]);
+        out.push_str(&words.join(" "));
+        let at = out.chars().count();
+        out.push_str(&line[pos..]);
+        Some((out, at))
+    }
+
+    fn list_glob(&mut self, line: &str, cursor: usize, keys: &mut oslo_ui::term::Keys) {
+        let Some(helper) = self.helper else {
+            return;
+        };
+        let pos: usize = line.chars().take(cursor).map(char::len_utf8).sum();
+        let shown = match helper.glob_words(line, pos) {
+            Some((_, words)) => format!("{} matches: {}", words.len(), words.join("  ")),
+            None => "matches nothing".to_string(),
+        };
+        let start = oslo_ui::words::current_word(line, pos).start;
+        let cells = self.prompt_cols + dropdown::visible_len(&line[..start]);
+        let indent = cells % dropdown::terminal_cols().max(1);
+        dropdown::notice(&shown, indent, &line[start..pos], keys);
+    }
+
     /// What the config bound `key` to.
     ///
     /// The order is the order of specificity: an `oslo.keys` entry is the most explicit statement
@@ -364,6 +391,8 @@ impl Assist for ShellAssist<'_> {
                 Some(oslo_ui::keys::Action::Interrupt) => Some(Bound::Interrupt),
                 Some(oslo_ui::keys::Action::Complete) => Some(Bound::Complete),
                 Some(oslo_ui::keys::Action::EditExternally) => Some(Bound::EditExternally),
+                Some(oslo_ui::keys::Action::ExpandGlob) => Some(Bound::ExpandGlob),
+                Some(oslo_ui::keys::Action::ListGlob) => Some(Bound::ListGlob),
                 Some(oslo_ui::keys::Action::LuaHandler) => Some(Bound::Lua(name)),
                 // Unbound on purpose. Answering `None` here rather than with a do-nothing `Bound`
                 // is what makes it reach the *defaults* below and cancel them too — which is the
@@ -395,6 +424,14 @@ impl Assist for ShellAssist<'_> {
         }
         if settings.suggest.accept_word.as_deref() == Some(name.as_str()) {
             return Some(Bound::AcceptHintWord);
+        }
+
+        // `alt-*` and `alt-g` are bash's `C-x *` and `C-x g`, on single keys because oslo has no
+        // chords. Below every config binding, so `oslo.keys` can take either key back.
+        match name.as_str() {
+            "alt-*" => return Some(Bound::ExpandGlob),
+            "alt-g" => return Some(Bound::ListGlob),
+            _ => {}
         }
 
         // oslo's own default, for a key the ordinary keymap does not already answer. Reached only

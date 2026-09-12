@@ -489,6 +489,16 @@ pub fn read_line(
                     session.buffer.set(&line, cursor);
                 }
             }
+            Step::ExpandGlob => {
+                if let Some((line, cursor)) =
+                    assist.expand_glob(&session.buffer.text(), session.buffer.cursor())
+                {
+                    session.buffer.set(&line, cursor);
+                }
+            }
+            Step::ListGlob => {
+                assist.list_glob(&session.buffer.text(), session.buffer.cursor(), &mut keys);
+            }
             // A tab may have owned the terminal in the meantime, so the prompt is rebuilt rather
             // than the row repainted: what is on the screen now was written by something else.
             Step::OpenScratch => {

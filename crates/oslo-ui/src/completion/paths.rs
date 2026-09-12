@@ -19,7 +19,7 @@ fn has_glob(text: &str) -> bool {
 ///
 /// `rm "tw*"` is a file whose name ends in a star and the shell will not expand it, so completion
 /// must not offer what it would have matched — the two would be describing different commands.
-fn globs_unquoted(text: &str) -> bool {
+pub(crate) fn globs_unquoted(text: &str) -> bool {
     let mut quote = None;
     let mut escaped = false;
     for ch in text.chars() {

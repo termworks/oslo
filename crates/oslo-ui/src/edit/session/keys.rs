@@ -30,6 +30,10 @@ pub enum Bound {
     OpenMacros,
     /// Hand the line to `$EDITOR`. On the same terms again: the program wants the terminal.
     EditExternally,
+    /// Replace the glob under the cursor with every match.
+    ExpandGlob,
+    /// Show what the glob under the cursor matches.
+    ListGlob,
     /// A Lua function, by the key's name.
     Lua(String),
 }
@@ -59,6 +63,10 @@ pub enum Step {
     OpenMacros,
     /// Hand the line to `$EDITOR` and take back what it wrote.
     EditExternally,
+    /// Expand the glob under the cursor in place.
+    ExpandGlob,
+    /// List the glob's matches below the line, through the outer loop's input reader.
+    ListGlob,
 }
 
 /// Carrying out a binding lives here, beside the two enums it maps between, rather than in the
@@ -76,6 +84,8 @@ impl super::Session {
             Bound::OpenScratch => Step::OpenScratch,
             Bound::OpenMacros => Step::OpenMacros,
             Bound::EditExternally => Step::EditExternally,
+            Bound::ExpandGlob => Step::ExpandGlob,
+            Bound::ListGlob => Step::ListGlob,
             Bound::SearchHistory => match assist.search_history(&self.buffer.text()) {
                 Some(line) => {
                     let end = line.chars().count();

@@ -134,6 +134,26 @@ fn matches_within(stem: &str, budget: &mut usize) -> bool {
 }
 
 impl OsloHelper {
+    /// The glob at `pos` expanded: where the word starts, and every match quoted for the line —
+    /// or `None` when the word does not glob or names nothing. What `expand-glob` and `list-glob`
+    /// answer with.
+    pub fn glob_words(&self, line: &str, pos: usize) -> Option<(usize, Vec<String>)> {
+        let word = crate::words::current_word(line, pos);
+        if !super::paths::globs_unquoted(word.text) {
+            return None;
+        }
+        let mut budget = TAB_ENTRIES;
+        let found = expand_stem(&word.stem, "", true, &mut budget);
+        if found.is_empty() {
+            return None;
+        }
+        let words = found
+            .iter()
+            .map(|found| quote_replacement(&found.typed, Quote::None))
+            .collect();
+        Some((word.start, words))
+    }
+
     /// Candidates for a word that globs, or `false` when it names nothing at all — so the caller
     /// can complete it as a plain name instead (`weird[1` is a file, not a pattern).
     pub(super) fn glob_candidates(

@@ -135,6 +135,7 @@ fn read_syntax(table: &oslo_base::value::Table, into: &mut Syntax, problems: &mu
     field(table, "error", p, &mut into.error, problems);
     field(table, "danger", p, &mut into.danger, problems);
     field(table, "glob", p, &mut into.glob, problems);
+    field(table, "glob_nomatch", p, &mut into.glob_nomatch, problems);
     field(table, "coordinate", p, &mut into.coordinate, problems);
     field(table, "number", p, &mut into.number, problems);
     field(table, "assignment", p, &mut into.assignment, problems);
@@ -430,6 +431,7 @@ mod tests {
             ("valid_path", s.valid_path != ds.valid_path),
             ("option", s.option != ds.option),
             ("glob", s.glob != ds.glob),
+            ("glob_nomatch", s.glob_nomatch != ds.glob_nomatch),
             ("coordinate", s.coordinate != ds.coordinate),
             ("number", s.number != ds.number),
             ("assignment", s.assignment != ds.assignment),

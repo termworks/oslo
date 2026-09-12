@@ -44,6 +44,8 @@ pub enum TokenType {
     SingleQuote,
     DoubleQuote,
     Glob,
+    /// The wildcards of a glob that matches nothing.
+    GlobNoMatch,
     /// A stream coordinate — `{0:1}`, `{%0:0}`. See `lex::Role::Coordinate`.
     Coordinate,
     Number,
@@ -71,6 +73,7 @@ impl TokenType {
             TokenType::Option => syntax.option,
             TokenType::Danger => syntax.danger,
             TokenType::Glob => syntax.glob,
+            TokenType::GlobNoMatch => syntax.glob_nomatch,
             TokenType::Coordinate => syntax.coordinate,
             TokenType::Number => syntax.number,
             TokenType::Assignment => syntax.assignment,
@@ -190,7 +193,12 @@ pub fn classify(spans: &[Span], ctx: &Context<'_>) -> Vec<(String, TokenType)> {
                     TokenType::Param
                 }
             }
-            Role::Glob => TokenType::Glob,
+            // A glob that matches nothing says so in its wildcards, unless `nullglob` makes an
+            // empty expansion the ordinary answer.
+            Role::Glob => match globbed[at] {
+                Some(false) if !oslo_base::glob::walk::nullglob() => TokenType::GlobNoMatch,
+                _ => TokenType::Glob,
+            },
             Role::Coordinate => TokenType::Coordinate,
             Role::Number => TokenType::Number,
             Role::Assignment => TokenType::Assignment,

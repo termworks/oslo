@@ -95,6 +95,20 @@ fn one_match_is_offered_alone() {
     assert_eq!(displays(&tab(&h, dir.path(), "l*.rs")), ["lib.rs"]);
 }
 
+/// `expand-glob` and `list-glob` answer with where the word starts and every match, quoted.
+#[test]
+fn the_word_under_the_cursor_expands_to_every_match() {
+    let dir = tree();
+    let h = helper(Environment::new());
+    let base = format!("{}/", dir.path().display());
+    let line = format!("ls {base}*.rs");
+    let (start, words) = h.glob_words(&line, line.len()).expect("it globs");
+    assert_eq!(start, 3);
+    let words: Vec<String> = words.iter().map(|w| w.replace(&base, "")).collect();
+    assert_eq!(words, ["lib.rs", "main.rs"]);
+    assert!(h.glob_words("ls plain", 8).is_none(), "nothing to expand");
+}
+
 /// A name that holds a glob character is still a name: nothing matches it as a pattern, so it
 /// completes by prefix, and comes back escaped so the shell will not glob it either.
 #[test]

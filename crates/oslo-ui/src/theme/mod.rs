@@ -188,6 +188,9 @@ pub struct Syntax {
     pub option: Style,
     /// A glob metacharacter: `*`, `?`, `[…]`.
     pub glob: Style,
+    /// A glob that matches nothing — the word will reach the command as its own text, or not at
+    /// all under `failglob`. Not drawn when `nullglob` makes an empty match ordinary.
+    pub glob_nomatch: Style,
     /// A stream coordinate: `{0:1}`, `{%0:0}`. Kin to `glob` and deliberately not the same colour —
     /// both turn one word into others, but a glob asks the filesystem and a coordinate asks the
     /// pipeline, and `{4}` versus bash's literal `{4}` is a distinction only colour can make here.
@@ -258,6 +261,10 @@ impl Syntax {
             glob: Style {
                 bold: true,
                 ..rgb(0xa6, 0x1c, 0x7b)
+            },
+            glob_nomatch: Style {
+                underline: true,
+                ..rgb(0xc4, 0x1a, 0x16)
             },
             coordinate: Style {
                 bold: true,
@@ -353,6 +360,10 @@ impl Default for Syntax {
             glob: Style {
                 bold: true,
                 ..rgb(0xff, 0x79, 0xc6)
+            },
+            glob_nomatch: Style {
+                underline: true,
+                ..rgb(0xff, 0x55, 0x55)
             },
             coordinate: Style {
                 bold: true,
