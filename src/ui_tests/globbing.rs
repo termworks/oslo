@@ -102,11 +102,35 @@ fn the_word_under_the_cursor_expands_to_every_match() {
     let h = helper(Environment::new());
     let base = format!("{}/", dir.path().display());
     let line = format!("ls {base}*.rs");
-    let (start, words) = h.glob_words(&line, line.len()).expect("it globs");
-    assert_eq!(start, 3);
+    let (start, end, words) = h.glob_words(&line, line.len()).expect("it globs");
+    assert_eq!((start, end), (3, line.len()));
     let words: Vec<String> = words.iter().map(|w| w.replace(&base, "")).collect();
     assert_eq!(words, ["lib.rs", "main.rs"]);
     assert!(h.glob_words("ls plain", 8).is_none(), "nothing to expand");
+}
+
+/// `pattern(qualifiers)` completes whole, right after its `)`, and filters before it offers.
+#[test]
+fn a_qualified_glob_completes_whole_and_filtered() {
+    let dir = tree();
+    let h = helper(Environment::new());
+    let base = format!("{}/", dir.path().display());
+
+    let line = format!("ls {base}*.log(re '^b')");
+    let (start, candidates) = h.candidates(&line, line.len());
+    assert_eq!(start, 3, "the whole `pattern(…)` is replaced");
+    let shown: Vec<String> = candidates
+        .iter()
+        .map(|c| c.replacement.replace(&base, ""))
+        .collect();
+    assert_eq!(shown, ["build.log"]);
+
+    let line = format!("ls {base}**/*.rs(depth 1-9) -l");
+    let at = line.find(" -l").expect("flag");
+    let (start, end, words) = h.glob_words(&line, at).expect("it expands");
+    assert_eq!((start, end), (3, at));
+    let words: Vec<String> = words.iter().map(|w| w.replace(&base, "")).collect();
+    assert_eq!(words, ["src/main.rs", "src/sub/deep.rs"]);
 }
 
 /// A name that holds a glob character is still a name: nothing matches it as a pattern, so it

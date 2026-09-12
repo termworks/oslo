@@ -348,12 +348,12 @@ impl Assist for ShellAssist<'_> {
     fn expand_glob(&mut self, line: &str, cursor: usize) -> Option<(String, usize)> {
         let helper = self.helper?;
         let pos: usize = line.chars().take(cursor).map(char::len_utf8).sum();
-        let (start, words) = helper.glob_words(line, pos)?;
+        let (start, end, words) = helper.glob_words(line, pos)?;
         let mut out = String::with_capacity(line.len() + 64);
         out.push_str(&line[..start]);
         out.push_str(&words.join(" "));
         let at = out.chars().count();
-        out.push_str(&line[pos..]);
+        out.push_str(&line[end.max(pos)..]);
         Some((out, at))
     }
 
@@ -362,11 +362,17 @@ impl Assist for ShellAssist<'_> {
             return;
         };
         let pos: usize = line.chars().take(cursor).map(char::len_utf8).sum();
-        let shown = match helper.glob_words(line, pos) {
-            Some((_, words)) => format!("{} matches: {}", words.len(), words.join("  ")),
-            None => "matches nothing".to_string(),
+        let (start, shown) = match helper.glob_words(line, pos) {
+            Some((start, _, words)) => (
+                start,
+                format!("{} matches: {}", words.len(), words.join("  ")),
+            ),
+            None => (
+                oslo_ui::words::current_word(line, pos).start,
+                "matches nothing".to_string(),
+            ),
         };
-        let start = oslo_ui::words::current_word(line, pos).start;
+        let start = start.min(pos);
         let cells = self.prompt_cols + dropdown::visible_len(&line[..start]);
         let indent = cells % dropdown::terminal_cols().max(1);
         dropdown::notice(&shown, indent, &line[start..pos], keys);
@@ -490,6 +496,20 @@ impl Assist for ShellAssist<'_> {
         cursor: usize,
         ending: Option<char>,
     ) -> Option<(String, usize)> {
+        // **Enter turns `pattern(qualifiers)` into filenames before the line runs**, so what runs
+        // and what history records is the files. Not gated on abbreviations: a different feature
+        // that happens to share the moment. See `oslo_ui::completion::qualified`.
+        if ending.is_none() {
+            match oslo_ui::completion::qualified::rewrite(line) {
+                Ok(Some(text)) => {
+                    let cursor = text.chars().count();
+                    return Some((text, cursor));
+                }
+                Ok(None) => {}
+                // Left as typed, and said why: the shell's own complaint about the `(` follows.
+                Err(problem) => eprintln!("oslo: {problem}"),
+            }
+        }
         if !oslo_base::feature::on(oslo_base::feature::at::ABBR) {
             return None;
         }

@@ -3,6 +3,7 @@
 mod glob;
 pub mod lua;
 mod paths;
+pub mod qualified;
 pub(crate) use glob::glob_matches_anything;
 pub(crate) use paths::executable;
 pub(crate) use paths::takes_only_directories;
@@ -176,6 +177,29 @@ impl OsloHelper {
         // nothing, rather than falling through to answers that cannot be written here.
         if is_lua() {
             return lua::candidates(line, pos).unwrap_or((pos, Vec::new()));
+        }
+
+        // **`pattern(qualifiers)` completes whole**, right after its `)`. Its words are split at the
+        // spaces inside the parentheses, so the ordinary word here would be `1M)`. See `qualified`.
+        if let Some(q) = qualified::at(line, pos).filter(|q| q.end == pos) {
+            let words = qualified::expand(&q).unwrap_or_default();
+            let mut out = Vec::new();
+            if words.len() > 1 {
+                out.push(CompletionCandidate {
+                    display: format!("all {} matches", words.len()),
+                    replacement: words.join(" "),
+                    description: None,
+                    kind: Some("glob".to_string()),
+                    path: None,
+                    detail: None,
+                });
+            }
+            out.extend(
+                words
+                    .into_iter()
+                    .map(|w| CompletionCandidate::new(w.clone(), w, None)),
+            );
+            return (q.start, out);
         }
 
         // oslo's own shorthands first: both look like ordinary words and neither completes like
