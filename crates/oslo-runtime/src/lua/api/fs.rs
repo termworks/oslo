@@ -316,22 +316,11 @@ fn listing(it: &mut Table) {
         ]))
     });
 
+    // The same function as `oslo.glob`, under the namespace that holds the rest of the filesystem.
     put(it, "glob", |_, args| {
-        let pattern = text(&args, 1, "oslo.fs.glob")?;
-        let field = [oslo_shell::expand::Run::new(
-            pattern.clone(),
-            oslo_shell::expand::Origin::Literal,
-        )];
-        let matches = oslo_shell::expand::glob::expand_glob(&field);
-        // `expand_glob` yields the pattern back when nothing matched, the way an unquoted word
-        // does on a command line. Here that would be a lie, so it becomes an empty table.
-        let matches = if matches == vec![pattern] {
-            Vec::new()
-        } else {
-            matches
-        };
-        ok(list(matches.into_iter().map(Value::str)))
+        super::glob::glob(&args, "oslo.fs.glob")
     });
+    put(it, "match", |_, args| super::glob::matches(&args));
 }
 
 fn metadata(it: &mut Table) {

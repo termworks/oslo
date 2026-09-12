@@ -91,7 +91,7 @@ pub use process::{
     builtin_kill, builtin_trap, builtin_umask, pending_signal, run_debug_trap, run_err_trap,
     run_exit_trap, run_pending_traps,
 };
-pub use shopt::builtin_shopt;
+pub use shopt::{builtin_shopt, option_state, set_option};
 pub use status::builtin_status;
 pub use suspend::builtin_suspend;
 pub use times::builtin_times;

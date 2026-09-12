@@ -122,6 +122,31 @@ fn record(index: usize, on: bool) {
     }
 }
 
+/// The state of one option, for callers that are not the builtin — `oslo.shopt` in Lua.
+pub fn option_state(name: &str) -> Option<bool> {
+    OPTIONS.iter().position(|o| o.name == name).map(state_of)
+}
+
+/// Set one option exactly as `shopt -s`/`-u` would, refusing a fixed one with its reason.
+pub fn set_option(name: &str, on: bool) -> std::result::Result<(), String> {
+    let Some(index) = OPTIONS.iter().position(|o| o.name == name) else {
+        return Err(format!("{name}: invalid shell option name"));
+    };
+    match OPTIONS[index].support {
+        Support::Hook(apply) => {
+            apply(on);
+            record(index, on);
+            Ok(())
+        }
+        Support::Fixed(state) if state == on => Ok(()),
+        Support::Fixed(_) => Err(format!(
+            "{name}: cannot be turned {}: {}",
+            on_off(on),
+            OPTIONS[index].because
+        )),
+    }
+}
+
 /// Everything the option run decided.
 struct Flags {
     /// `-s` or `-u`: the state being asked for. `None` is a query.
