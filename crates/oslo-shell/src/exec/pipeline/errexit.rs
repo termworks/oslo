@@ -39,6 +39,27 @@ thread_local! {
     /// A flag rather than a counter: it describes one status, not a nesting extent, and each
     /// `run_and_record` clears it before running so nothing stale can be read.
     static STATUS_EXEMPT: Cell<bool> = const { Cell::new(false) };
+
+    /// Whether the failure the status in hand describes has already fired the ERR trap.
+    ///
+    /// **One failing command is one ERR, however many constructs carry its status out.** A
+    /// compound inherits its body's last status, so `f(){ false; }; f` failed twice as far as the
+    /// trap could see — once for the `false` and once for the call reporting the 1 it left — and
+    /// `case x in x) false;; esac` did the same. bash fires once.
+    ///
+    /// Set after the handler runs rather than before, because the handler's own commands come
+    /// back through here and would clear it on the way.
+    static ERR_REPORTED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Note whether the failing status in hand has already been reported to the ERR trap.
+pub(super) fn set_err_reported(reported: bool) {
+    ERR_REPORTED.with(|e| e.set(reported));
+}
+
+/// Whether the ERR trap has already run for the failure in hand.
+pub(super) fn err_reported() -> bool {
+    ERR_REPORTED.with(|e| e.get())
 }
 
 /// Note whether the status now in hand is one `set -e` may judge.

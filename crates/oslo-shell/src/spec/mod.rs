@@ -26,7 +26,9 @@
 pub mod man;
 #[cfg(feature = "compgen")]
 pub mod read;
+pub mod remote;
 pub mod run;
+pub mod state;
 #[cfg(feature = "compgen")]
 pub mod yaml;
 

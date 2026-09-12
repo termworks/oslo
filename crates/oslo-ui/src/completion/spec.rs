@@ -61,12 +61,25 @@ impl OsloHelper {
         words
     }
 
+    /// The words a command word runs, as written on the line.
+    ///
+    /// **Through the alias table only when written plainly.** `\cp`, `'cp'` and `"cp"` are how a
+    /// shell is told to skip the alias, so `\cp <Tab>` completed as the `cp` alias's `rsync` —
+    /// offering hosts to a command that has never heard of one.
+    fn resolve_written(&self, raw: &str) -> Vec<String> {
+        let name = unquote(raw);
+        match raw == name {
+            true => self.resolve_alias(&name),
+            false => vec![name],
+        }
+    }
+
     /// Just the name, for callers that only need to know what is being run.
-    pub(super) fn resolve_head(&self, name: &str) -> String {
-        self.resolve_alias(name)
+    pub(super) fn resolve_head(&self, raw: &str) -> String {
+        self.resolve_written(raw)
             .first()
             .cloned()
-            .unwrap_or_else(|| name.to_string())
+            .unwrap_or_else(|| unquote(raw))
     }
 
     /// Answer from the spec for this command, if it has one.
@@ -87,7 +100,7 @@ impl OsloHelper {
         // Through the alias table first. Everyone aliases `git`, and `g comm<TAB>` offering
         // nothing is a gap the shell has no excuse for: the alias table is already loaded and this
         // function is already holding the environment.
-        let expanded = self.resolve_alias(&unquote(primary));
+        let expanded = self.resolve_written(primary);
         let Some((head, from_alias)) = expanded.split_first() else {
             return false;
         };
@@ -284,6 +297,15 @@ impl OsloHelper {
             None => (word, Vec::new()),
         };
 
+        // **Once the word names another machine, only that machine can answer.** Not the local
+        // filesystem, and not a second host either: after `tron:` every host row would splice into
+        // `tron:othermachine`, a word naming neither. The position was declared, so this answers
+        // `true` whatever it found and the caller does not fall back to ordinary path completion.
+        if names_another_machine(action, &word) {
+            self.remote_candidates(&word, out);
+            return true;
+        }
+
         let fold = self.case_sensitive();
         for offer in &resolved.offers {
             if resolved.unique && taken.contains(&offer.value) {
@@ -308,6 +330,75 @@ impl OsloHelper {
         }
         true
     }
+
+    /// What the machine named before the `:` has in the directory being typed.
+    ///
+    /// Silent unless a lister is installed, which is what makes this safe to reach from a crate
+    /// that must not run programs: with none, the position answers nothing and the menu stays shut
+    /// — the behaviour before there was any remote listing at all.
+    ///
+    /// The value of each row is the **whole path**, not the name: the `:` is a word break, so what
+    /// gets replaced on the line is everything after it, and a bare `log` would turn
+    /// `host:/var/lo` into `host:log`.
+    fn remote_candidates(&self, word: &Word<'_>, out: &mut Vec<CompletionCandidate>) {
+        let Some(host) = word.prefix.strip_suffix(':') else {
+            return;
+        };
+        let (dir, fragment) = crate::spec::remote::split(&word.stem);
+        let Some(found) = crate::spec::remote::entries(host, dir) else {
+            return;
+        };
+        let fold = self.case_sensitive();
+        for entry in found {
+            // Hidden names only once somebody has typed the dot, as local path completion does.
+            if entry.name.starts_with('.') && !fragment.starts_with('.') {
+                continue;
+            }
+            if !matches_prefix(&entry.name, fragment, fold) {
+                continue;
+            }
+            // A directory keeps its `/`, so the next Tab continues into it rather than ending the
+            // word.
+            let slash = if entry.directory { "/" } else { "" };
+            let whole = format!("{dir}{}{slash}", entry.name);
+            let kind = if entry.directory {
+                "directory"
+            } else {
+                "remote"
+            };
+            out.push(candidate(word, &whole, None, kind));
+        }
+    }
+}
+
+/// Whether the word being completed is a path on a *different* machine.
+///
+/// **`scp f host:/etc/<Tab>` listed the local `/etc`** — 265 entries off this machine, offered as
+/// though they were the other one's. Nothing in the menu says which filesystem a row came from, so
+/// a wrong answer in the right shape is worse here than no answer: the name it inserts exists, and
+/// the copy that uses it fails somewhere else entirely.
+///
+/// oslo cannot list the far side yet. That needs an `ssh` round trip, and this runs on the Tab
+/// keystroke with the terminal in raw mode — the reason every macro that *can* fork is given a
+/// deadline. Until it can, the honest answer is nothing.
+///
+/// **Keyed on the position offering `$hosts`**, which is what marks an operand as one that may name
+/// a machine: `ssh`, `scp`, `sftp`, `rsync`, and any spec written the same way. Everywhere else a
+/// colon is an ordinary character and a file called `a:b` still completes. The `:` is already a word
+/// break — bash's `COMP_WORDBREAKS` — so by here it is the word's *prefix* and the stem is only what
+/// follows it.
+fn names_another_machine(action: &Action, word: &Word<'_>) -> bool {
+    let Action::List(list) = action else {
+        return false;
+    };
+    if !list.iter().any(|entry| entry.trim() == "$hosts") {
+        return false;
+    }
+    let Some(before) = word.prefix.strip_suffix(':') else {
+        return false;
+    };
+    // `:/tmp` names no machine, and `./a:b` and `/a:b` are local files with a colon in the name.
+    !before.is_empty() && !before.contains('/')
 }
 
 /// Whether the word being typed is a flag still being named.

@@ -4,6 +4,7 @@ use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 use nix::unistd::dup2;
 use oslo_base::ast::{RedirectKind, Redirection};
 use oslo_base::error::{Result, ShellError, reason};
+use oslo_base::shown::shown;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::RawFd;
@@ -90,9 +91,14 @@ impl RedirectGuard {
 
             match redir.kind {
                 RedirectKind::Input => {
-                    let file = File::open(&target_str).map_err(|e| {
-                        ShellError::ExecutionError(format!("{}: {}", target_str, reason(&e)))
-                    })?;
+                    let file =
+                        File::open(oslo_base::lossless::to_os(&target_str)).map_err(|e| {
+                            ShellError::ExecutionError(format!(
+                                "{}: {}",
+                                shown(&target_str),
+                                reason(&e)
+                            ))
+                        })?;
                     install(file, target_fd)?;
                 }
                 // `>` and `>|` differ in exactly one situation, and only when `set -C` is on.
@@ -108,9 +114,13 @@ impl RedirectGuard {
                     let file = OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(&target_str)
+                        .open(oslo_base::lossless::to_os(&target_str))
                         .map_err(|e| {
-                            ShellError::ExecutionError(format!("{}: {}", target_str, reason(&e)))
+                            ShellError::ExecutionError(format!(
+                                "{}: {}",
+                                shown(&target_str),
+                                reason(&e)
+                            ))
                         })?;
                     install(file, target_fd)?;
                 }
@@ -120,9 +130,13 @@ impl RedirectGuard {
                         .write(true)
                         .create(true)
                         .truncate(false)
-                        .open(&target_str)
+                        .open(oslo_base::lossless::to_os(&target_str))
                         .map_err(|e| {
-                            ShellError::ExecutionError(format!("{}: {}", target_str, reason(&e)))
+                            ShellError::ExecutionError(format!(
+                                "{}: {}",
+                                shown(&target_str),
+                                reason(&e)
+                            ))
                         })?;
                     install(file, target_fd)?;
                 }
@@ -136,7 +150,7 @@ impl RedirectGuard {
                         dup2(src_fd, target_fd).map_err(|_| {
                             ShellError::ExecutionError(format!(
                                 "{}: Bad file descriptor",
-                                target_str
+                                shown(&target_str)
                             ))
                         })?;
                     } else if redir.kind == RedirectKind::DupOutput && redir.fd.is_none() {
@@ -156,7 +170,7 @@ impl RedirectGuard {
                     } else {
                         return Err(ShellError::ExecutionError(format!(
                             "Invalid file descriptor for dup: {}",
-                            target_str
+                            shown(&target_str)
                         )));
                     }
                 }
@@ -251,35 +265,37 @@ fn name_of(target: &oslo_base::ast::Word, expanded: &[String]) -> String {
 ///   overwrite, and POSIX scopes the restriction to regular files for that reason.
 /// * `>|`, which is the escape hatch — see the caller.
 fn open_for_output(path: &str, refuse_existing: bool) -> Result<File> {
+    // Opened by its real bytes, reported by its text; see `oslo_base::lossless`.
+    let real = oslo_base::lossless::to_os(path);
     if !refuse_existing {
         return OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(path)
-            .map_err(|e| ShellError::ExecutionError(format!("{}: {}", path, reason(&e))));
+            .open(&real)
+            .map_err(|e| ShellError::ExecutionError(format!("{}: {}", shown(path), reason(&e))));
     }
 
-    match OpenOptions::new().write(true).create_new(true).open(path) {
+    match OpenOptions::new().write(true).create_new(true).open(&real) {
         Ok(file) => Ok(file),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // `symlink_metadata` is wrong here: `> link-to-dev-null` follows the link in every
             // shell, so the question is what the *target* is.
-            let regular = std::fs::metadata(path).is_ok_and(|m| m.is_file());
+            let regular = std::fs::metadata(&real).is_ok_and(|m| m.is_file());
             if regular {
                 return Err(ShellError::ExecutionError(format!(
                     "{}: cannot overwrite existing file",
-                    path
+                    shown(path)
                 )));
             }
             OpenOptions::new()
                 .write(true)
-                .open(path)
-                .map_err(|e| ShellError::ExecutionError(format!("{}: {}", path, reason(&e))))
+                .open(&real)
+                .map_err(|e| ShellError::ExecutionError(format!("{}: {}", shown(path), reason(&e))))
         }
         Err(e) => Err(ShellError::ExecutionError(format!(
             "{}: {}",
-            path,
+            shown(path),
             reason(&e)
         ))),
     }

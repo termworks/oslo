@@ -105,24 +105,24 @@ fn an_ignored_signal_is_discarded() {
     assert_eq!(r.out(), "survived", "stderr: {}", r.stderr);
 }
 
-/// Not implemented has to *say* not implemented. A stored-and-never-run ERR handler is the one
+/// Not implemented has to *say* not implemented. A stored-and-never-run handler is the one
 /// outcome a script cannot detect for itself.
 ///
-/// `DEBUG` left this list when it became real; see `the_debug_trap_fires_before_each_command`.
+/// `DEBUG` left this list when it became real, and `ERR` has now followed it — see
+/// [`the_err_trap_fires_for_a_failed_command`]. `RETURN` is what is left.
 #[test]
 fn the_unsupported_conditions_refuse_loudly() {
-    for condition in ["ERR", "RETURN"] {
-        let r = run_in(
-            tempfile::tempdir().expect("tempdir").path(),
-            &format!("trap 'echo handler' {condition}\necho \"status=$?\""),
-        );
-        assert_eq!(r.out(), "status=1", "{condition}");
-        assert!(
-            r.stderr.contains("not supported"),
-            "{condition}: stderr said {:?}",
-            r.stderr
-        );
-    }
+    let condition = "RETURN";
+    let r = run_in(
+        tempfile::tempdir().expect("tempdir").path(),
+        &format!("trap 'echo handler' {condition}\necho \"status=$?\""),
+    );
+    assert_eq!(r.out(), "status=1", "{condition}");
+    assert!(
+        r.stderr.contains("not supported"),
+        "{condition}: stderr said {:?}",
+        r.stderr
+    );
 }
 
 /// `trap -l` names every signal this system can deliver, in the spelling the other operands take.
@@ -197,4 +197,30 @@ fn a_debug_handler_does_not_fire_itself() {
         "trap 'echo tick' DEBUG\necho done",
     );
     assert_eq!(r.out(), "tick\ndone", "stderr: {}", r.stderr);
+}
+
+/// **`set -e; trap cleanup ERR` is the error-handling idiom**, and the condition used to be
+/// refused outright. It fires for a command that failed, under exactly the exemptions `set -e`
+/// uses — an `if`/`while` condition, every command of an and-or list but the last, anything under
+/// `!` — and once per failure, however many constructs carry that status out.
+#[test]
+fn the_err_trap_fires_for_a_failed_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let r = run_in(
+        dir.path(),
+        "trap 'echo caught' ERR\nfalse\nif false; then :; fi\nfalse || true\n! true\necho done",
+    );
+    assert_eq!(r.out(), "caught\ndone", "stderr: {}", r.stderr);
+}
+
+/// One failing command is one ERR. A function body's failure and the call reporting the status it
+/// left are the same failure, and bash fires once for them.
+#[test]
+fn the_err_trap_fires_once_per_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let r = run_in(
+        dir.path(),
+        "trap 'echo caught' ERR\nf() { false; }\nf\ncase x in x) false;; esac\necho done",
+    );
+    assert_eq!(r.out(), "caught\ncaught\ndone", "stderr: {}", r.stderr);
 }

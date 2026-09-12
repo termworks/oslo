@@ -209,9 +209,9 @@ Which is why a provider has the two things `for_command` never had:
 
 A provider takes the same guards the ghost's does — `min_chars` and an `enabled` predicate — and a
 list of plain strings is accepted where there is nothing to say about each one:
-`return { "one", "two" }`. `examples/plugins/tldr` is the worked example. Only offers that continue the word being typed are shown, `max_items`
-bounds what one provider can contribute so it cannot flood the menu, and a provider that raises loses
-its own candidates and nothing else. `oslo.completion.providers()` lists what is registered.
+`return { "one", "two" }`. Only offers that continue the word being typed are shown, `max_items`
+bounds what one provider can contribute so it cannot flood the menu, and a provider that raises
+loses its own candidates and nothing else. `oslo.completion.providers()` lists what is registered.
 
 ### Declaring a spec instead of computing one
 
@@ -295,6 +295,17 @@ how the menu tells a branch from a file.
 | `$files([.go, go.mod])` | files, optionally filtered by suffix |
 | `$directories` | directories only |
 | `$executables` | things that run |
+| `$hosts` | machines this one knows — see below; `user@` is kept |
+| `$pids` | processes running now, newest first, each with its command |
+| `$signals` | `TERM`, `KILL`, … — the name `kill -s` takes, its number beside it |
+| `$users`, `$groups` | `/etc/passwd` and `/etc/group`, with the id beside each |
+| `$variables` | this shell's environment, each value truncated to a column |
+| `$interfaces` | network interfaces, with their state |
+| `$mounts` | mount points — what `umount` and `df` take, not the device |
+| `$services` | systemd units, from the unit directories |
+| `$jobs` | this shell's job table, as the `%n` that names each |
+| `$aliases`, `$functions` | what this session has defined |
+| `$branches`, `$tags`, `$remotes`, `$revisions` | the refs of the repository you are in |
 | `$(git branch)` | run it here and read what it printed, one offer per line |
 | `$bash(…)`, `$zsh(…)`, `$fish(…)`, `$nu(…)`, … | run it in that shell, if it is installed |
 
@@ -427,6 +438,212 @@ second feature, and carapace-spec ships a separate binary for it. `exclusiveflag
 `documentation` and `examples` are read past without complaint, because real spec files have them
 and a reader that stopped at one would read almost nothing. `$spec(other.yaml)` is not read yet.
 
+### Hostnames, for the ssh family
+
+```text
+scp report.pdf ci@ga⇥
+  ci@gate.example.com   host   known host
+  ci@ga-build-01        host   ssh config
+```
+
+`$hosts` is a source rather than a spec, because **the answer is a property of this machine and not
+of the command**: `ssh`, `scp`, `sftp` and `rsync` all want the same list, and no amount of
+describing `scp` produces it. Four files, read once per session on the first Tab that asks:
+
+| | |
+|---|---|
+| `~/.ssh/config` | `Host` lines — the names you chose |
+| `~/.ssh/known_hosts` | machines actually connected to |
+| `/etc/ssh/ssh_known_hosts` | the same, system-wide |
+| `/etc/hosts` | names this machine resolves without asking anyone |
+
+Each row says which, so a name you do not recognise tells you whether you invented it, connected to
+it once, or merely have it in `/etc/hosts`. The order decides that credit, not the position in the
+menu — the dropdown still ranks by what you have actually run.
+
+**`user@` is carried through.** A candidate has to match the whole word or nothing does, and
+`ci@ga` *is* the word — so an offer of the bare `gate.example.com` matches nothing and the menu
+stays shut. Whatever was typed up to the last `@` is put back on the front of every host.
+
+Not offered: wildcards (`Host *` is a pattern, not a machine), hashed `known_hosts` entries
+(`HashKnownHosts yes` stores `|1|…`, which is a hash and not a name), and bare addresses — `127.0.0.1`
+is in `/etc/hosts` on every machine and is never what somebody is half way through typing.
+
+zsh asks `getent hosts` and NIS as well. Both are a process, or a network round trip, **on the Tab
+key**; the four files are a `read` each and cover what a person actually types.
+
+### Listing the other machine
+
+```text
+scp report.pdf build:/srv/⇥
+  /srv/www/       directory
+  /srv/backup/    directory
+  /srv/notes.md   remote
+```
+
+**This is the only completion in oslo that opens a connection**, and it is the only one that has
+to be: every other source is a file read because some local file knows the answer — `/proc` for
+processes, `/etc/passwd` for users. No local file says what is on another machine.
+
+Before it existed, `host:/etc/⇥` completed *this* machine's `/etc` and offered it as though it were
+the other one's. Nothing in a menu row says which filesystem it came from, so the name it inserted
+existed and the copy that used it failed somewhere else entirely. A wrong answer in the right shape
+is worse than no answer.
+
+| | |
+|---|---|
+| what runs | `ssh -o BatchMode=yes -o ConnectTimeout=5 -T host 'LC_ALL=C ls -1Ap -- <dir>'` |
+| first ask | ~140 ms on a warm link |
+| same directory again | 0 ms — remembered until the next command |
+| a machine that refuses | ~40 ms, ssh's reason shown under the word |
+| a machine that hangs | 10 s, then killed — `host: no answer in 10s` under the word |
+
+**`BatchMode=yes` is the load-bearing flag.** Without it `ssh` prompts — for a password, a
+passphrase, a host key — and a prompt from a child process while the editor holds the terminal in
+raw mode is a shell nobody can type into. With it, a machine that would have asked simply fails and
+the menu stays shut. That is why this works for machines a key already opens, and only those; it is
+the case worth having and the only one that can be made safe on a keystroke.
+
+A listing is remembered until the next command runs; creating the directory you are about to copy
+into happens between two prompts. **A failure is not remembered**: the next Tab asks again, so a
+slow link that missed the deadline once gets another try, and the one-line reason under the word —
+ssh's own, `ls`'s, or the deadline — says which of a refused key, a wrong name or a slow link it
+was. The deadline is ten seconds rather than the macro's two, because a handshake to a distant
+machine takes longer than any local program should.
+
+**No `ControlMaster` is started.** Opening a shared connection behind somebody's back leaves a
+socket and a process they did not ask for. One that already *exists* is used by `ssh` automatically,
+so a person who wants each listing to cost a millisecond can say so in `~/.ssh/config`, where that
+decision belongs.
+
+Two things are deliberately refused. A destination beginning with `-` is not passed to `ssh` at all
+— `scp -oProxyCommand=…⇥` is a word `ssh` would read as a flag rather than a machine, and argv is no
+defence against a program's own option parsing. And the path is single-quoted for the remote shell,
+so a directory called `x; rm -rf /` is one word over there; only a leading `~` is left bare, because
+`'~/'` is a directory named tilde.
+
+It is installed **only at a prompt**. A script has no menu to fill, and a shell that forked `ssh`
+from a `-c` line would be doing it where nobody asked.
+
+### The rest of what the machine knows
+
+```text
+kill 12⇥                  unset PA⇥                 umount /m⇥
+  1247   cargo      pid     PATH  /usr/bin:…  var     /mnt/backup  ext4  mount
+  1203   rust-anal… pid     PAGER less        var     /media/usb   vfat  mount
+```
+
+`$hosts` generalises. A pid is not a fact about `kill` — it is a fact about **this machine at this
+moment**, and it is the same fact `pkill`, `renice`, `strace` and `tail --pid` all want. So each of
+these is written once and pointed at from as many specs as want it:
+
+| source | from | shipped specs pointing at it |
+|---|---|---|
+| `$pids` | `/proc`, newest first, `comm` beside each | `kill`, `renice`, `strace --attach` |
+| `$signals` | a fixed list — the POSIX signals and the common Linux ones | `kill -s` |
+| `$users` | `/etc/passwd` | `chown`, `su`, `renice --user` |
+| `$groups` | `/etc/group` | `chgrp` |
+| `$variables` | this process's environment | `unset`, `env`, `printenv` |
+| `$interfaces` | `/sys/class/net` | `ip`, `tcpdump -i` |
+| `$mounts` | `/proc/mounts` | `umount` |
+| `$services` | the systemd unit directories | `systemctl start`, `stop`, `enable`, … |
+
+**Nothing here starts a process.** Every one is a read of `/proc`, `/sys`, `/etc` or the environment
+— the files the kernel and libc already keep for exactly these questions. zsh asks `getent`, `ps`
+and `systemctl` for some of the same answers and pays a fork per Tab for it.
+
+What is read once and what is read every time follows from what changes. Users, groups, service
+units and hosts are read once: adding a user mid-line is not a thing that happens. Pids, variables,
+mounts and interfaces are read on every Tab, because **the shell itself changes them** — `export X=1`
+then `unset ⇥` has to see `X`, a `mount` you just ran has to appear in the next `umount ⇥`, and a pid
+list a minute old is a list of the wrong pids.
+
+Three choices worth stating, because each cost something:
+
+* **`$pids` is newest first.** The thing you want to stop is nearly always the thing you just
+  started, and `/proc` enumerates in whatever order the directory happens to be in. The dropdown
+  ranks on top of that; the order it is given decides ties.
+* **`$mounts` offers the mount point, not the device.** That is what `umount`, `df` and `findmnt`
+  take, and the device is the field nobody can type from memory.
+* **`$services` reads the unit directories rather than `systemctl list-units`**, which is a process
+  and on a cold cache a slow one. What that costs is the *state* column — a directory listing cannot
+  say whether a unit is running — so the note is the unit's type instead, which is the part that
+  tells `nginx.service` from `nginx.socket`.
+
+Adding one is a function returning `Vec<Suggestion>` and a line in `sources::offers`. Then any spec,
+shipped or your own, can name it as `$whatever`.
+
+### Git refs, read from `.git`
+
+```text
+git checkout ⇥              git checkout v0.6⇥
+  develop     current  branch   v0.6.0   tag
+  feat/after-fish      branch   v0.6.1   tag
+  origin/main   remote branch   v0.6.2   tag
+```
+
+This is the most-typed completion in any shell, and before this it offered the filenames in the
+current directory: the shipped `git` spec is three hundred kilobytes of flags and not one branch,
+because a branch is not a fact about `git`.
+
+| source | for |
+|---|---|
+| `$branches` | `git branch -d`, `git switch` |
+| `$tags` | `git tag -d` |
+| `$remotes` | `git push`, `pull`, `fetch`, `remote` |
+| `$revisions` | `checkout`, `merge`, `rebase`, `log`, `diff`, `show`, `revert`, `reset` |
+
+**Read from `.git`, not from `git`.** zsh and carapace both run `git for-each-ref` here — a fork, a
+process, and on a cold cache a visible one. The refs are files: `refs/heads/` is a directory of them
+and `packed-refs` is a text file of the rest, so the answer is two reads and a walk of a directory
+with one entry per branch. It works where a fork would not, too: a repository whose `git` is not on
+`$PATH`, and the keystroke path where a macro must be given a deadline precisely because a child
+might never come back.
+
+Both halves are read, because `git gc` folds refs into `packed-refs` at any time and a source
+reading only `refs/heads/` would quietly lose branches as a repository ages. A worktree's `.git` is
+a *file* holding `gitdir:`, and its refs belong to the repository all the worktrees share — named
+by a `commondir` beside them, which is the difference between completing branches in a worktree and
+completing nothing.
+
+**Tags appear once you have typed something.** A bare `git checkout ⇥` offers branches; this
+repository has 68 tags and three branches, and the menu breaks ties alphabetically, so including
+tags in the empty menu buries every branch under `v0.1.1`. Nothing is lost — `git checkout v0.6⇥`
+finds the tag, because by then there is a prefix to search with. An empty Tab is a menu of what you
+might want; a typed prefix is a search.
+
+Not cached: a branch you just created is the branch you are about to check out, and the repository
+being completed in changes with every `cd`.
+
+### What only this shell knows
+
+```text
+fg %⇥                      unalias ⇥
+  %1  cargo build  running   ll   ls -l      alias
+  %2  vim  stopped          gs   git status  alias
+```
+
+| source | for |
+|---|---|
+| `$jobs` | `fg`, `bg`, `wait`, `disown`, `jobs` |
+| `$aliases` | `unalias` |
+| `$functions` | anything that names one |
+
+**No other shell's spec system can answer these**, because no other spec system runs inside the
+shell. carapace is a separate binary; it cannot see a job table it is not the parent of.
+
+They do not come from `sources` and they cannot come from `$(…)`. `sources` reads files, and there
+is no file holding a job table. And **every macro runs as a child** — see the deadline in
+[Declaring is not always computing](#declaring-is-not-always-computing) — so `$(jobs)` would fork a
+shell that has never seen this session's aliases and owns none of its children, then answer
+honestly and emptily. These ride the macro hook and are answered in the shell's own process,
+before the name is treated as a command to run.
+
+**`%1`, not `1`.** A bare number is a pid to `fg`, `bg`, `wait` and `kill` alike, which is a
+different job or no job at all. And an alias carries its expansion in the second column, because
+that is the one thing its name does not tell you — and the name you cannot place is exactly the one
+you are about to `unalias`.
+
 ### From a man page, for everything nobody wrote a spec for
 
 Also behind `compgen`. A spec file is better than anything read out of prose — it knows subcommands,
@@ -503,6 +720,15 @@ The shape all three want is the same: a spec that is *computed from what the she
 rather than read from a file. `oslo.completion.spec` takes a function for a position already; what
 is missing is the same idea one level up — a spec whose whole self is answered on demand.
 
+## Globs
+
+A word that globs is answered by the shell's own pattern engine rather than by a prefix test: the
+menu's first row, `all N matches`, puts every match on the line, and the rows below it are the
+matches one by one. `**` is recursive, closed braces are expanded first, and a pattern that matches
+nothing is retried with a trailing `*`. `oslo.completion.glob` chooses between `"menu"` (the
+default), `"expand"` and `"literal"`. A qualified glob — `*.log(older 7d)` — is expanded whole. All
+of it is in [globbing.md](globbing.md#at-the-prompt).
+
 ## Measurements
 
 From `cargo bench --bench fuzzy` on this machine — one short pattern (`gco`, `smart`) scored
@@ -576,6 +802,8 @@ the command's shape already is.
 | `crates/oslo-ui/src/spec/custom.rs` | the specs a config or a plugin declared |
 | `crates/oslo-ui/src/completion/provider.rs` | the candidate providers, their kinds and offsets |
 | `crates/oslo-ui/src/completion/paths.rs` | `path_candidates` — the one builder that reads the disk |
+| `crates/oslo-ui/src/completion/glob.rs` | a glob word: the `all N matches` row, the budgets |
+| `crates/oslo-ui/src/completion/qualified.rs` | `pattern(qualifiers)`, turned into filenames |
 | `crates/oslo-runtime/src/lua/api/complete.rs` | `oslo.completion.provider` — the Lua reader |
 | `crates/oslo-ui/src/spec/definitions/` | the four written by hand: `git`, `cargo`, `docker`, `npm` |
 | `crates/oslo-runtime/src/lua/api/spec.rs` | `oslo.completion.spec` — the Lua reader |

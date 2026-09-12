@@ -190,6 +190,21 @@ impl Environment {
 
     pub(super) fn seed_compatibility_vars(&mut self) {
         let (major, minor, patch) = Self::BASH_COMPAT;
+        // **`$BASH` is how a script starts another copy of the shell**, and it was the one member
+        // of this family that was missing. `exec "$BASH" -c …` and `"$BASH" script.sh` are ordinary
+        // idioms — with nothing here they expanded to the empty word and the shell reported
+        // `exec: : not found` with status 127, on a script that runs everywhere else.
+        //
+        // The resolved executable rather than `argv[0]`: bash reports the path it was invoked by,
+        // but oslo is commonly reached through a symlink named `bash`, and the resolved path is the
+        // one that still works when the child looks it up. Left unset when it cannot be read, since
+        // an empty `$BASH` is the very thing this fixes.
+        if !self.vars.contains_key("BASH")
+            && let Ok(exe) = std::env::current_exe()
+        {
+            self.vars
+                .insert("BASH".to_string(), (exe.display().to_string(), false));
+        }
         if !self.vars.contains_key("BASH_VERSION") {
             self.vars.insert(
                 "BASH_VERSION".to_string(),
@@ -262,5 +277,26 @@ mod tests {
             !env.get_exported_vars().contains_key("OPTIND"),
             "a child would be told a cursor that is not its own"
         );
+    }
+
+    /// **`$BASH` names a shell a script can actually start.** `exec "$BASH" -c …` is an ordinary
+    /// idiom; with the variable unset it expanded to the empty word and the shell answered
+    /// `exec: : not found` with status 127, on a script that runs under every other bash.
+    #[test]
+    fn the_shell_can_name_itself() {
+        let env = Environment::new();
+        let named = env.get_var("BASH").expect("a shell knows its own path");
+        assert!(!named.is_empty(), "an empty $BASH is what this fixes");
+        assert!(
+            std::path::Path::new(named).exists(),
+            "$BASH must name something that can be run: {named}"
+        );
+    }
+
+    /// It describes this shell, so it is not exported — bash does not export it either.
+    #[test]
+    fn the_shells_own_path_is_not_exported() {
+        let env = Environment::new();
+        assert!(!env.get_exported_vars().contains_key("BASH"));
     }
 }

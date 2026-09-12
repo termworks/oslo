@@ -1,0 +1,9 @@
+name: rmmod
+description: "Remove a module from the Linux kernel"
+flags:
+  "-f, --force": "Force the removal, even if the module is in use"
+  "-s, --syslog": "Send errors to the syslog instead of standard error"
+  "-v, --verbose": "Say what is being done"
+  "-V, --version": "Display version and exit"
+completion:
+  positionalany: ["$modules"]

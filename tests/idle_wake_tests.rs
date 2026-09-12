@@ -82,7 +82,7 @@ impl Shell {
             .env("HOME", home.path())
             .env("XDG_DATA_HOME", home.path())
             .env("XDG_CONFIG_HOME", home.path().join("config"))
-            .env("TERM", "dumb")
+            .env("TERM", "xterm")
             .current_dir(home.path())
             .stdin(Stdio::from(slave.try_clone().expect("clone")))
             .stdout(Stdio::from(slave.try_clone().expect("clone")))
@@ -189,7 +189,7 @@ impl Drop for Shell {
 #[test]
 fn an_idle_prompt_notices_a_job_finishing() {
     let mut shell = Shell::start();
-    assert!(shell.until(|seen| !seen.trim().is_empty(), "the first prompt"));
+    assert!(shell.until(|seen| seen.contains("]133;B;aid="), "the first prompt"));
 
     shell.type_line("sleep 1 &");
     assert!(
@@ -222,7 +222,7 @@ fn an_idle_prompt_notices_a_job_finishing() {
 #[test]
 fn an_idle_prompt_sees_a_variable_stored_by_another_shell() {
     let mut shell = Shell::start();
-    assert!(shell.until(|seen| !seen.trim().is_empty(), "the first prompt"));
+    assert!(shell.until(|seen| seen.contains("]133;B;aid="), "the first prompt"));
 
     shell.type_line("PS1='<$WOKEN># '");
     assert!(
@@ -271,7 +271,7 @@ fn a_stored_variable_from_another_shell_announces_itself_as_remote() {
              print("CHANGED " .. e.name .. " " .. e.action .. " " .. e.scope .. " " .. e.source)
            end)"#,
     );
-    assert!(shell.until(|seen| !seen.trim().is_empty(), "the first prompt"));
+    assert!(shell.until(|seen| seen.contains("]133;B;aid="), "the first prompt"));
 
     let writer = Command::new(common::oslo_bin())
         .arg("-c")
@@ -394,7 +394,7 @@ fn a_spawn_callback_arrives_at_an_idle_prompt() {
 #[test]
 fn the_prompt_still_works_after_being_woken() {
     let mut shell = Shell::start();
-    assert!(shell.until(|seen| !seen.trim().is_empty(), "the first prompt"));
+    assert!(shell.until(|seen| seen.contains("]133;B;aid="), "the first prompt"));
 
     shell.type_line("sleep 0.5 &");
     sleep(Duration::from_millis(1500));

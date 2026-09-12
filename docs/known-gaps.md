@@ -144,6 +144,38 @@ layer has no operation for.
 
 ---
 
+## A `SIGSEGV` or `SIGBUS` *sent* to oslo does not kill it
+
+Every other signal behaves: `SIGKILL` answers 137, `SIGABRT` 134, `SIGILL` 132, `SIGFPE` 136, and a
+non-oslo child that dies of `SIGSEGV` answers 139, all matching bash and dash. Two do not.
+
+```console
+$ bash -c 'kill -SEGV $$; echo alive'; echo $?
+139
+$ oslo -c 'kill -SEGV $$; echo alive'; echo $?
+alive
+0
+$ oslo -c '( kill -SEGV $$ ); exit $?'; echo $?      # bash and dash: 139
+0
+```
+
+`SIGBUS` is the same; a subshell is affected because it inherits the disposition across `fork`.
+
+The cause is the Rust runtime, not oslo: `std` installs a `SIGSEGV`/`SIGBUS` handler to recognise a
+stack overflow, and that is what prints `fatal runtime error: stack overflow` — the diagnostic the
+gap above depends on. When the faulting address is *not* in a guard page the handler returns, which
+is right for a real fault (the instruction re-runs and dies) and wrong for a signal that was sent,
+where there is no faulting instruction to re-run, so the process simply carries on.
+
+**What to do about it today**: nothing, and the reason is the trade. Restoring the default
+disposition would make these two faithful and would take the stack-overflow message with them —
+losing the only thing that currently says what happened when the nesting limits are exceeded
+together. Keeping both means chaining a handler of oslo's own behind `std`'s, which is a signal
+handler running after a memory fault: the least forgiving code in the shell, written to fix the
+exit status of a signal nobody sends on purpose.
+
+---
+
 ## Closed since this list was first written
 
 | Was | Now |
@@ -152,6 +184,23 @@ layer has no operation for.
 | `( ( cmd ) )` read as an arithmetic command | only *adjacent* parens open one; spaced parens are nested subshells |
 | A structured tool at the head of a pipeline | `printf 'a\nb\n' \| oslo -c 'lines \| length'` answers 2, not 0 |
 | Process substitution generally | works wherever `/dev/fd` exists, which is every ordinary Linux system |
+| Three nesting limits sharing one stack, each measured alone | the stack is asked directly, so a combined workload gets an error rather than an abort |
+| `extglob` — `@(a\|b)`, `!(*.txt)` and the rest | the parser reads a group as part of its word, and `shopt -s extglob` turns matching on; see [globbing.md](features/globbing.md#extended-patterns) |
+
+The nesting one is worth a word too, because the counters looked adequate and were not. A function
+calling itself, a `source`/`eval` chain and a nested compound command each had a limit measured
+while the other two were idle; together they are not idle. A `source` chain 49 deep, calling a
+function recursing 20 deep inside 45 levels of `{ ( … ) }`, overflowed the 16 MiB interpreter stack
+and aborted — while the counter still said ninety-odd levels were free. No setting of the three
+constants closes that, because how much stack a level costs depends on the *shape* of what is
+nested rather than on how many levels there are.
+
+`oslo_base::stack` asks the stack instead: the interpreter thread records where its stack starts,
+and the two places that re-enter the evaluator — `DepthGuard::enter` and `eval_command_list` —
+refuse when less than 256 KiB of it is left. Twenty-five combined shapes that used to abort now
+answer `maximum nesting level exceeded`, and a plain recursion still reaches the depth the counter
+permits. A thread that never recorded a base measures nothing and refuses nothing, so the guard can
+only ever fire where it knows the answer.
 
 The first two share a shape, which is why it is worth a word: both were the tokenizer's longest
 match disagreeing with the grammar. `( (` and `((` produce the same two `(` tokens, so the

@@ -65,7 +65,31 @@ const LONGEST: std::time::Duration = std::time::Duration::from_secs(2);
 /// **Drained on a thread of its own**, because polling for exit without reading the pipe means a
 /// command with more than a pipe buffer to say blocks on the write and is then killed for taking
 /// too long — the same fault `lua::api::spawn` had.
-fn bounded(mut process: std::process::Command) -> String {
+fn bounded(process: std::process::Command) -> String {
+    bounded_within(process, LONGEST).out
+}
+
+/// How a bounded command ended.
+pub(super) struct Ran {
+    pub out: String,
+    /// What it wrote to stderr, which is only ever read to explain a failure.
+    pub err: String,
+    /// It exited, and with success.
+    pub ok: bool,
+    /// It was still running at the deadline and was killed.
+    pub expired: bool,
+}
+
+/// [`bounded`], under a deadline of the caller's choosing, saying how it ended.
+///
+/// **An empty answer and a failed one are different things** to a caller that has to choose between
+/// them: an empty directory has been listed and an unreachable machine has not. `bounded` itself
+/// cannot tell them apart, because a macro that prints nothing is a macro that offers nothing
+/// either way — see [`super::remote`], which is the caller that needs the distinction.
+pub(super) fn bounded_within(
+    mut process: std::process::Command,
+    within: std::time::Duration,
+) -> Ran {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -89,25 +113,41 @@ fn bounded(mut process: std::process::Command) -> String {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         // A macro's complaints are not completions. They would otherwise land on the terminal in
-        // the middle of a drawn dropdown.
-        .stderr(Stdio::null())
+        // the middle of a drawn dropdown, so they are kept to explain a failure instead.
+        .stderr(Stdio::piped())
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return String::new(),
+        Err(error) => {
+            return Ran {
+                out: String::new(),
+                err: error.to_string(),
+                ok: false,
+                expired: false,
+            };
+        }
     };
-    let reading = child.stdout.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut out = String::new();
-            let _ = pipe.read_to_string(&mut out);
-            out
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> Option<std::thread::JoinHandle<String>> {
+        pipe.map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut out = String::new();
+                let _ = pipe.read_to_string(&mut out);
+                out
+            })
         })
-    });
+    }
+    let reading = drain(child.stdout.take());
+    let complaining = drain(child.stderr.take());
 
-    let deadline = std::time::Instant::now() + LONGEST;
+    let deadline = std::time::Instant::now() + within;
+    let mut finished = false;
+    let mut expired = false;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => {
+                finished = status.success();
+                break;
+            }
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -119,14 +159,23 @@ fn bounded(mut process: std::process::Command) -> String {
                 let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
                 let _ = child.kill();
                 let _ = child.wait();
+                expired = true;
                 break;
             }
             Err(_) => break,
         }
     }
-    reading
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default()
+    let joined = |reader: Option<std::thread::JoinHandle<String>>| {
+        reader
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default()
+    };
+    Ran {
+        out: joined(reading),
+        err: joined(complaining),
+        ok: finished,
+        expired,
+    }
 }
 
 /// Run `command` in this shell, in a subshell, and answer with what it printed.

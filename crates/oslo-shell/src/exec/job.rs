@@ -37,8 +37,9 @@ pub use reap::reap_background_jobs;
 pub use report::describe;
 pub use resume::{continue_in_background, foreground_job};
 pub use signals::{
-    drain_interrupt_fd, forget_interrupt, install_shell_signals, interrupt_fd, interrupt_pending,
-    interrupt_waiting, note_interrupt, reset_signals_for_child,
+    catch_fatal_for_exit_trap, drain_interrupt_fd, fatal_signal_pending, fatal_signal_waiting,
+    forget_interrupt, install_shell_signals, interrupt_fd, interrupt_pending, interrupt_waiting,
+    note_deliberate_ignore, note_interrupt, reset_signals_for_child, restore_shell_signal,
 };
 pub use table::{Job, JobState, JobTable, with_jobs};
 
@@ -47,8 +48,8 @@ pub use sentinel::started as watcher_started;
 pub(crate) use sentinel::{Orders, stand_down, take_events, watch};
 
 pub(crate) use control::{
-    give_terminal_to, join_foreground_group, join_group_in_child, place_child,
-    place_foreground_child, reclaim_terminal,
+    give_terminal_to, join_foreground_group, join_group_in_child, left_it_deliberately,
+    place_child, place_foreground_child, reclaim_terminal,
 };
 
 /// The interactive shell's one-time claim on the terminal and on its own signal policy.

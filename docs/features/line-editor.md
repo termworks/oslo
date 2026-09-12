@@ -288,7 +288,9 @@ oslo.keys["shift-tab"] = "none"       -- unbind a key oslo bound before the conf
 The action names are a fixed list, so a typo is reported rather than silently doing nothing:
 `toggle-language` (or `toggle-mode`), `clear-screen`, `history-search` (or
 `history-search-backward`), `accept-suggestion`, `accept-suggestion-word` (or `accept-word`),
-`interrupt`, `complete`, `edit-line` (or `edit-command-line`), and `none` (or `nothing`). `escape_delay` is the one worth raising over a
+`interrupt`, `complete`, `edit-line` (or `edit-command-line`), `expand-glob` (or `glob-expand-word`,
+on `alt-*` by default), `list-glob` (or `glob-list-expansions`, on `alt-g`), and `none` (or
+`nothing`). The two glob actions are described in [globbing.md](globbing.md#seeing-it-before-it-runs). `escape_delay` is the one worth raising over a
 slow link: Esc alone is recognised only when no further byte arrives within it, so too low a value
 makes an arrow key read as Esc. It is clamped to 1–2000 ms rather than refused.
 
@@ -329,6 +331,16 @@ the whole row on every key, and this is what a repaint consults:
 * **Edit at all without a terminal.** `read_line` falls back to a plain `stdin` read with no
   editing, and writes the prompt only under `TERM=dumb` — down a pipe the shell is driven by a
   script, and a prompt would be noise in the data.
+* **Edit on a terminal that says it cannot draw.** `TERM=dumb` takes the same road, and readline
+  answers that variable the same way. A dumb terminal cannot address a cursor, and every keystroke
+  the editor answers is answered by redrawing a row *in place* — so the mechanism has nothing to
+  write to, and what it produces instead is noise. Measured against a program driving oslo over a
+  pty: **~7 KB of cursor movement and repainting per command**, into a stream being read as output;
+  336 bytes with the editor off.
+
+  Nothing is lost that the terminal could have shown — history recall, completion, the vi keymap and
+  the ghost suggestion are all *drawn*, and a terminal that says it cannot draw has said it cannot
+  have them. What is left is what a dumb terminal has always had: a prompt, a line, and Enter.
 
 ## Where it lives
 

@@ -16,6 +16,7 @@ flags:
   "--version, -V": "Print version info"
 completion:
   flag:
+    pid: ["$pids"]
     delay: [10, 1, 60]
     highlight-changes: [10, 1, 60]
     user: ["$USER"]

@@ -75,6 +75,11 @@ line afterwards.
   workspace   row.root == the git worktree the shell is standing in
 ```
 
+**Inside a git worktree it opens in `workspace`**, so Up shows what was run in this project rather
+than everything ever run. Outside one, or in a worktree nothing has been run in yet, it opens in
+`global` — an empty list would read as lost history. `oslo.finder.scope` picks a fixed scope
+instead; any scope with nothing in it still falls back to `global`.
+
 `host` is **identical to `global` today** and is deliberately still its own scope: the store is
 local, so every row in it was run here. It becomes a real filter the moment history is shared
 between machines, and having the name already means that change is a filter rather than a new
@@ -180,6 +185,7 @@ oslo.finder.enabled        = true      -- off means Up walks history a line at a
 oslo.finder.key            = "up"
 oslo.finder.limit          = 10000     -- distinct commands loaded when it opens
 oslo.finder.confirm_delete = true      -- Delete asks before forgetting a command
+oslo.finder.scope          = "auto"    -- auto / global / host / session / directory / workspace
 oslo.completion.fuzzy      = "smart"   -- off / tight / smart / loose; shared with Tab
 ```
 

@@ -207,3 +207,36 @@ fn a_function_frame_knows_its_name() {
         )
     });
 }
+
+/// **`$_` is the last argument of the command that just ran.**
+///
+/// `mkdir -p a/b && cd $_` is what it exists for. Unset, `cd` was called with no argument and the
+/// shell went to `$HOME` — a wrong directory reported as success, with every later command running
+/// on the wrong files. Each case here was checked against bash 5.3 before it was written down.
+#[test]
+fn the_last_argument_is_remembered() {
+    assert_eq!(var("true alpha", "_"), "alpha");
+    assert_eq!(var(": one two three", "_"), "three");
+    // A command with no arguments is its own last word.
+    assert_eq!(var("true", "_"), "true");
+    // A function call is a command like any other, and its argument is the one that counts.
+    assert_eq!(var("f(){ :; }; f q", "_"), "q");
+    // The most recent command wins.
+    assert_eq!(var("true first; true second", "_"), "second");
+}
+
+/// An assignment on its own clears `$_` — checked against bash, which prints `[]` and not the
+/// previous value. It is set to nothing rather than unset: `${_-UNSET}` answers empty.
+#[test]
+fn an_assignment_alone_clears_it() {
+    assert_eq!(var("true kept; x=1", "_"), "");
+    // `export z=1` is a command with a word, so the ordinary rule applies.
+    assert_eq!(var("true kept; export z=1", "_"), "z=1");
+}
+
+/// It describes this shell's own history, so a child is not told it.
+#[test]
+fn the_last_argument_is_not_exported() {
+    let env = run("true alpha");
+    assert!(!env.get_exported_vars().contains_key("_"));
+}

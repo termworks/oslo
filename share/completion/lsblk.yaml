@@ -30,3 +30,5 @@ flags:
   "--sort, -x=": "Sort output lines by column"
   "--zoned, -z": "Print the zone model for each device"
   "--sysroot=": "Gather data for a Linux instance other than the instance from which the lsblk command is issued"
+completion:
+  positionalany: ["$devices"]

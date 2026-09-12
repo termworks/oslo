@@ -1,0 +1,9 @@
+name: userdel
+description: "Delete a user account"
+flags:
+  "-f, --force": "Remove the account even if the user is still logged in"
+  "-r, --remove": "Remove the home directory and the mail spool as well"
+  "-Z, --selinux-user": "Remove any SELinux user mapping for the account"
+  "-h, --help": "Display help and exit"
+completion:
+  positionalany: ["$users"]

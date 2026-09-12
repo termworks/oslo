@@ -12,6 +12,7 @@
 
 return function(make)
   local recipes, order, aliases = {}, {}, {}
+  local imported = { make.__file() }
   local settings = { quiet = false, keep_going = false, stale = "mtime" }
 
   -- A message that is oslo's rather than Lua's: level 0, so no file:line is prepended. A recipe
@@ -94,7 +95,9 @@ return function(make)
     if not full:match("^/") then full = make.__root() .. "/" .. full end
     local chunk, err = loadfile(full)
     if not chunk then fail("import %q: %s", path, err or "cannot read it") end
-    return chunk()
+    local result = table.pack(chunk())
+    imported[#imported + 1] = full
+    return table.unpack(result, 1, result.n)
   end
 
   ---------------------------------------------------------------------------- strict sh
@@ -377,6 +380,9 @@ OPTIONS
   -f, --force       run even a recipe that is up to date
   -k, --keep-going  carry on after a recipe fails
   -q, --quiet       no progress lines, only what the recipes print
+      --watch       watch the resolved recipe inputs and rerun the target
+      --postpone    wait for a change before the first watched run
+      --restart     restart a running watched target after a change
   -h, --help        this text
 ]==]
 
@@ -427,6 +433,7 @@ OPTIONS
     sh = make.strict()
     local argv = make.__argv()
     local dry, force, list, target, rest = false, false, false, nil, {}
+    local watching, initial, policy = false, true, "coalesce"
 
     local i = 1
     while i <= #argv do
@@ -450,6 +457,12 @@ OPTIONS
         settings.keep_going = true
       elseif word == "-q" or word == "--quiet" then
         settings.quiet = true
+      elseif word == "--watch" then
+        watching = true
+      elseif word == "--postpone" then
+        initial = false
+      elseif word == "--restart" then
+        policy = "restart"
       elseif word:match("^%-") then
         io.stderr:write("oslo make: " .. word .. ": unknown option\n")
         io.write(OPTIONS)
@@ -460,6 +473,10 @@ OPTIONS
       i = i + 1
     end
 
+    if watching and not target then
+      io.stderr:write("oslo make: --watch needs a recipe\n")
+      return make.__status(2)
+    end
     if list or not target then return make.__status(listing()) end
 
     local ok_plan, planned = pcall(function()
@@ -470,6 +487,39 @@ OPTIONS
     if not ok_plan then
       io.stderr:write(tostring(planned) .. "\n")
       return make.__status(2)
+    end
+
+    if watching then
+      if type(make.__watch) ~= "function" then
+        io.stderr:write("oslo make: this build does not support recipe watching\n")
+        return make.__status(2)
+      end
+      local paths, seen, declared = {}, {}, 0
+      local function add(path)
+        if not seen[path] then
+          seen[path] = true
+          paths[#paths + 1] = path
+        end
+      end
+      for _, recipe in ipairs(planned) do
+        for _, path in ipairs(recipe.inputs) do
+          declared = declared + 1
+          add(path)
+        end
+      end
+      if declared == 0 then
+        io.stderr:write("oslo make: the resolved plan has no inputs; declare recipe inputs to watch\n")
+        return make.__status(2)
+      end
+      for _, path in ipairs(imported) do add(path) end
+      make.__watch {
+        target = target,
+        args = rest,
+        paths = paths,
+        initial = initial,
+        policy = policy,
+      }
+      return make.__status(0)
     end
 
     local status = 0

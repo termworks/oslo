@@ -46,5 +46,6 @@ exclusiveflags:
   - [w, l]
   - [z, l]
 completion:
+  positionalany: ["$hosts"]
   flag:
     ecn: [default, enable, disable]

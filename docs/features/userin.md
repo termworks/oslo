@@ -93,7 +93,7 @@ against would be a worse interface wearing the same clothes.
 
 **gum** is the closest thing, and the comparison is the reason this exists: it is a 13.7 MB Go
 binary you install separately, and each call pays a process start it cannot avoid. Here the widgets
-are inside a shell you are already running, so the same call is a builtin at a prompt and a 6.5 MB
+are inside a shell you are already running, so the same call is a builtin at a prompt and a 5.2 MB
 static binary you already have from anywhere else. Numbers below.
 
 **dialog / whiptail** take the whole screen and hand back their answer on stderr, which is the
@@ -140,7 +140,7 @@ Fifty calls of the simplest widget that needs no terminal, best of three, on thi
 
 | | per call | binary |
 |---|---|---|
-| `oslo userin style done` | **0.4 ms** | 6.5 MB — the whole shell, static musl |
+| `oslo userin style done` | **0.4 ms** | 5.2 MB — the whole shell, static musl |
 | `gum style done` | **21 ms** | 13.7 MB — the widgets alone |
 
 That is ~50× per call, and it is all process start: both do the same trivial amount of work. In a

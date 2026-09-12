@@ -1,0 +1,4 @@
+name: bg
+description: "Resume a stopped job in the background"
+completion:
+  positionalany: ["$jobs"]

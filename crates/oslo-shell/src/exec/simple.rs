@@ -130,7 +130,9 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // would give `local` a throwaway frame to write into, so `local V=x` would be undone the
     // moment the command finished.
     if prefix_assignments.is_empty() {
-        return run_command_word(env, &cmd_name, &words, &simple.redirections, escape);
+        let result = run_command_word(env, &cmd_name, &words, &simple.redirections, escape);
+        remember_last_argument(env, &words);
+        return result;
     }
 
     // **A here-document is expanded without the prefix assignments in scope**, which is what bash
@@ -154,7 +156,29 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     }
     let result = run_command_word(env, &cmd_name, &words, &redirections, escape);
     env.pop_scope();
+    remember_last_argument(env, &words);
     result
+}
+
+/// `$_` — the last argument of the command that just ran, expanded.
+///
+/// **`mkdir -p a/b && cd $_` is the idiom this exists for**, and without it `$_` expanded to
+/// nothing, `cd` was called with no argument, and the shell went to `$HOME` instead. A wrong
+/// directory reported as success is the worst shape a bug can take: the commands after it run, on
+/// the wrong files.
+///
+/// Set after the command rather than before it, which is the same thing seen from the next command
+/// and is where the expanded words are. Written only for a command that had words — bash leaves
+/// `$_` alone for an assignment-only line, and a pipeline's components run in their own shells, so
+/// neither reaches here.
+///
+/// Not exported. bash does put a `_` in a child's environment, but that one holds the path of the
+/// command being run rather than this value, and inventing an export that disagrees with bash's
+/// would be worse than leaving the child alone.
+fn remember_last_argument(env: &mut Environment, words: &[String]) {
+    if let Some(last) = words.last() {
+        env.set_var("_", last, false);
+    }
 }
 
 /// The redirections with every here-document body already expanded.
@@ -213,6 +237,11 @@ fn apply_assignments_only(env: &mut Environment, simple: &SimpleCommand) -> Resu
     if let Some(name) = refused {
         return posix::assignment_failure(env, &name);
     }
+    // **A line with no command clears `$_` rather than leaving it.** Checked against bash 5.3:
+    // `true kept; x=1; echo "[$_]"` prints `[]`, and `${_-UNSET}` prints empty rather than `UNSET`
+    // — so it is set to nothing, not unset. `export z=1` is a command with a word and keeps the
+    // ordinary rule, which is why it answers `z=1`.
+    env.set_var("_", "", false);
     Ok(apply_wordless_redirections(env, &simple.redirections))
 }
 

@@ -215,8 +215,27 @@ declare them first.
   -f, --force       run even a recipe that is up to date
   -k, --keep-going  carry on after a recipe fails
   -q, --quiet       no progress lines, only what the recipes print
+      --watch       watch the resolved recipe inputs and rerun the target
+      --postpone    wait for a change before the first watched run
+      --restart     restart a running watched target after a change
   -h, --help        this text
 ```
+
+### Watching the resolved plan
+
+With the independent [`watch`](watch.md) feature, `oslo make --watch check` resolves `check` and its
+dependencies without running any body. The watcher receives the deduplicated declared input
+patterns from that plan, plus `.make.lua` and each successful `make.import`. Patterns are retained
+as patterns, so a file created later can satisfy `src/**/*.rs`; only expanding the files that exist
+at startup would miss it.
+
+The worker reruns `/proc/self/exe make TARGET ARGS...` without `--watch` and without `--force`.
+Arguments remain exact argv and ordinary phony/staleness rules decide what executes. `--postpone`
+suppresses the initial run and `--restart` replaces a still-running process group on a change. A
+plan without any declared `inputs` is refused instead of silently watching the whole repository.
+
+The trust boundary has not moved: Oslo reads `.make.lua` only after an explicit `oslo make`
+invocation. Changing directory does not load it, and watch planning does not execute recipe bodies.
 
 ## What makes it different
 
@@ -293,7 +312,7 @@ with cargo and no oslo, and none of them can start here.
 | `src/cli/make.rs` | `oslo make`: find, chdir, boot the engine, run |
 | `src/cli/tools.rs` | the row that makes `oslo make` reachable |
 | `tests/make_tests.rs` | the end-to-end suite, one temporary project per case |
+| `tests/make_cli_tests.rs` | dependency inputs, imports, future files, argv and no-body watch planning |
 | `scripts/build.sh` | the bootstrap: cargo, one static binary, for a machine with no oslo |
 | `.make.lua` | oslo's own build, and the worked example this page describes |
 | `.make.lua` | oslo's own build, as recipes |
-| `plans/PLAN_MAKE.md` | the inventory this was designed from |

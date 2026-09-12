@@ -229,7 +229,7 @@ commands:
         strategy-option: [ours, theirs, patience, diff-algorithm, "diff-algorithm=patience", "diff-algorithm=minimal", "diff-algorithm=histogram", "diff-algorithm=myers", ignore-space-change, ignore-all-space, ignore-space-at-eol, ignore-cr-at-eol, renormalize, no-renormalize, no-renames, find-renames, subtree]
         rebase-merges: [rebase-cousins, no-rebase-cousins]
       positional:
-        - ["-\tUse the last ref as the base"]
+        - ["-\tUse the last ref as the base", "$revisions"]
   - name: add
     description: "Add file contents to the index"
     flags:
@@ -323,6 +323,8 @@ commands:
         - ["$files"]
   - name: revert
     description: "Create new commit that undoes all of the changes made in <commit>, then apply it to the current branch"
+    completion:
+      positionalany: ["$revisions"]
   - name: ls-remote
     description: "List references in a remote repository"
   - name: push
@@ -359,6 +361,9 @@ commands:
       "--no-force-with-lease": "Cancel all the previous --force-with-lease on the command line"
       "--force-with-lease?": "Protect the named ref (alone), if it is going to be updated, by requiring its current value to be the same as the specified value <expect> (which is allowed to be different from the remote-tracking branch we have for the refname, or we do not even have to have such a remote-tracking branch when this form is used). If <expect> is the empty string, then the named ref must not already exist"
     completion:
+      positional:
+        - ["$remotes"]
+        - ["$branches"]
       flag:
         signed: ["true", "false", if-asked]
         recurse-submodules: [check, on-demand, only, "no"]
@@ -427,6 +432,9 @@ commands:
       "-4, --ipv4": "Use IPv4 addresses only, ignoring IPv6 addresses"
       "-6, --ipv6": "Use IPv6 addresses only, ignoring IPv4 addresses"
     completion:
+      positional:
+        - ["$remotes"]
+        - ["$branches"]
       flag:
         rebase: ["false", "true", merges, preserve, interactive]
         cleanup: [strip, whitespace, verbatim, scissors, default]
@@ -445,7 +453,7 @@ commands:
       "--stat?": "Generate a diffstat"
       "--=": {description: "Separates paths from options for disambiguation purposes", nargs: -1}
     completion:
-      positionalany: ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits"]
+      positionalany: ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits", "$revisions"]
   - name: reset
     description: "Reset current HEAD to the specified state"
     flags:
@@ -466,7 +474,7 @@ commands:
     completion:
       flag:
         pathspec-from-file: ["-", "$directories", "$files"]
-      positionalany: ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits"]
+      positionalany: ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits", "$revisions"]
   - name: log
     description: "Show commit logs"
     flags:
@@ -483,10 +491,12 @@ commands:
       flag:
         follow: ["$files"]
       positional:
-        - ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits"]
+        - ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits", "$revisions"]
         - ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits"]
   - name: remote
     description: "Manage remote repository"
+    completion:
+      positionalany: ["$remotes"]
     flags:
       "-v, --verbose": "Be a little more verbose and show remote url after name. NOTE: This must be placed between remote and subcommand"
     commands:
@@ -586,6 +596,9 @@ commands:
       "-6, --ipv6": "Use IPv6 addresses only, ignoring IPv4 addresses"
       "--stdin": "Read refspecs, one per line, from stdin in addition to those provided as arguments. The \"tag <name>\" format is not supported"
     completion:
+      positional:
+        - ["$remotes"]
+        - ["$branches"]
       flag:
         recurse-submodules: ["yes", on-demand, "no"]
         recurse-submodules-default: ["yes", on-demand]
@@ -793,6 +806,8 @@ commands:
     description: "Print lines matching a pattern"
   - name: show
     description: "Show various types of objects"
+    completion:
+      positionalany: ["$revisions", "$files"]
   - name: branch
     description: "List, create, or delete branches"
     flags:
@@ -841,6 +856,7 @@ commands:
       - [color, no-color]
       - [no-color, color]
     completion:
+      positionalany: ["$branches"]
       flag:
         delete: ["-r\tDeletes the remote-tracking branches", "--remotes\tDeletes the remote-tracking branches"]
         D: ["-r\tDeletes the remote-tracking branches", "--remotes\tDeletes the remote-tracking branches"]
@@ -881,7 +897,7 @@ commands:
         conflict: [merge, diff3]
         pathspec-from-file: ["$files"]
       positional:
-        - ["-\tSwitch to the last used branch", "--\tDo not interpret more arguments as options"]
+        - ["-\tSwitch to the last used branch", "--\tDo not interpret more arguments as options", "$revisions"]
       positionalany: ["$files"]
   - name: cherry-pick
     description: "Apply the changes introduced by some existing commits"
@@ -912,6 +928,7 @@ commands:
       - [rerere-autoupdate, no-rerere-autoupdate]
       - [no-rerere-autoupdate, rerere-autoupdate]
     completion:
+      positionalany: ["$revisions"]
       flag:
         cleanup: ["strip\tStrip leading and trailing empty lines, trailing whitepace, commentary and collapse consecutive empty lines", "whitespace\tSame as strip except #commentary is not removed", "verbatim\tDo not change the message at all", "scissors\tSame as whitespace except that everything from (and including) the line found below is truncated", "default\tSame as strip if the message is to be edited. Otherwise whitespace"]
         strategy: [resolve, recursive, octopus, ours, subtree]
@@ -1067,7 +1084,7 @@ commands:
         strategy: [resolve, recursive, octopus, ours, subtree]
         strategy-option: [ours, theirs, patience, diff-algorithm, "diff-algorithm=patience", "diff-algorithm=minimal", "diff-algorithm=histogram", "diff-algorithm=myers", ignore-space-change, ignore-all-space, ignore-space-at-eol, ignore-cr-at-eol, renormalize, no-renormalize, no-renames, find-renames, subtree]
         file: ["$files"]
-      positionalany: ["-\tShorthand for the previous branch"]
+      positionalany: ["-\tShorthand for the previous branch", "$revisions"]
   - name: mergetool
     description: "Open the git tool to fix conflicts"
   - name: tag
@@ -1081,6 +1098,7 @@ commands:
       "-m, --message=": "Tag message"
       "--points-at=": "List tags of the given object"
     completion:
+      positionalany: ["$tags"]
       flag:
         n: [1, 2, 3]
         points-at: ["HEAD\tThe most recent commit", "HEAD~<N>\tA specific number of commits"]
@@ -1117,6 +1135,7 @@ commands:
       - [no-overlay, overlay]
     completion:
       flag:
+        source: ["$revisions"]
         conflict: [merge, diff3]
         pathspec-from-file: ["$files"]
   - name: switch
@@ -1149,7 +1168,7 @@ commands:
       flag:
         conflict: [merge, diff3]
       positional:
-        - ["-\tSwitch to the last used branch"]
+        - ["-\tSwitch to the last used branch", "$branches"]
   - name: worktree
     description: "Manage multiple working trees"
     commands:

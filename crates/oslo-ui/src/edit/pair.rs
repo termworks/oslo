@@ -27,7 +27,7 @@
 //! what it did without knowing what the shell made of the line.
 //!
 //! It also never *removes* a character you typed. The worst it does is put one more in, and
-//! [`Pairing::Skip`] is the case where it puts none.
+//! `Pairing::Skip` is the case where it puts none.
 
 use super::buffer::Buffer;
 

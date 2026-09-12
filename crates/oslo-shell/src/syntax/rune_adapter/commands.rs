@@ -293,6 +293,12 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
                 words.extend(words_of(tree, child)?);
             }
             SyntaxKind::Redirect => {
+                if let Some(prefix) = child
+                    .token(SyntaxKind::Text)
+                    .filter(|token| token.text(tree.source()).parse::<i32>().is_err())
+                {
+                    words.extend(convert_words_from_str(prefix.text(tree.source()))?);
+                }
                 redirections.extend(super::redirects::convert_redirect(tree, child)?);
             }
             SyntaxKind::Word => {

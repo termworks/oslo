@@ -86,12 +86,12 @@ fn an_incomplete_compound_command_is_a_syntax_error() {
 }
 
 #[test]
-fn a_syntax_error_reports_where_it_is() {
+fn a_syntax_error_names_the_unclosed_construct() {
     let r = run("echo ok\nfor\n");
     assert_eq!(r.status, 2, "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("line 2") || r.stderr.contains("end of input"),
-        "the diagnostic should carry the parser's position: {:?}",
+        r.stderr.contains("for") && r.stderr.contains("never closed"),
+        "the diagnostic should name the unclosed construct: {:?}",
         r.stderr
     );
 }

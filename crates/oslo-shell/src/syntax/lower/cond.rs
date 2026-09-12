@@ -71,11 +71,13 @@ pub(crate) fn unary(op: &str, operand_text: &str) -> Result<oslo_ast::AndOrList>
 /// `x == y` — two operands with an operator between them.
 pub(crate) fn binary(left: &str, op: &str, right: &str) -> Result<oslo_ast::AndOrList> {
     let (op, negate) = binary_op(op, right);
-    // The right operand of an unquoted `=~` is the one place a *part* of a word can be quoted and
-    // mean something different from the rest of it. See [`mark_quoted_runs`].
-    let right = match op == "=~" {
-        true => marked_operand(right)?,
-        false => operand(right, Coordinates::Substituted)?,
+    // The right operand of an unquoted `=~` or `==` is where a *part* of a word can be quoted and
+    // mean something different from the rest of it: `[[ abc == "a*"c ]]` is false, because only
+    // the `c` is a pattern. See [`mark_quoted_runs`].
+    let right = match op {
+        "=~" => marked_operand(right, Coordinates::Literal)?,
+        "==" => marked_operand(right, Coordinates::Substituted)?,
+        _ => operand(right, Coordinates::Substituted)?,
     };
     Ok(bracket_and_or(
         vec![
@@ -103,9 +105,10 @@ pub(crate) fn bare(text: &str) -> Result<oslo_ast::AndOrList> {
 fn binary_op(op: &str, rhs: &str) -> (&'static str, bool) {
     let pattern_op = if is_quoted(rhs) { "=" } else { "==" };
     match op {
-        "==" => (pattern_op, false),
+        // A single `=` is a pattern match inside `[[ ]]` exactly like `==`; only `test` and `[`
+        // compare strings with it.
+        "==" | "=" => (pattern_op, false),
         "!=" => (pattern_op, true),
-        "=" => ("=", false),
         "<" => ("<", false),
         ">" => (">", false),
         // Quoting the right operand of `=~` makes it literal text, exactly as it does for `==`.
@@ -179,9 +182,9 @@ fn operand(word: &str, coordinates: Coordinates) -> Result<oslo_ast::Word> {
     // written twice: `test {0:0} = alpha` was true and `[[ {0:0} == alpha ]]` false, because the
     // wrapping hid the coordinate from the substitution that runs over literal words. It is safe
     // to leave bare on the same grounds — a substituted value arrives already quoted and cannot
-    // split or glob however many spaces are in it.
+    // split or glob however many spaces are in it. `@(a|b)` is an `extglob` group, not a name.
     if let [oslo_ast::WordPart::Literal(text)] = inner.parts.as_slice()
-        && (text.starts_with('@')
+        && ((text.starts_with('@') && !text.starts_with("@("))
             || (coordinates == Coordinates::Substituted
                 && crate::exec::streams::holds_a_coordinate(text)))
     {
@@ -240,8 +243,8 @@ pub const QUOTED_CLOSE: char = '\u{2}';
 /// word is expanded. So the boundaries are marked instead and
 /// `conditionals::matching::eval_regex_match` escapes what arrives between them. A word with no
 /// quoted part gets no marks and travels exactly as it did.
-fn marked_operand(word: &str) -> Result<oslo_ast::Word> {
-    let plain = operand(word, Coordinates::Literal)?;
+fn marked_operand(word: &str, coordinates: Coordinates) -> Result<oslo_ast::Word> {
+    let plain = operand(word, coordinates)?;
     let marked = mark_quoted_runs(&plain);
     Ok(marked.unwrap_or(plain))
 }

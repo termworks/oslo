@@ -227,6 +227,33 @@ impl Drop for Restore {
     }
 }
 
+/// Whether this terminal draws anything at all.
+///
+/// `TERM=dumb` is the long-standing way of saying it does not — readline turns itself off on it,
+/// and oslo already reads it in three places: no colour ([`crate::theme`]), no terminal queries
+/// (`startup::terminal`), no OSC 133 marks ([`crate::marks`]). An empty `TERM` says the same thing
+/// less loudly.
+///
+/// **The point of asking is to not spend anything.** Everything gated on this is work whose only
+/// product is something on a screen — a colour, a mark, a frame of an animation. Where there is no
+/// screen the work has no product, and the most expensive of it spawns processes: see
+/// `crate::prompt::animation::animate_in`.
+///
+/// An *unset* `TERM` is deliberately not the same answer as `dumb`. It is the ordinary state of a
+/// perfectly capable terminal that nobody has told, and treating it as no terminal at all would
+/// turn oslo monochrome in every environment that forgot to export one.
+pub fn draws() -> bool {
+    drawn_by(std::env::var("TERM").ok().as_deref())
+}
+
+/// The rule itself, given the value rather than reading it.
+///
+/// Split so the test can state every case without setting a process-wide variable every other test
+/// in the binary shares — the trap `startup::editor`'s own tests call out by refusing to set it.
+fn drawn_by(term: Option<&str>) -> bool {
+    !matches!(term, Some("dumb") | Some(""))
+}
+
 pub mod anchor;
 pub mod capability;
 mod child;

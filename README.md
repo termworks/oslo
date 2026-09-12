@@ -90,6 +90,7 @@ and requires zero structured edges. → [posix-fidelity.md](docs/features/posix-
 | [Ghost suggestions](docs/features/ghost-suggestions.md) | the grey continuation, five sources you order yourself |
 | [Prediction and repair](docs/features/prediction-and-repair.md) | a model of what you run: what comes next, and what you meant |
 | [Completion](docs/features/completion-and-matching.md) | the dropdown, matching as a transform rather than a prefix test, and carapace specs |
+| [Globbing](docs/features/globbing.md) | bash's `**` and options exactly, non-UTF-8 names intact, `*.log(older 7d)` at the prompt |
 | [The Lua interpreter](docs/features/lua-interpreter.md) | Lua in pure Rust — what lets a static musl binary speak it with no C toolchain |
 | [Your own tools](docs/features/your-own-tools.md) | `register_tool`, builtins and autoloaded functions from Lua |
 | [Hooks](docs/features/hooks.md) | thirty-two moments a config can attach to |
@@ -101,6 +102,7 @@ and requires zero structured edges. → [posix-fidelity.md](docs/features/posix-
 | [Profiles](docs/features/profiles-and-histories.md) · [syncing](docs/features/syncing.md) | keeping an agent's commands out of yours; two machines agreeing |
 | [Where you have been](docs/features/where-you-have-been.md) | directory tracking, `cd -N`, `cd root` |
 | [Directory environments](docs/features/directory-environments.md) | `.env.lua` per project, with an allow gate and an undo record |
+| [Watch services](docs/features/watch.md) | inotify-backed command reruns from the CLI, `.env.lua`, or recipe inputs |
 | [nix, as data](docs/features/nix.md) · [the calculator](docs/features/math.md) | every `nix --json` answer as a Lua table; `math '3 km in miles'` |
 | [rm, and the things that can bite](docs/features/rm-and-safety.md) | recoverable at the prompt, POSIX in a script |
 | [Scratches](docs/features/scratch.md) · [plugins](docs/features/plugins.md) · [secrets](docs/features/secrets.md) | sessions that outlive a terminal; somebody else's Lua; values kept encrypted |
@@ -135,9 +137,9 @@ value means.
 
 ## Tools
 
-Twelve of them — `macros`, `config`, `profile`, `history`, `direnv`, `make`, `hook`, `lua-api`,
-`plugin`, `scratch`, `userin`, `secret` — each with its own help. A script of the same name always
-wins.
+Fourteen of them — `macros`, `config`, `profile`, `history`, `direnv`, `make`, `watch`, `hook`,
+`fmt`, `lua-api`, `plugin`, `scratch`, `userin`, `secret` — each with its own help. A script of the
+same name always wins.
 
 ## Building
 
@@ -166,12 +168,12 @@ program everywhere else. There is no `Makefile`: `scripts/build.sh` exists preci
 
 ### Optional features
 
-All ten are off *by default*, and off for the same reason: a shell that is going to be `/bin/sh`
+All twelve are off *by default*, and off for the same reason: a shell that is going to be `/bin/sh`
 should carry what every session needs and nothing else. `scripts/build.sh` turns them on; the published
 release artifact is the default build.
 
 Each cost is what turning that one feature *off* takes back out of the full build, measured on the
-static musl binary — **5,201,664 bytes with none of them, 6,403,264 with all eleven**:
+static musl binary — **4,448,192 bytes with none of them, 5,608,928 with all twelve**:
 
 | feature | costs | brings |
 |---|---:|---|
@@ -185,6 +187,7 @@ static musl binary — **5,201,664 bytes with none of them, 6,403,264 with all e
 | `nix` | +48 KB | `oslo.nix` — every `nix --json` answer as a Lua table, and flake-output completion |
 | `scratch` | +44 KB | named sessions that outlive their terminal, and the key that finds them |
 | `make` | +28 KB | `.make.lua` — recipes with dependencies and staleness, the `oslo make` tool and the `make` builtin |
+| `watch` | +60 KB | event-driven command reruns, declarative services, recipe input watching, and Scratch hosting |
 | `spec` | +20 KB | a `.yaml` per command in [carapace-spec](https://github.com/carapace-sh/carapace-spec) format, found by name; the completion *model* it fills is in every build |
 
 `crypt` implies `secrets`, so the two can only be removed together: 180 KB for the pair.
@@ -194,7 +197,7 @@ scripts/build.sh --minimal     # static release, none of them
 ```
 
 **There are no others**, and in particular none that serve the test suite — `--all-features` turns
-on exactly the eleven above. A config is written to work either way, because a build without the
+on exactly the twelve above. A config is written to work either way, because a build without the
 feature simply does not have the name:
 
 ```lua

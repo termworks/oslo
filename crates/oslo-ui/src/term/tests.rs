@@ -494,3 +494,21 @@ fn the_editor_undoes_what_the_last_program_left_behind() {
     assert!(!text.contains("\x1bc"), "must not be RIS");
     assert!(!text.contains("\x1b[2J"), "must not clear the screen");
 }
+
+/// **`dumb` and empty mean no screen; anything else, including nothing, means there is one.**
+///
+/// The asymmetry is the point. `TERM=dumb` is a statement that the terminal cannot draw, and
+/// everything gated on it is work whose only product is something drawn — a colour, a mark, a frame
+/// of an animation, and with an external prompt a *process per frame*. An unset `TERM` is not that
+/// statement: it is the ordinary state of a capable terminal nobody has told, and reading it as
+/// "no screen" would turn oslo monochrome wherever the variable was forgotten.
+#[test]
+fn a_dumb_terminal_draws_nothing_and_an_unset_one_is_not_dumb() {
+    assert!(!super::drawn_by(Some("dumb")));
+    assert!(!super::drawn_by(Some("")));
+    assert!(super::drawn_by(None), "unset is not dumb");
+    assert!(super::drawn_by(Some("xterm-256color")));
+    assert!(super::drawn_by(Some("screen")));
+    // Not a prefix test: `dumb-emacs-ansi` is a real terminal that does draw.
+    assert!(super::drawn_by(Some("dumb-emacs-ansi")));
+}

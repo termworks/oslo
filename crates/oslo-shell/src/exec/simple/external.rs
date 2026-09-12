@@ -83,7 +83,11 @@ pub(crate) fn run_external(
     // Both conversions take the raw bytes: a resolved path is an `OsStr`, not necessarily UTF-8
     // (a PATH entry can be any byte string), and `to_str().unwrap()` aborted the shell on one.
     let c_path = exec_cstring(path.as_os_str().as_bytes());
-    let c_args: Vec<CString> = words.iter().map(|w| exec_cstring(w.as_bytes())).collect();
+    // The bytes a glob read, not their UTF-8 stand-ins: see `oslo_base::lossless`.
+    let c_args: Vec<CString> = words
+        .iter()
+        .map(|w| exec_cstring(&oslo_base::lossless::decode(w)))
+        .collect();
 
     unsafe {
         match fork() {
@@ -143,7 +147,11 @@ pub(crate) fn run_external(
                 }
                 // Taken back with SIGTTOU blocked: at this moment the shell is not the foreground
                 // group, so an unguarded `tcsetpgrp` would stop the shell itself.
-                job::reclaim_terminal();
+                //
+                // A status under 128 is a program that exited on its own, so whatever it did to the
+                // terminal it meant — `stty` is exactly such a program. Above that it was killed or
+                // stopped and had no chance to tidy.
+                job::reclaim_terminal(job::left_it_deliberately(status));
                 Ok(status)
             }
             Err(e) => Err(ShellError::ExecutionError(format!("Fork failed: {}", e))),
@@ -209,7 +217,14 @@ fn wait_for_child(child: Pid, cmd_name: &str, words: &[String]) -> i32 {
                 return 128 + sig as i32;
             }
             Ok(_) => continue,
-            Err(nix::errno::Errno::EINTR) => continue,
+            // A SIGTERM or SIGHUP with an EXIT trap set ends the *wait*, not just this call: the
+            // shell is dying, and sitting out the rest of a `sleep 20` first would leave the
+            // cleanup that long undone. The signal stands for the command boundary just after
+            // this to act on — see `job::fatal_signal_waiting`.
+            Err(nix::errno::Errno::EINTR) => match crate::exec::job::fatal_signal_waiting() {
+                Some(signum) => return 128 + signum,
+                None => continue,
+            },
             Err(_) => return 1,
         }
     }

@@ -15,7 +15,8 @@
 //! that column on the thing worth knowing about a past command: **when you last ran it**, beside
 //! how often and where.
 //!
-//! The finder opens over global history. **Left and Right narrow and widen the scope** — global,
+//! The finder opens over the current git worktree's history, or global history outside one (see
+//! `oslo.finder.scope`). **Left and Right narrow and widen the scope** — global,
 //! host, session, directory, workspace — and **Tab moves to the next profile**, which is a
 //! different pair of stores and so a different history entirely. The bar's right end says which:
 //! `default @ [global] || 3/57`. They are the arrows because the scopes are a line from widest to narrowest, and because

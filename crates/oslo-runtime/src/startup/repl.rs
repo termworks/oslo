@@ -100,7 +100,9 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     // configuration has run first.
     let config = match no_rc {
         true => Vec::new(),
-        false => lua_init::config_files(&env_struct.lock().unwrap()),
+        false => {
+            lua_init::config_files(&env_struct.lock().unwrap_or_else(|held| held.into_inner()))
+        }
     };
     if lua_init::install_bindings(&lua, Arc::clone(&env_struct)) && !config.is_empty() {
         for path in &config {
@@ -132,14 +134,18 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     argc::register();
     // A spec — one the config declared, or one a `.yaml` file carries — reaches the shell for the
     // macros it names and the directory it may be found in.
-    spec::register();
+    spec::register(&env_struct);
 
-    let settings = history::settings(&env_struct.lock().unwrap());
+    let settings = history::settings(&env_struct.lock().unwrap_or_else(|held| held.into_inner()));
     // Start walking `$PATH` now, in the background. Whatever is left to do here — opening the
     // history database, building the editor, reading the config — is time the scan gets for free,
     // and it is the difference between the first Tab being instant and it being the one keystroke
     // that visibly stalls.
-    if let Some(path) = env_struct.lock().unwrap().get_var("PATH") {
+    if let Some(path) = env_struct
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .get_var("PATH")
+    {
         oslo_ui::command_index::warm(path.to_string());
     }
 
@@ -164,7 +170,8 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     arrival::arrive(&env_struct, &lua, std::path::Path::new(&here));
     // The mode the prompt is reading. It lives for the whole session: switching language is a
     // property of the session, not of one line.
-    let mut current = mode::starting_mode(&env_struct.lock().unwrap());
+    let mut current =
+        mode::starting_mode(&env_struct.lock().unwrap_or_else(|held| held.into_inner()));
 
     let helper = OsloHelper::new(Arc::clone(&env_struct));
     let mut history = History::open(settings.file.clone(), settings.max_size);
@@ -352,7 +359,8 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
                         // *this* is the only place that knows a person typed it: a script, a
                         // `-c` command and every nested chain leave it off and pay nothing.
                         oslo_shell::exec::pipeline::segments::arm();
-                        let mut env_guard = env_struct.lock().unwrap();
+                        let mut env_guard =
+                            env_struct.lock().unwrap_or_else(|held| held.into_inner());
                         let res = absorb_loop_control(
                             parse_with_aliases(&text, !env_guard.get_aliases().is_empty(), &|n| {
                                 env_guard.get_alias(n).map(str::to_string)
@@ -509,9 +517,12 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
                         // R6.5: `exit` from the prompt is still a shell ending, so the EXIT trap
                         // fires here too. A REPL that skipped it would leave behind exactly the
                         // temp files an interactive session accumulates most of.
-                        let mut env_guard = env_struct.lock().unwrap();
+                        let mut env_guard =
+                            env_struct.lock().unwrap_or_else(|held| held.into_inner());
                         let code = run_exit_trap(&mut env_guard, code);
                         drop(env_guard);
+                        #[cfg(feature = "watch")]
+                        crate::lua::api::watch_service::stop_all();
                         std::process::exit(code);
                     }
                     Err(err) => {
@@ -535,9 +546,11 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     // End of input (Ctrl-D) is the other way a REPL ends, and POSIX makes no distinction: the
     // EXIT trap fires on both.
     fire_exit(&lua, last_status);
-    let mut env_guard = env_struct.lock().unwrap();
+    let mut env_guard = env_struct.lock().unwrap_or_else(|held| held.into_inner());
     let last_status = run_exit_trap(&mut env_guard, last_status);
     drop(env_guard);
+    #[cfg(feature = "watch")]
+    crate::lua::api::watch_service::stop_all();
     std::process::exit(last_status);
 }
 

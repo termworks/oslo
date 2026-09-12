@@ -27,3 +27,5 @@ flags:
   "-w": "Set the time (in seconds) to wait for a response to a probe (default 5 sec.)"
   "-x": "Toggle IP checksums. Normally, this prevents traceroute from calculating IP checksums. In some cases, the operating system can overwrite parts of the outgoing packet but not recalculate the checksum (so in some cases the default is to not calculate checksums and using -x causes them to be calculated). Note that checksums are usually required for the last hop when using ICMP ECHO probes ( -I ). So they are always calculated when using ICMP"
   "-z=": "Set the time (in milliseconds) to pause between probes (default 0). Some systems such as Solaris and routers such as Ciscos rate limit ICMP messages. A good value to use with this this is 500 (e.g. 1/2 second)"
+completion:
+  positionalany: ["$hosts"]

@@ -73,44 +73,84 @@ commands:
     description: "List timer units currently in memory ordered by next elapse"
   - name: is-active
     description: "Check whether units are active"
+    completion:
+      positionalany: ["$services"]
   - name: is-failed
     description: "Check whether units are failed"
+    completion:
+      positionalany: ["$services"]
   - name: status
     description: "Show runtime status of one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: show
     description: "Show properties of one or more"
+    completion:
+      positionalany: ["$services"]
   - name: cat
     description: "Show files and drop-ins of specified units"
+    completion:
+      positionalany: ["$services"]
   - name: help
     description: "Show manual for one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: list-dependencies
     description: "Recursively show units which are required or wanted by the units or by which those"
+    completion:
+      positionalany: ["$services"]
   - name: start
     description: "Start (activate) one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: stop
     description: "Stop (deactivate) one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: reload
     description: "Reload one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: restart
     description: "Start or restart one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: try-restart
     description: "Restart one or more units if active"
+    completion:
+      positionalany: ["$services"]
   - name: reload-or-restart
     description: "Reload one or more units if possible, otherwise start or restart"
+    completion:
+      positionalany: ["$services"]
   - name: try-reload-or-restart
     description: "If active, reload one or more units, if supported, otherwise restart"
+    completion:
+      positionalany: ["$services"]
   - name: isolate
     description: "Start one unit and stop all others"
+    completion:
+      positionalany: ["$services"]
   - name: kill
     description: "Send signal to processes of a unit"
+    completion:
+      positionalany: ["$services"]
   - name: clean
     description: "Clean runtime, cache, state, logs or configuration of unit"
+    completion:
+      positionalany: ["$services"]
   - name: freeze
     description: "Freeze execution of unit processes"
+    completion:
+      positionalany: ["$services"]
   - name: thaw
     description: "Resume execution of a frozen unit"
+    completion:
+      positionalany: ["$services"]
   - name: set-property
     description: "Sets one or more properties of a unit"
+    completion:
+      positionalany: ["$services"]
   - name: bind
     description: "Bind-mount a path from the host into a unit's namespace"
     completion:
@@ -127,42 +167,70 @@ commands:
         - ["$files"]
   - name: service-log-level
     description: "Get/set logging threshold for service"
+    completion:
+      positionalany: ["$services"]
   - name: service-log-target
     description: "Get/set logging target for service"
+    completion:
+      positionalany: ["$services"]
   - name: reset-failed
     description: "Reset failed state for all, one, or more units"
+    completion:
+      positionalany: ["$services"]
   - name: list-unit-files
     description: "List installed unit files"
   - name: enable
     description: "Enable one or more unit files"
+    completion:
+      positionalany: ["$services"]
   - name: disable
     description: "Disable one or more unit files"
+    completion:
+      positionalany: ["$services"]
   - name: reenable
     description: "Reenable one or more unit files"
+    completion:
+      positionalany: ["$services"]
   - name: preset
     description: "Enable/disable one or more unit files based on preset configuration"
+    completion:
+      positionalany: ["$services"]
   - name: preset-all
     description: "Enable/disable all unit files based on preset configuration"
   - name: mask
     description: "Mask one or more unit files"
+    completion:
+      positionalany: ["$services"]
   - name: unmask
     description: "Unmask one or more unit files"
+    completion:
+      positionalany: ["$services"]
   - name: link
     description: "Link one or more units files into the search path"
     completion:
       positionalany: ["$files"]
   - name: revert
     description: "Revert one or more unit files to vendor version"
+    completion:
+      positionalany: ["$services"]
   - name: add-wants
     description: "Add 'Wants' dependency for the target on specified one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: add-requires
     description: "Add 'Requires' dependency for the target on specified one or more units"
+    completion:
+      positionalany: ["$services"]
   - name: edit
     description: "Edit one or more unit files"
+    completion:
+      positionalany: ["$services"]
   - name: get-default
     description: "Get the name of the default target"
   - name: set-default
     description: "Set the default target"
+    completion:
+      positionalany: ["$services"]
   - name: list-jobs
     description: "List jobs"
   - name: cancel

@@ -1,6 +1,7 @@
 //! The `oslo` binary: argument handling, script execution, and the interactive REPL.
 
 mod cli;
+mod handoff;
 
 // Startup, the Lua API and history expansion all live at the top of the stack now, in
 // `oslo-runtime`. History expansion in particular must stay reachable only from the interactive
@@ -11,6 +12,7 @@ use oslo_runtime::absorb_loop_control;
 use oslo_runtime::startup;
 
 use cli::{Action, Invocation};
+use handoff::{block_every_signal, inherited_stack_limit, restore_signal_mask};
 use oslo::env::Environment;
 use oslo::env::builtins::run_exit_trap;
 use oslo::env::options::ShellOption;
@@ -80,6 +82,13 @@ fn main() {
     oslo::version::install(env!("CARGO_PKG_VERSION"));
     // Before any thread exists, as the safety note on the function requires.
     restore_default_sigpipe();
+    #[cfg(all(feature = "watch", feature = "scratch"))]
+    {
+        let args: Vec<String> = arguments();
+        if let Some(status) = cli::watch::bootstrap(&args) {
+            std::process::exit(status);
+        }
+    }
     report_structured_audit();
     // The names that can carry structure. Declared once, here, for every mode the shell runs in —
     // a script and a prompt must agree about what `df` is.
@@ -91,50 +100,44 @@ fn main() {
     // The shell runs on a stack oslo chose rather than one it inherited; see
     // [`oslo::INTERPRETER_STACK`]. `main` itself does nothing afterwards but wait.
     //
-    // Signals need care, and getting it wrong is subtle. `kill` directed at a *process* is
-    // delivered to any one thread that is not blocking it, so with `main` merely parked in
-    // `join` the kernel was free to hand it there — and `kill -USR1 $$` would then return to the
-    // shell before its own trap had run, printing the next command's output first. Blocking
-    // everything here and unblocking on the worker leaves exactly one candidate thread, which is
-    // what restores the single-threaded ordering the rest of the shell is written against.
+    // The signal mask around the handoff is [`handoff`]'s, and why it matters is documented there.
     let inherited = block_every_signal();
     let worker = std::thread::Builder::new()
         .name("oslo".to_string())
         .stack_size(oslo::INTERPRETER_STACK)
         .spawn(move || {
+            // First, so the base is the top of this thread rather than partway down it. What it is
+            // for is in `oslo_base::stack`: the constructs that re-enter the interpreter ask how
+            // much is left instead of each counting its own levels against a limit of its own.
+            oslo_base::stack::mark(oslo::INTERPRETER_STACK);
             // Anything raised in the gap is merely pending, and arrives the moment this returns.
             restore_signal_mask(&inherited);
             dispatch();
-        })
-        .expect("oslo: cannot start");
+        });
+
+    // **A shell that cannot spawn a thread still has to be a shell.** Under `ulimit -u` or a low
+    // pids cgroup this fails with `EAGAIN`, and `.expect` made that a panic — so oslo would not
+    // start where bash and dash both run the script. All the worker buys is a 16 MiB stack, and
+    // both ways of recursing are bounded anyway (`nesting::MAX_INPUT_NESTING`, and the
+    // nested-script counter), so the fallback runs the same programs with less headroom.
+    let Ok(worker) = worker else {
+        // The fallback has whatever stack the process was given, which is `ulimit -s` and usually
+        // half the worker's. Marked with that rather than with `INTERPRETER_STACK`, or the guard
+        // would be measuring against a budget this thread does not have.
+        oslo_base::stack::mark(inherited_stack_limit());
+        restore_signal_mask(&inherited);
+        dispatch();
+        return;
+    };
+
     if worker.join().is_err() {
         // The worker panicked and has already printed its message.
         std::process::exit(2);
     }
 }
 
-/// Block every signal on the calling thread, answering the mask that was in force.
-fn block_every_signal() -> nix::sys::signal::SigSet {
-    let mut previous = nix::sys::signal::SigSet::empty();
-    let _ = nix::sys::signal::pthread_sigmask(
-        nix::sys::signal::SigmaskHow::SIG_SETMASK,
-        Some(&nix::sys::signal::SigSet::all()),
-        Some(&mut previous),
-    );
-    previous
-}
-
-/// Put a saved mask back, so the shell starts with whatever its caller handed it.
-fn restore_signal_mask(mask: &nix::sys::signal::SigSet) {
-    let _ = nix::sys::signal::pthread_sigmask(
-        nix::sys::signal::SigmaskHow::SIG_SETMASK,
-        Some(mask),
-        None,
-    );
-}
-
 fn dispatch() {
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = arguments();
 
     let invocation = match cli::parse(&args) {
         Ok(inv) => inv,
@@ -312,12 +315,15 @@ fn run_program_reading(
     frame: Option<&str>,
 ) -> ! {
     let mut env = Environment::new();
+    // **The name first**, because pushing the frame publishes `$BASH_SOURCE` and the script's own
+    // path is its outermost entry — pushed first, the array named `oslo` instead of the script and
+    // `dirname "${BASH_SOURCE[0]}"` answered the wrong directory.
+    env.shell_name = invocation.name.clone();
     // How this program was reached, for `$FUNCNAME`'s outermost entry. See
     // `Environment::enter_script_frame`; nothing is pushed for `-c` or standard input.
     if let Some(frame) = frame {
         env.enter_script_frame(frame);
     }
-    env.shell_name = invocation.name.clone();
     env.set_positional(invocation.positional.clone());
     apply_invocation_options(&mut env, invocation);
     startup::history::register(&mut env);
@@ -541,7 +547,25 @@ fn exit_error_status(env: &Environment, err: ShellError) -> i32 {
         // inside a subshell or a pipeline stage it is just a failed command, worth 1, and an
         // interactive shell only sets `$?` and carries on.
         e => {
-            let status = match env.option(ShellOption::CommandString) {
+            // **`set -e` unwinds as a failed command, and carries that command's status.**
+            // Checked against bash 5.3:
+            //
+            // ```text
+            //   bash -c 'set -u;  echo $nope'   ->  127
+            //   bash -c 'set -eu; echo $nope'   ->  1
+            //   bash -c 'set -e;  echo $(if)'   ->  127
+            // ```
+            //
+            // The unset variable failed the command and `-e` ended the script on that failure, so
+            // the status is the failure's. A syntax error keeps 127 either way, because it never
+            // became a command that could fail.
+            //
+            // It matters because 127 means "command not found" to make, to a CI runner and to
+            // `case $? in 127)` — and `set -eu` is the standard opening line of a careful script,
+            // where an unset variable is the commonest thing to go wrong.
+            let unwound_by_errexit =
+                env.option(ShellOption::ErrExit) && matches!(e, ShellError::UnsetParameter(_));
+            let status = match env.option(ShellOption::CommandString) && !unwound_by_errexit {
                 true => e.fatal_exit_status(env.posix()),
                 false => e.failure_status(),
             };
@@ -555,4 +579,16 @@ fn exit_error_status(env: &Environment, err: ShellError) -> i32 {
             status
         }
     }
+}
+
+/// This process's arguments, with any byte that is not UTF-8 replaced rather than fatal.
+///
+/// **`env::args()` panics on such a byte**, before `main` has done anything: `oslo ./café.sh` with
+/// the name in Latin-1 died with `SIGABRT` and no message a person could act on, where bash runs
+/// the script. A positional parameter cannot be skipped the way an environment variable can —
+/// `$2` has to stay `$2` — so the byte is replaced and the argument keeps its place.
+fn arguments() -> Vec<String> {
+    env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
 }

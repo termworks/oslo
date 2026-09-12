@@ -303,6 +303,57 @@ const PLAIN: &[Plain] = &[
         script: "declare -A x",
         stderr: "oslo: declare: -A: associative arrays are not supported",
     },
+    // A name the shell was *given* rather than one written in the script. It reaches stderr, and
+    // an escape sequence in it is not text a terminal shows but an instruction it obeys — so what
+    // arrives is the spelling, `$'\E…'`, and never the bytes. See `oslo_base::shown`.
+    //
+    // Every surface, because they are separate call sites and converting one proves nothing about
+    // the next: the bug was that all of them wrote the name straight through.
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); cd \"$e\"",
+        stderr: "oslo: cd: $'\\E[2Jx': No such file or directory",
+    },
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); . \"$e\"",
+        stderr: "oslo: source: $'\\E[2Jx': No such file or directory",
+    },
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); $e",
+        stderr: "oslo: $'\\E[2Jx': command not found",
+    },
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); exec \"$e\"",
+        stderr: "oslo: exec: $'\\E[2Jx': not found",
+    },
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); cat < \"$e\"",
+        stderr: "oslo: $'\\E[2Jx': No such file or directory",
+    },
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); rm \"$e\"",
+        stderr: "oslo: rm: cannot remove $'\\E[2Jx': No such file or directory",
+    },
+    Plain {
+        script: "e=$(printf '\\033[2Jx'); unset \"$e\"",
+        stderr: "oslo: unset: `$'\\E[2Jx'': not a valid identifier",
+    },
+    // An `OSC 8` payload, which is the half that survives being invisible: under a terminal that
+    // speaks it, this put an arbitrary hyperlink inside oslo's own error text.
+    Plain {
+        script: "e=$(printf '\\033]8;;http://evil\\033\\\\click'); cd \"$e\"",
+        stderr: "oslo: cd: $'\\E]8;;http://evil\\E\\\\click': No such file or directory",
+    },
+    // **And an ordinary name is not quoted for it.** A rule that fired on anything would make every
+    // diagnostic in the shell unreadable to protect against a name that almost never appears; a
+    // name that is merely non-ASCII is an ordinary name.
+    Plain {
+        script: "cd héllo-☃",
+        stderr: "oslo: cd: héllo-☃: No such file or directory",
+    },
+    Plain {
+        script: "rm 'a b'",
+        stderr: "oslo: rm: cannot remove 'a b': No such file or directory",
+    },
     Plain {
         script: "declare 2bad",
         stderr: "oslo: declare: `2bad': not a valid identifier",

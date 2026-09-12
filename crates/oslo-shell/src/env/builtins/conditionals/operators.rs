@@ -15,6 +15,7 @@
 
 use crate::env::scope::Environment;
 use crate::expand::glob::ShellPattern;
+use crate::syntax::lower::cond::{QUOTED_CLOSE, QUOTED_OPEN};
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
@@ -100,7 +101,9 @@ pub(super) fn is_binary_op(op: &str) -> bool {
 }
 
 pub(super) fn eval_unary(env: &Environment, op: &str, target: &str) -> TestResult<bool> {
-    let path = std::path::Path::new(target);
+    // The bytes the name really has, not its UTF-8 stand-in: `[ -e "$f" ]` over a glob match.
+    let real = oslo_base::lossless::to_os(target);
+    let path = std::path::Path::new(&real);
 
     // Resolved lazily: the string predicates must not stat anything, or `[ -n "$x" ]` would pay a
     // syscall per loop iteration.
@@ -189,14 +192,31 @@ pub(super) fn eval_binary(mode: Mode, left: &str, op: &str, right: &str) -> Test
 
 /// `[[ left == right ]]`, where `right` is a pattern, against `[ left = right ]`, where it is not.
 ///
-/// The operand arrives already flattened, so `from_unquoted` is the only honest reading of it —
-/// which is also why the adapter decides quoting *before* this point, emitting the POSIX operator
-/// word for `[[ $x == "$y" ]]` so the comparison lands in the `Posix` arm.
+/// A fully quoted operand never gets here as a pattern — the adapter emits the POSIX operator for
+/// `[[ $x == "$y" ]]`. A *partly* quoted one arrives with its quoted runs between the adapter's
+/// marks, and each character keeps whether it was quoted.
 fn pattern_or_literal(mode: Mode, left: &str, right: &str) -> bool {
     match mode {
         Mode::Posix => left == right,
-        Mode::Extended => ShellPattern::from_unquoted(right).matches(left),
+        Mode::Extended => {
+            marked_pattern(right).matches_case(left, oslo_base::glob::walk::nocasematch())
+        }
     }
+}
+
+/// Compile a right operand, reading the adapter's marks as quoting.
+fn marked_pattern(right: &str) -> ShellPattern {
+    let mut chars = Vec::with_capacity(right.len());
+    let mut quoted = false;
+    for ch in right.chars() {
+        match ch {
+            QUOTED_OPEN => quoted = true,
+            QUOTED_CLOSE => quoted = false,
+            _ => chars.push((ch, !quoted)),
+        }
+    }
+    // bash reads `[[ x == @(a|b) ]]` as an extended pattern whatever `shopt` says.
+    ShellPattern::from_chars_with(&chars, true)
 }
 
 /// Operand of an arithmetic comparison.
@@ -214,8 +234,12 @@ fn to_int(s: &str) -> TestResult<i64> {
 
 /// True when `a` exists and is newer than `b`, or when `b` does not exist.
 fn newer_than(a: &str, b: &str) -> bool {
-    let ma = fs::metadata(a).ok().and_then(|m| m.modified().ok());
-    let mb = fs::metadata(b).ok().and_then(|m| m.modified().ok());
+    let ma = fs::metadata(oslo_base::lossless::to_os(a))
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let mb = fs::metadata(oslo_base::lossless::to_os(b))
+        .ok()
+        .and_then(|m| m.modified().ok());
     match (ma, mb) {
         (Some(a), Some(b)) => a > b,
         (Some(_), None) => true,
@@ -225,7 +249,10 @@ fn newer_than(a: &str, b: &str) -> bool {
 
 /// True when both paths refer to the same device and inode.
 fn same_file(a: &str, b: &str) -> bool {
-    match (fs::metadata(a), fs::metadata(b)) {
+    match (
+        fs::metadata(oslo_base::lossless::to_os(a)),
+        fs::metadata(oslo_base::lossless::to_os(b)),
+    ) {
         (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
         _ => false,
     }

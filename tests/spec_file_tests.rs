@@ -122,30 +122,6 @@ fn a_spec_file_is_found_by_name_and_answers_for_every_position() {
     unsafe { std::env::remove_var("OSLO_COMPLETION") };
 }
 
-/// **Every spec shipped in `examples/` parses.** A format is only as good as the files written in
-/// it, and an example that does not read is worse than no example: it is the first thing anybody
-/// copies.
-#[test]
-fn the_example_specs_read() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/completion");
-    let mut seen = 0;
-    for entry in std::fs::read_dir(&dir)
-        .expect("examples/completion")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).expect("readable");
-        let spec = oslo::spec::read::spec(&source)
-            .unwrap_or_else(|problem| panic!("{}: {problem}", path.display()));
-        assert!(!spec.name.is_empty(), "{}", path.display());
-        seen += 1;
-    }
-    assert!(seen > 0, "no example specs in {}", dir.display());
-}
-
 /// **Every spec shipped in `share/completion` parses, and parses into something.**
 ///
 /// There are ~1,200 of them and they are *generated* — from Fig's TypeScript and from argc's shell
@@ -200,6 +176,63 @@ fn every_shipped_spec_parses() {
         "{seen} specs, {flags} top-level flags, largest {} bytes ({}), {:?} total",
         biggest.0,
         biggest.1,
+        start.elapsed()
+    );
+}
+
+/// **Tab must never take the shell down with it.** Every shipped spec, walked at the positions a
+/// person actually types from.
+///
+/// [`every_shipped_spec_parses`] proves the reader survives the corpus; this proves the *walk*
+/// does. They are not the same code: parsing builds the tree, and completion then indexes into it
+/// by position, by flag name and by argument, which is where an off-by-one or a missing arm turns
+/// into a panic. A panic here is not a wrong suggestion — it unwinds through the line editor and
+/// ends the session, losing whatever the user had typed.
+///
+/// Nothing is asserted about *what* comes back. The corpus is generated from Fig and argc, so its
+/// contents are not oslo's to be right about; that it answers at all, for every one of them,
+/// without panicking or hanging, is.
+#[test]
+fn every_shipped_spec_can_be_walked_without_panicking() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("share/completion");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return; // A checkout that has not run `scripts/completion.sh`.
+    };
+
+    let helper = helper();
+    let start = std::time::Instant::now();
+    let (mut walked, mut answered) = (0usize, 0usize);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // The shapes a line is in when Tab is pressed: a bare command, mid-flag, after a flag that
+        // may want a value, mid-word, and at a second operand.
+        for line in [
+            format!("{name} "),
+            format!("{name} -"),
+            format!("{name} --"),
+            format!("{name} --he"),
+            format!("{name} -x "),
+            format!("{name} sub "),
+            format!("{name} a b "),
+        ] {
+            let (_, cands) = helper.candidates(&line, line.len());
+            answered += cands.len();
+            walked += 1;
+        }
+    }
+
+    assert!(
+        walked > 3_000,
+        "only {walked} walks; the corpus is ~1,200 specs"
+    );
+    println!(
+        "{walked} walks, {answered} candidates, {:?} total",
         start.elapsed()
     );
 }

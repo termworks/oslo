@@ -80,12 +80,38 @@ impl Environment {
     pub fn enter_script_frame(&mut self, kind: &str) {
         self.script_frames.push(kind.to_string());
         self.publish_call_stack();
+        self.publish_source_stack();
     }
 
     /// Leave the frame [`Self::enter_script_frame`] pushed.
     pub fn exit_script_frame(&mut self) {
         self.script_frames.pop();
         self.publish_call_stack();
+        self.publish_source_stack();
+    }
+
+    /// `$BASH_SOURCE` — the files being executed, innermost first.
+    ///
+    /// **`dirname "${BASH_SOURCE[0]}"` is how a bash script finds its own directory**, and with
+    /// nothing here it expanded to the empty string: the usual
+    /// `cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` then answered the *caller's* directory instead
+    /// of the script's, silently and with status 0. Every script that loads a file beside itself
+    /// depends on this, and it is the reason `$BASH_SOURCE` cannot simply be `$0` — a sourced file
+    /// has to name itself, while `$0` deliberately does not change across `source`.
+    ///
+    /// The stack is the one [`Self::enter_source_file`] already keeps for diagnostics, with the
+    /// script itself underneath. Unset where bash leaves it unset: `-c` and standard input push no
+    /// script frame and source nothing.
+    fn publish_source_stack(&mut self) {
+        if self.script_frames.is_empty() && self.source_files.is_empty() {
+            self.arrays.remove("BASH_SOURCE");
+            return;
+        }
+        let mut frames: Vec<String> = self.source_files.iter().rev().cloned().collect();
+        if !self.script_frames.is_empty() {
+            frames.push(self.shell_name.clone());
+        }
+        self.set_array("BASH_SOURCE", ShellArray::from_values(frames));
     }
 
     /// Note the file whose commands are about to run, for a diagnostic's location.
@@ -100,6 +126,7 @@ impl Environment {
     /// belongs to. See [`Environment::origin`](crate::env::Environment::origin).
     pub fn enter_source_file(&mut self, path: &str) {
         self.source_files.push(path.to_string());
+        self.publish_source_stack();
         // A sourced file is parsed whole, so its tree already counts from its own line 1. The
         // outer file's offset is put back by [`Self::exit_source_file`] — see `set_line_offset`.
         let outer = self.set_line_offset(0);
@@ -109,6 +136,7 @@ impl Environment {
     /// Leave the file [`Self::enter_source_file`] pushed.
     pub fn exit_source_file(&mut self) {
         self.source_files.pop();
+        self.publish_source_stack();
         if let Some(outer) = self.source_offsets.pop() {
             self.set_line_offset(outer);
         }

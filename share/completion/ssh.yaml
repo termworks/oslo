@@ -49,3 +49,9 @@ completion:
     i: ["$files"]
     o: [AddressFamily, BatchMode, BindAddress, ChallengeResponseAuthentication, CheckHostIP, Cipher, Ciphers, ClearAllForwardings, Compression, CompressionLevel, ConnectionAttempts, ConnectTimeout, ControlMaster, ControlPath, ControlPersist, DynamicForward, EscapeChar, ExitOnForwardFailure, ForwardAgent, ForwardX11, ForwardX11Timeout, ForwardX11Trusted, GatewayPorts, GlobalKnownHostsFile, GSSAPIAuthentication, GSSAPIDelegateCredentials, HashKnownHosts, Host, HostbasedAuthentication, HostKeyAlgorithms, HostKeyAlias, HostName, IdentityFile, IdentitiesOnly, IPQoS, KbdInteractiveAuthentication, KbdInteractiveDevices, KexAlgorithms, LocalCommand, LocalForward, LogLevel, MACs, NoHostAuthenticationForLocalhost, NumberOfPasswordPrompts, PasswordAuthentication, PermitLocalCommand, PKCS11Provider, Port, PreferredAuthentications, Protocol, ProxyCommand, PubkeyAuthentication, RekeyLimit, RequestTTY, RhostsRSAAuthentication, RSAAuthentication, SendEnv, ServerAliveInterval, ServerAliveCountMax, StrictHostKeyChecking, TCPKeepAlive, Tunnel, TunnelDevice, UsePrivilegedPort, User, UserKnownHostsFile, VerifyHostKeyDNS, VisualHostKey, XAuthLocation]
     S: ["$files"]
+  # The machine to connect to. `$hosts` is oslo's own source — ~/.ssh/config, known_hosts and
+  # /etc/hosts — because the answer is a property of this machine and not of ssh.
+  positional:
+    - ["$hosts"]
+  # Everything after the host is a command run on it, which only that machine could complete.
+  positionalany: []

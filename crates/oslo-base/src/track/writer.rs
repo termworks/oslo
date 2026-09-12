@@ -45,6 +45,24 @@ type Job = Box<dyn FnOnce() + Send>;
 
 static QUEUE: OnceLock<Option<Sender<Job>>> = OnceLock::new();
 
+/// The process the writer thread belongs to.
+///
+/// **A thread does not survive `fork`, and a channel does.** Only the forking thread continues in
+/// the child, so the `oslo-history` loop is gone there — but the `Receiver` it was looping over is
+/// still sitting in the memory the child inherited, so `send` succeeds and the job is queued into
+/// something nothing will ever drain. [`settle`] then waited on it for the life of the process.
+///
+/// Recorded here rather than announced by each fork site, because every one of them would have to
+/// remember: a subshell, a pipeline stage, a command substitution and a background job all fork,
+/// and the `exec` builtin is reachable from all four.
+static OWNER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Whether the writer thread is this process's own.
+fn ours() -> bool {
+    let owner = OWNER.load(std::sync::atomic::Ordering::SeqCst);
+    owner != 0 && owner == std::process::id() as i32
+}
+
 /// The queue, starting the writer thread the first time anything is deferred.
 ///
 /// `None` if the thread could not be started, which is not a reason to lose a write — see [`defer`].
@@ -67,7 +85,13 @@ fn queue() -> Option<&'static Sender<Job>> {
                     }
                 })
                 .ok()
-                .map(|_| send)
+                .map(|_| {
+                    OWNER.store(
+                        std::process::id() as i32,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    send
+                })
         })
         .as_ref()
 }
@@ -97,6 +121,12 @@ pub fn settle() {
     let Some(Some(queue)) = QUEUE.get() else {
         return;
     };
+    // **Not in a forked child**, where the thread that would answer does not exist — see [`OWNER`].
+    // The queued jobs belong to the parent and it will settle them; there is nothing here to wait
+    // for, and waiting hung every subshell that reached `exec`.
+    if !ours() {
+        return;
+    }
     let (done, wait) = channel();
     if queue
         .send(Box::new(move || {

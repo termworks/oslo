@@ -104,7 +104,9 @@ fn a_named_event_is_lua_at_the_prompt() {
     let (stdout, _) = repl(dir.path(), "echo findme\n!print(2 * 21)\nexit\n");
 
     assert!(
-        stdout.lines().any(|line| line.trim() == "42"),
+        stdout
+            .lines()
+            .any(|line| line.split_whitespace().last() == Some("42")),
         "`!print(...)` should have run as Lua: {stdout:?}"
     );
     assert_eq!(

@@ -227,7 +227,7 @@ pub fn map_rows(rows: &[Record], expression: &str) -> (Vec<Record>, Option<Strin
 /// Evaluate `expression` once per row and answer what it produced for each.
 ///
 /// The shared half of `insert`, `update` and `upsert`: they differ only in what they do with the
-/// answer, so the Lua — the parse-once, the [`Bound`] guard, the unit rewrite — lives here rather
+/// answer, so the Lua — the parse-once, the `Bound` guard, the unit rewrite — lives here rather
 /// than three times over in `reshape`.
 ///
 /// A row whose expression raises contributes `None` and the failure is reported once.

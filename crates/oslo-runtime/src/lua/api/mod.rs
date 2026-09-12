@@ -39,6 +39,7 @@ pub(crate) mod external;
 pub mod feature;
 mod fs;
 mod git;
+mod glob;
 mod handle;
 mod history;
 mod json;
@@ -81,7 +82,10 @@ mod theme;
 pub(crate) mod timer;
 pub(crate) mod tool;
 mod ui;
+#[cfg(feature = "watch")]
 mod watch;
+#[cfg(feature = "watch")]
+pub(crate) mod watch_service;
 mod word;
 
 pub mod hooks;
@@ -149,6 +153,7 @@ pub fn install(host: &dyn Host, registry: &Registry, env: Arc<Mutex<Environment>
         "misc",
         "transcript",
         "vi",
+        "autopair",
         "notify",
         "dirs",
         "theme",
@@ -420,34 +425,11 @@ fn filesystem(oslo: &mut Table, system: &mut Table, env: &Arc<Mutex<Environment>
         )
     });
 
-    // oslo.glob(pattern) -> { "a", "b", ... }, in the shell's own sorted order.
-    //
-    // Lua's standard library has no pathname expansion at all, so listing "every .conf in here"
-    // meant shelling out. An empty table for no matches, never the pattern itself: returning the
-    // unmatched pattern is a shell convention that has surprised people for forty years, and Lua
-    // code checking `#matches == 0` is what a caller will naturally write.
-    put(oslo, "glob", |_, args| {
-        let pattern = text(&args, 1, "oslo.glob")?;
-        // One unquoted run, which is what makes every metacharacter in the string live — the
-        // caller passed a pattern, not a word that might have been quoted.
-        let field = [oslo_shell::expand::Run::new(
-            pattern.clone(),
-            oslo_shell::expand::Origin::Literal,
-        )];
-        let matches = oslo_shell::expand::glob::expand_glob(&field);
-        // `expand_glob` yields the pattern back when nothing matched, the way an unquoted word
-        // does in a command line. Here that would be a lie, so it becomes an empty table.
-        let matches = if matches == vec![pattern] {
-            Vec::new()
-        } else {
-            matches
-        };
-        let mut table = Table::new();
-        for (i, path) in matches.into_iter().enumerate() {
-            table.set(Value::int(i as i64 + 1), Value::str(path));
-        }
-        Ok(vec![Value::table(table)])
-    });
+    // oslo.glob(pattern [, opts]) -> { "a", "b", ... }: qualifiers as options, rows with
+    // `rows = true`, and an empty table — never the pattern — for no match. See `glob`.
+    put(oslo, "glob", |_, args| glob::glob(&args, "oslo.glob"));
+    // oslo.shopt(name [, on]) — the shell's `shopt` options, from a config.
+    put(oslo, "shopt", |_, args| glob::shopt(&args));
 }
 
 /// Aliases, builtins, the prompt, and the shell's exit status.

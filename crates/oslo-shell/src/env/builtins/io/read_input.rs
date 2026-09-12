@@ -25,6 +25,13 @@ pub enum Stop {
     Eof,
     /// `-t` expired. Whatever arrived first is still assigned.
     TimedOut,
+    /// A signal the shell is dying of arrived while waiting — see [`Stop::Interrupted`]'s status.
+    ///
+    /// **A blocking builtin is where the shell stops noticing signals.** `read` from a pipe nobody
+    /// writes to parks in `poll` and reaches no command boundary, so a SIGTERM with an EXIT trap
+    /// set was recorded and then waited on indefinitely; bash dies at once and runs the trap. The
+    /// wait ends here and the boundary just after it ends the shell.
+    Interrupted(i32),
 }
 
 /// One logical line as `read` sees it: the delimiter is gone and backslash escapes have been
@@ -126,7 +133,7 @@ pub struct InputSpec {
 ///
 /// `poll` rather than a blocking read: `read -t` has to give up on a descriptor nobody is
 /// writing to, and there is no way to un-block a read once it has started.
-fn wait_readable(fd: RawFd, deadline: Instant) -> Result<bool, Errno> {
+fn wait_readable(fd: RawFd, deadline: Instant) -> Result<Wait, Errno> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let millis = remaining.as_millis().min(i32::MAX as u128) as i32;
@@ -140,13 +147,30 @@ fn wait_readable(fd: RawFd, deadline: Instant) -> Result<bool, Errno> {
         if n < 0 {
             let err = Errno::last();
             if err == Errno::EINTR {
-                // A caught signal is not a timeout; recompute the budget and keep waiting.
+                // A signal the shell is dying of ends the wait; any other is not a timeout, so
+                // recompute the budget and keep waiting.
+                if let Some(signum) = crate::exec::job::fatal_signal_waiting() {
+                    return Ok(Wait::Interrupted(signum));
+                }
                 continue;
             }
             return Err(err);
         }
-        return Ok(n > 0);
+        return Ok(match n > 0 {
+            true => Wait::Ready,
+            false => Wait::Deadline,
+        });
     }
+}
+
+/// How a wait for input ended.
+enum Wait {
+    /// The descriptor has something.
+    Ready,
+    /// `-t` expired first.
+    Deadline,
+    /// A signal the shell is dying of arrived.
+    Interrupted(i32),
 }
 
 /// `-t 0`: whether input is available *without consuming any*.
@@ -155,7 +179,9 @@ fn wait_readable(fd: RawFd, deadline: Instant) -> Result<bool, Errno> {
 /// the descriptor has input, and a `read` that swallowed a byte to find that out would be
 /// useless for the polling loops the option exists to serve.
 pub fn probe_readable(fd: RawFd) -> Result<bool, Errno> {
-    wait_readable(fd, Instant::now())
+    // A probe cannot block, so an interrupt here says nothing about the descriptor: "no input
+    // waiting" is the honest answer, and the shell ends at the boundary after it either way.
+    Ok(matches!(wait_readable(fd, Instant::now())?, Wait::Ready))
 }
 
 /// Terminal echo suppressed for the lifetime of the guard (`-s`).
@@ -226,16 +252,44 @@ pub fn read_logical_line(spec: &InputSpec) -> Result<InputLine, Errno> {
     let mut pending_escape = false;
     let mut buf = [0u8; 1];
     loop {
-        if let Some(deadline) = deadline
-            && !wait_readable(spec.fd, deadline)?
-        {
-            line.stop = Stop::TimedOut;
-            return Ok(line);
+        if let Some(deadline) = deadline {
+            // **`-t` bounds the read, not each wait for it.** The poll below answers "is there a
+            // byte", and on a descriptor that always has one — `/dev/zero`, a pipe being filled
+            // faster than the delimiter arrives — it answered yes every time and the deadline was
+            // never consulted again: `read -t 0.3 x < /dev/zero` read zeroes for as long as anyone
+            // let it. bash gives up at 0.3s with 142, which is what this restores.
+            //
+            // `-t 0` never reaches here; it is a probe, answered by `probe_readable` before the
+            // read begins, and a deadline already past would otherwise make it always fail.
+            if Instant::now() >= deadline {
+                line.stop = Stop::TimedOut;
+                return Ok(line);
+            }
+            match wait_readable(spec.fd, deadline)? {
+                Wait::Ready => {}
+                Wait::Deadline => {
+                    line.stop = Stop::TimedOut;
+                    return Ok(line);
+                }
+                Wait::Interrupted(signum) => {
+                    line.stop = Stop::Interrupted(signum);
+                    return Ok(line);
+                }
+            }
         }
 
         let n = match nix::unistd::read(spec.fd, &mut buf) {
             Ok(n) => n,
-            Err(Errno::EINTR) => continue,
+            // The blocking path of a plain `read x`: no `-t`, so nothing above ever polled and
+            // this is where the shell parks. A signal it is dying of ends the read — see
+            // [`Stop::Interrupted`].
+            Err(Errno::EINTR) => match crate::exec::job::fatal_signal_waiting() {
+                Some(signum) => {
+                    line.stop = Stop::Interrupted(signum);
+                    return Ok(line);
+                }
+                None => continue,
+            },
             Err(e) => return Err(e),
         };
         if n == 0 {
@@ -278,6 +332,7 @@ pub fn status_of(stop: Stop) -> i32 {
         Stop::Delimiter | Stop::Budget => 0,
         Stop::Eof => 1,
         Stop::TimedOut => 128 + libc::SIGALRM,
+        Stop::Interrupted(signum) => 128 + signum,
     }
 }
 

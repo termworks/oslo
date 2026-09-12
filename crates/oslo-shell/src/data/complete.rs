@@ -7,7 +7,7 @@
 //!
 //! # The other half of the declaration, paying for itself twice
 //!
-//! [`super::columns`] exists so the planner can refuse a column no stage is carrying. The same
+//! `columns` exists so the planner can refuse a column no stage is carrying. The same
 //! knowledge answers the question a person actually has at the prompt — *what are the columns
 //! called?* — which until now had no answer at all. Naming a column is the most common thing anyone
 //! does at a structured prompt and it was the one thing with no help.

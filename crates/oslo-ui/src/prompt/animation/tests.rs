@@ -13,7 +13,7 @@ fn a_tick_is_due_once_and_never_says_the_content_changed() {
     // **A tick moves one counter and not the other.** The whole point: a spinner redraws the prompt
     // without telling a cache that the branch name it is holding has gone stale.
     let content = content_generation();
-    animate_in(Duration::from_millis(0));
+    schedule(Duration::from_millis(0));
     assert!(tick_due(), "the moment has come");
     assert_eq!(content_generation(), content, "a tick changes no content");
 
@@ -22,8 +22,8 @@ fn a_tick_is_due_once_and_never_says_the_content_changed() {
     assert!(!tick_due(), "the deadline was cleared by asking");
 
     // The nearest deadline wins, so several segments at different speeds share one timer.
-    animate_in(Duration::from_secs(30));
-    animate_in(Duration::from_millis(0));
+    schedule(Duration::from_secs(30));
+    schedule(Duration::from_millis(0));
     assert!(tick_due(), "the sooner of the two");
 
     // A real change is the other counter, and that one a cache does watch.

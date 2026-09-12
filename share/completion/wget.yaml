@@ -118,3 +118,5 @@ flags:
   "-I, --include-directories=LIST": "List of allowed directories"
   "-X, --exclude-directories=LIST": "List of excluded directories"
   "-np, --no-parent": "Don't ascend to the parent directory"
+completion:
+  positionalany: ["$hosts"]

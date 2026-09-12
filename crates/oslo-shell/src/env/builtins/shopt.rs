@@ -69,17 +69,17 @@ const fn fixed(name: &'static str, state: bool, because: &'static str) -> ShoptO
 const OPTIONS: &[ShoptOption] = &[
     hook("autocd", crate::exec::simple::set_autocd),
     fixed("cdspell", false, "cd does not correct spelling"),
-    fixed("dotglob", false, "a leading dot is never matched by a wildcard"),
+    hook("dotglob", crate::expand::glob::set_dotglob),
     fixed("expand_aliases", true, "oslo expands aliases in every shell, not only interactive ones"),
-    fixed("extglob", false, "the extended pattern operators are not implemented"),
-    fixed("failglob", false, "an unmatched pattern is left alone, never an error"),
+    hook("extglob", crate::expand::glob::set_extglob),
+    hook("failglob", crate::expand::glob::set_failglob),
     hook("globstar", crate::expand::glob::set_globstar),
     fixed("huponexit", false, "the shell does not signal its jobs on exit"),
     fixed("interactive_comments", true, "`#` starts a comment in every shell"),
     fixed("lastpipe", false, "every stage of a pipeline runs in its own process"),
-    fixed("nocaseglob", false, "pathname matching is case-sensitive"),
-    fixed("nocasematch", false, "`case` and `[[ ]]` match case-sensitively"),
-    fixed("nullglob", false, "an unmatched pattern expands to itself"),
+    hook("nocaseglob", crate::expand::glob::set_nocaseglob),
+    hook("nocasematch", crate::expand::glob::set_nocasematch),
+    hook("nullglob", crate::expand::glob::set_nullglob),
     fixed("shift_verbose", false, "`shift` past the end is silent"),
     fixed("xpg_echo", false, "`echo` expands escapes only under `-e`"),
     // **The ones a `.bashrc` sets without thinking about it.**
@@ -119,6 +119,31 @@ fn record(index: usize, on: bool) {
         ENABLED.fetch_or(bit, Ordering::Relaxed);
     } else {
         ENABLED.fetch_and(!bit, Ordering::Relaxed);
+    }
+}
+
+/// The state of one option, for callers that are not the builtin — `oslo.shopt` in Lua.
+pub fn option_state(name: &str) -> Option<bool> {
+    OPTIONS.iter().position(|o| o.name == name).map(state_of)
+}
+
+/// Set one option exactly as `shopt -s`/`-u` would, refusing a fixed one with its reason.
+pub fn set_option(name: &str, on: bool) -> std::result::Result<(), String> {
+    let Some(index) = OPTIONS.iter().position(|o| o.name == name) else {
+        return Err(format!("{name}: invalid shell option name"));
+    };
+    match OPTIONS[index].support {
+        Support::Hook(apply) => {
+            apply(on);
+            record(index, on);
+            Ok(())
+        }
+        Support::Fixed(state) if state == on => Ok(()),
+        Support::Fixed(_) => Err(format!(
+            "{name}: cannot be turned {}: {}",
+            on_off(on),
+            OPTIONS[index].because
+        )),
     }
 }
 
@@ -330,18 +355,18 @@ mod tests {
     }
 
     /// The rule this builtin exists to keep: an option oslo does not implement must not report
-    /// success when asked to turn it on. Reporting 0 for `extglob` would mean every later `@(a|b)`
-    /// silently matched the wrong files.
+    /// success when asked to turn it on. Reporting 0 for `lastpipe` would mean `echo x | read v`
+    /// silently left `v` unset in a script that asked for the opposite.
     ///
-    /// `globstar` was this test's example until it was implemented — which is the outcome the rule
-    /// is for. It is now a real option and lives in the test below.
+    /// `globstar` and then `extglob` were this test's example until each was implemented — which
+    /// is the outcome the rule is for.
     #[test]
     fn an_option_oslo_cannot_honour_is_refused_not_faked() {
         let mut env = Environment::new();
-        assert_eq!(run(&mut env, &["shopt", "-s", "extglob"]), 1);
-        assert_eq!(run(&mut env, &["shopt", "-q", "extglob"]), 1);
+        assert_eq!(run(&mut env, &["shopt", "-s", "lastpipe"]), 1);
+        assert_eq!(run(&mut env, &["shopt", "-q", "lastpipe"]), 1);
         // Asking for the state it is already in is not a failure: there is nothing to do.
-        assert_eq!(run(&mut env, &["shopt", "-u", "extglob"]), 0);
+        assert_eq!(run(&mut env, &["shopt", "-u", "lastpipe"]), 0);
     }
 
     /// An option oslo *does* implement is switchable both ways and reports what it is.

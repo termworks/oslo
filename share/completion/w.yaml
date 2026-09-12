@@ -5,3 +5,5 @@ parsing: non-interspersed
 flags:
   "-h": "Suppress the heading"
   "-i": "Output is sorted by idle time"
+completion:
+  positionalany: ["$users"]

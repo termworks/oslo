@@ -61,3 +61,37 @@ fn what_is_written_is_what_comes_back() {
     let read = std::fs::read_to_string(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("read");
     assert_eq!(read, body);
 }
+
+/// **A stored bash script using the `argc` idiom reaches oslo's `--argc-eval`**, which reads the
+/// store; the `argc` program was handed the bare name and failed with `Failed to load script`.
+/// `echo` stands in for oslo so the routing is what is checked.
+#[cfg(feature = "argc")]
+#[test]
+fn a_stored_name_is_parsed_by_oslo_and_a_real_file_is_not() {
+    let body = "#!/usr/bin/env bash\neval \"$(argc --argc-eval \"$0\" \"$@\")\"\n";
+    let run = |line: &str| {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{}{line}", argc_prelude(body, "echo")))
+            .env("PATH", "/nonexistent")
+            .output()
+            .expect("sh")
+    };
+    let stored = run("argc --argc-eval con rdp box");
+    assert_eq!(
+        String::from_utf8_lossy(&stored.stdout),
+        "--argc-eval con rdp box\n"
+    );
+
+    // A `$0` that is a file, and any other use of `argc`, go to the program — absent here.
+    assert_eq!(
+        run("argc --argc-eval /etc/hostname").status.code(),
+        Some(127)
+    );
+    assert_eq!(run("argc --help").status.code(), Some(127));
+    assert_eq!(
+        argc_prelude("#!/bin/sh\necho hi\n", "echo"),
+        "",
+        "no argc, no function"
+    );
+}

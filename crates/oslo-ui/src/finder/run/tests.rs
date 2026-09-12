@@ -376,3 +376,50 @@ fn delete_with_marks_is_every_marked_row() {
     assert_eq!(doomed, marked);
     assert_eq!(doomed.len(), 2);
 }
+
+/// A worktree with `dir` as its root, and a command run inside it.
+fn a_worktree() -> (tempfile::TempDir, String, Command) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    let root = dir.path().to_string_lossy().into_owned();
+    let mut inside = command("inside", 2);
+    inside.root = Some(root.clone());
+    (dir, root, inside)
+}
+
+/// **Up inside a repository shows that repository's history**, not everything ever run.
+#[test]
+fn a_worktree_opens_on_its_own_history() {
+    let (_dir, root, inside) = a_worktree();
+    let commands = [inside, command("outside", 1)];
+    let mut state = State::new(&commands, &root, Fuzzy::Smart, "");
+    state.start_in(None);
+    assert_eq!(state.scope, Scope::Workspace);
+    assert_eq!(state.matches.len(), 1);
+    assert_eq!(state.matches[0].command.line, "inside");
+}
+
+/// A worktree nothing has been run in, and a directory that is in none, both open on everything.
+#[test]
+fn an_empty_workspace_opens_on_everything() {
+    let (_dir, root, _) = a_worktree();
+    let commands = [command("outside", 1)];
+    let mut state = State::new(&commands, &root, Fuzzy::Smart, "");
+    state.start_in(None);
+    assert_eq!(state.scope, Scope::Global);
+    assert_eq!(state.matches.len(), 1);
+
+    let mut state = State::new(&commands, "/", Fuzzy::Smart, "");
+    state.start_in(Some(Scope::Workspace));
+    assert_eq!(state.scope, Scope::Global);
+}
+
+/// A scope named in the config is the one it opens in.
+#[test]
+fn a_configured_scope_is_kept() {
+    let (_dir, root, inside) = a_worktree();
+    let commands = [inside];
+    let mut state = State::new(&commands, &root, Fuzzy::Smart, "");
+    state.start_in(Some(Scope::Host));
+    assert_eq!(state.scope, Scope::Host);
+}

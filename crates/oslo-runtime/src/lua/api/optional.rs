@@ -22,6 +22,8 @@ pub fn install(oslo: &mut Table, host: &dyn Host, env: &Arc<Mutex<Environment>>)
     oslo.set_str("nix", super::nix::build());
     #[cfg(feature = "make")]
     oslo.set_str("make", super::make::build());
+    #[cfg(feature = "watch")]
+    oslo.set_str("watch", super::watch_service::build());
     #[cfg(feature = "secrets")]
     oslo.set_str("secret", super::secret::build());
     #[cfg(feature = "plugin")]

@@ -1,0 +1,20 @@
+name: ethtool
+description: "Query or control a network driver and its hardware settings"
+flags:
+  "-a, --show-pause": "Show the pause parameters"
+  "-A, --pause": "Set the pause parameters"
+  "-c, --show-coalesce": "Show the coalescing parameters"
+  "-C, --coalesce": "Set the coalescing parameters"
+  "-g, --show-ring": "Show the RX/TX ring parameters"
+  "-G, --set-ring": "Set the RX/TX ring parameters"
+  "-i, --driver": "Show the driver information"
+  "-k, --show-features": "Show the offload features"
+  "-K, --features": "Set the offload features"
+  "-p, --identify": "Make the adapter's LED blink"
+  "-r, --negotiate": "Restart auto-negotiation"
+  "-S, --statistics": "Show the NIC and driver statistics"
+  "-s, --change": "Change the generic options"
+  "-t, --test": "Run the adapter's self test"
+  "-h, --help": "Display help and exit"
+completion:
+  positionalany: ["$interfaces"]

@@ -126,7 +126,7 @@ pub(super) fn report_unrunnable(
         &env.origin(),
         words,
         cmd_name,
-        &format!("{cmd_name}: {reason}"),
+        &format!("{}: {reason}", oslo_base::shown::shown(cmd_name)),
         "no command of this name",
         Some(WHERE_IT_LOOKED),
     );

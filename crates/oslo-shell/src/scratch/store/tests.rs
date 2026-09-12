@@ -175,3 +175,31 @@ fn attaching_and_being_alive_are_separate_locks() {
     );
     drop(held);
 }
+
+/// **A socket path that will not fit is refused before anything is created.**
+///
+/// It used to be found at `bind`, four steps too late: the lock, the attach file and the meta file
+/// all existed by then, and a shell had been forked to sit behind a socket that would never listen.
+/// The keeper exited and left that state under a name `scratch -l` still showed — a scratch that
+/// looked real and answered nothing.
+#[test]
+fn a_socket_path_that_cannot_fit_is_refused_early() {
+    let (_dir, _lock) = crate::scratch::scratch();
+    // 108 bytes is the whole of `sun_path`; this is comfortably past it.
+    let deep = std::path::Path::new("/tmp").join("x".repeat(120));
+    // SAFETY: the guard above serialises every test that touches this variable.
+    unsafe { std::env::set_var("OSLO_SCRATCH_DIR", &deep) };
+
+    let refused = super::room_for_a_socket("demo").expect_err("a path this long cannot bind");
+    let said = refused.to_string();
+    assert!(said.contains("108"), "the limit is named: {said}");
+    assert!(said.contains("demo.sock"), "the path is named: {said}");
+    assert!(said.contains("OSLO_SCRATCH_DIR"), "and what to do: {said}");
+}
+
+/// An ordinary directory has room, and is not refused.
+#[test]
+fn a_short_enough_path_is_allowed() {
+    let (_dir, _lock) = crate::scratch::scratch();
+    assert!(super::room_for_a_socket("demo").is_ok());
+}

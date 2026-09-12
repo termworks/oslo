@@ -27,3 +27,9 @@ flags:
   "--nslist=*": {description: "list which namespaces will be considered for the --ns option.", nargs: -1}
   "-h, --help": "display this help and exit"
   "-V, --version": "output version information and exit"
+completion:
+  positionalany: ["$executables"]
+  flag:
+    uid: ["$users"]
+    euid: ["$users"]
+    terminal: ["$terminals"]

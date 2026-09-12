@@ -1,0 +1,23 @@
+name: usermod
+description: "Change a user account"
+flags:
+  "-c, --comment=": "The new value of the comment field"
+  "-d, --home=": "The user's new home directory"
+  "-e, --expiredate=": "The date the account expires"
+  "-g, --gid=": "The user's new primary group"
+  "-G, --groups=": "The supplementary groups the user joins"
+  "-a, --append": "Add to the supplementary groups rather than replacing them"
+  "-l, --login=": "The user's new name"
+  "-L, --lock": "Lock the account's password"
+  "-m, --move-home": "Move the contents of the home directory to its new place"
+  "-s, --shell=": "The user's new login shell"
+  "-u, --uid=": "The user's new numeric id"
+  "-U, --unlock": "Unlock the account's password"
+  "-h, --help": "Display help and exit"
+completion:
+  flag:
+    home: ["$directories"]
+    gid: ["$groups"]
+    groups: ["$groups"]
+    shell: ["$shells"]
+  positionalany: ["$users"]

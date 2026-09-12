@@ -1,0 +1,23 @@
+name: findmnt
+description: "Find a mounted filesystem"
+flags:
+  "-s, --fstab": "Search in /etc/fstab"
+  "-m, --mtab": "Search in /etc/mtab"
+  "-k, --kernel": "Search in the kernel's mount table (the default)"
+  "-t, --types=": "Limit the set of filesystem types"
+  "-S, --source=": "Search by the given device"
+  "-T, --target=": "Search by the given mount point"
+  "-N, --task=": "Use the mount table of the given task"
+  "-l, --list": "Use the list output format"
+  "-D, --df": "Imitate df, without the unnecessary details"
+  "-J, --json": "Use JSON output format"
+  "-n, --noheadings": "Do not print a header line"
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  flag:
+    types: ["$filesystems"]
+    source: ["$devices"]
+    target: ["$mounts"]
+    task: ["$pids"]
+  positionalany: ["$mounts"]

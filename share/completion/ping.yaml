@@ -39,6 +39,7 @@ flags:
   "--apple-connect": "Connects the socket to the destination address"
   "--apple-time": "Prints the time a packet was received"
 completion:
+  positionalany: ["$hosts"]
   flag:
     k: [BK_SYS, BK, BE, RD, OAM, AV, RV, VI, VO, CTL]
     K: [BK_SYS, BK, BE, RV, AV, RD, OAM, VI, SIG, VO]

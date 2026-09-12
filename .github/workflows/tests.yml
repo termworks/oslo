@@ -55,6 +55,8 @@ jobs:
         run: ./scripts/check-loc.sh
       - name: check-readme
         run: ./scripts/check-readme.sh
+      - name: check-specs
+        run: ./scripts/check-specs.sh
       - name: check
         run: cargo check --all-targets --workspace --exclude argc --exclude brush-parser --exclude full_moon --exclude full_moon_derive
       # Run before the full suite purely to surface the corpus summary. libtest captures stdout on

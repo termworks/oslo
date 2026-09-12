@@ -13,6 +13,7 @@ vista = ["oslo-base/vista", "oslo-ui/vista"]
 # `tab` — the key that opens the tab finder, and what it does with the answer. Off by default; see
 # the note on `oslo-shell`.
 scratch = ["oslo-shell/scratch"]
+watch = ["oslo-shell/watch"]
 # `direnv` — see the note on `oslo-shell`.
 direnv = ["oslo-shell/direnv"]
 # The calculator: `oslo.math` in Lua, and the `math` builtin the shell registers.
@@ -44,10 +45,9 @@ oslo-shell = { path = "../oslo-shell" }
 oslo-math = { path = "../oslo-math", optional = true }
 oslo-ui = { path = "../oslo-ui" }
 
-# Terminal setup at startup, the signal handling the read loop installs, and `inotify` for
-# `oslo.fs.watch`.
+# Terminal setup at startup and the signal handling the read loop installs.
 nix = { version = "0.29", features = [
-    "process", "signal", "term", "fs", "user", "poll", "inotify", "socket",
+    "process", "signal", "term", "fs", "user", "poll", "socket",
 ] }
 
 # `oslo.re`, and history's own matching.

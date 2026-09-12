@@ -85,13 +85,9 @@ fn lua_cannot_name_a_plugin_store() {
     );
 }
 
-/// **What a plugin declares is what its handle reaches**, and the rest is refused by name.
-///
-/// Loaded through `plugin doctor`, which loads against the real home — `plugin test` deliberately
-/// runs in a temporary one, so it can show the refusal but never the grant, and a test that only
-/// showed the refusal would prove half the rule.
+/// **What the user grants is what a plugin reaches**, and the rest is refused by name.
 #[test]
-fn a_plugin_reaches_what_it_declared_and_no_more() {
+fn a_plugin_reaches_what_the_user_granted_and_no_more() {
     let home = tempfile::tempdir().expect("tempdir");
     for (name, value) in [("gh-token", "declared"), ("bank", "not declared")] {
         let mut child = Command::new(oslo_bin())
@@ -106,17 +102,18 @@ fn a_plugin_reaches_what_it_declared_and_no_more() {
         child.wait().expect("wait");
     }
 
-    let plugin = home.path().join("notes");
-    std::fs::create_dir_all(&plugin).expect("mkdir");
+    let plugin = home.path().join("oslo/site/pack/tests/start/notes");
+    std::fs::create_dir_all(plugin.join("plugin")).expect("mkdir");
+    std::fs::create_dir_all(home.path().join(".config/oslo")).expect("config dir");
     std::fs::write(
-        plugin.join("plugin.lua"),
-        r#"return { name = "notes", version = "0.1", builtins = { "note" }, secrets = { "gh-token" } }"#,
+        home.path().join(".config/oslo/init.lua"),
+        r#"oslo.plugin.secrets("notes", { "gh-token" })"#,
     )
-    .expect("write");
+    .expect("write config");
     std::fs::write(
-        plugin.join("init.lua"),
+        plugin.join("plugin/init.lua"),
         r#"
-        print("declared:", oslo.secret.get("gh-token"))
+        print("granted:", oslo.secret.get("gh-token"))
         print("undeclared:", select(2, oslo.secret.get("bank")))
         print("listed:", table.concat(oslo.secret.open("user"):list(), ","))
         local mine = oslo.secret.mine()
@@ -126,28 +123,24 @@ fn a_plugin_reaches_what_it_declared_and_no_more() {
     )
     .expect("write");
 
-    let oslo = |args: &[&str]| {
-        let out = Command::new(oslo_bin())
-            .args(args)
-            .env("XDG_DATA_HOME", home.path())
-            .env("XDG_STATE_HOME", home.path().join("state"))
-            .env("HOME", home.path())
-            .output()
-            .expect("spawn oslo");
-        String::from_utf8_lossy(&out.stdout).to_string()
-    };
-
-    // **The disclosure is printed before the question**, in a manifest read with no `oslo` in it.
-    let installed = oslo(&["plugin", "install", &plugin.to_string_lossy(), "--yes"]);
+    let mut child = Command::new(oslo_bin())
+        .arg("-i")
+        .env("XDG_DATA_HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("HOME", home.path())
+        .env_remove("TERM")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn oslo");
+    std::io::Write::write_all(child.stdin.as_mut().expect("stdin"), b"exit\n").expect("write");
+    let output = child.wait_with_output().expect("wait");
+    let mut said = String::from_utf8_lossy(&output.stdout).to_string();
+    said.push_str(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        installed.contains("secrets: gh-token"),
-        "install did not say what it will read: {installed:?}"
-    );
-
-    let said = oslo(&["plugin", "doctor", "notes"]);
-    assert!(
-        said.contains("declared:\tdeclared"),
-        "the declared name is readable: {said:?}"
+        said.contains("granted:\tdeclared"),
+        "the granted name is readable: {said:?}"
     );
     assert!(
         said.contains("not declared in this plugin"),

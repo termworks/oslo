@@ -28,3 +28,5 @@ flags:
   "-?": "Display help to stdout, and exit."
   "-h, -help": "Print help"
   "-version": "Print version"
+completion:
+  positionalany: ["$hosts"]

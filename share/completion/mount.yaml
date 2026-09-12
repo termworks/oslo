@@ -38,11 +38,12 @@ flags:
   "--make-runbindable": "Recursively mark a whole subtree as unbindable"
 completion:
   flag:
+    types: ["$filesystems"]
     fstab: ["$files"]
     options-source: ["$files"]
     source: [path, label, uuid]
     target: ["$directories"]
     target-prefix: ["$directories"]
   positional:
-    - ["$files"]
-    - ["/mnt", "/run/media/", "$directories"]
+    - ["$devices", "$fstab"]
+    - ["$fstab", "$directories"]

@@ -141,7 +141,7 @@ impl OsloHelper {
         }
         let stem = word.stem.as_str();
 
-        let env = self.env.lock().unwrap();
+        let env = self.env.lock().unwrap_or_else(|held| held.into_inner());
         let path = env.var("PATH").unwrap_or_default().to_string();
         let is_shell_name =
             |n: &str| env.is_builtin(n) || env.alias(n).is_some() || env.is_function(n);

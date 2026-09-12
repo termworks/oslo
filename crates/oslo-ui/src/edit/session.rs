@@ -298,6 +298,24 @@ pub fn read_line(
     initial: (&str, usize),
     assist: &mut dyn Assist,
 ) -> Outcome {
+    // **`TERM=dumb` turns the editor off, exactly as readline does.**
+    //
+    // A dumb terminal is one that cannot address a cursor, and every keystroke the editor answers
+    // is answered by redrawing a row in place — so the whole mechanism has nothing to write to.
+    // What it produces instead is noise: measured against a program driving oslo over a pty,
+    // ~7 KB of cursor movement and repainting per command, into a stream being read as output.
+    //
+    // Nothing is lost that the terminal could have shown. History recall, completion, the vi
+    // keymap and the ghost suggestion are all *drawn*, and a terminal that says it cannot draw has
+    // said it cannot have them. bash answers the same variable the same way, so a program that
+    // sets it already expects this shell.
+    //
+    // A *pipe* takes the same road, one line below, for the older reason: there is no terminal at
+    // all. The two arrive at one reader from opposite directions — no screen, and no screen worth
+    // drawing on.
+    if !crate::term::draws() {
+        return read_plain(&render().0);
+    }
     let Some(mut raw) = Restore::enter(Screen::Line) else {
         // No terminal: the line comes off stdin with no editing, which is what a piped script
         // needs and what `read` already does elsewhere.
@@ -470,6 +488,16 @@ pub fn read_line(
                 ) {
                     session.buffer.set(&line, cursor);
                 }
+            }
+            Step::ExpandGlob => {
+                if let Some((line, cursor)) =
+                    assist.expand_glob(&session.buffer.text(), session.buffer.cursor())
+                {
+                    session.buffer.set(&line, cursor);
+                }
+            }
+            Step::ListGlob => {
+                assist.list_glob(&session.buffer.text(), session.buffer.cursor(), &mut keys);
             }
             // A tab may have owned the terminal in the meantime, so the prompt is rebuilt rather
             // than the row repainted: what is on the screen now was written by something else.

@@ -20,3 +20,5 @@ exclusiveflags:
   - [k, b, P, g, m]
   - [H, h]
   - [h, H]
+completion:
+  positionalany: ["$mounts", "$files"]

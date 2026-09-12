@@ -6,6 +6,35 @@
 
 use nix::pty::openpty;
 use std::fs::File;
+
+/// A temporary `$HOME` on a **short** path, whatever `$TMPDIR` says.
+///
+/// **A long `$TMPDIR` silently turns green tests red, and it is not obvious why.** These are
+/// transcript tests: several wait for an absolute path to appear on screen, and the widgets that
+/// print one — `nav`'s header among them — truncate it to the terminal's width. Move the temporary
+/// home somewhere with a longer name and the path arrives as `/…/.tmpXXXX/fir…`, the text being
+/// waited for never appears, and the pty times out. Nothing is wrong with the shell.
+///
+/// Measured, by running this suite with nothing changed but the variable:
+///
+/// ```text
+///   TMPDIR=/tmp                             (4 chars)   46 passed, 0 failed
+///   TMPDIR=/tmp/aaaaaaaaaa                 (15 chars)   45 passed, 1 failed
+///   TMPDIR=/var/tmp/oslo-tmptest           (21 chars)   44 passed, 2 failed
+///   TMPDIR=/tmp/aaaaaaaaaaaaaaaaaaaaaaaa   (35 chars)   43 passed, 3 failed
+/// ```
+///
+/// A failure that tracks an environment variable nobody thought to vary is worse than a flake,
+/// because it looks stable: run it three times, or at three commits, and it fails identically every
+/// time. So the suite stops depending on the variable rather than asking anyone to remember.
+fn short_lived_home() -> tempfile::TempDir {
+    // `/tmp` rather than `std::env::temp_dir()`, which is exactly the thing being avoided. A system
+    // without it falls back, and the suite is no worse off than it was.
+    match std::path::Path::new("/tmp").is_dir() {
+        true => tempfile::TempDir::new_in("/tmp").expect("temporary home"),
+        false => tempfile::tempdir().expect("temporary home"),
+    }
+}
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
@@ -48,10 +77,6 @@ impl PtyShell {
         Self::spawn_with_options(term, false, None)
     }
 
-    pub(crate) fn spawn_with_extensions(term: &str, semantic_extensions: bool) -> Self {
-        Self::spawn_with_options(term, semantic_extensions, None)
-    }
-
     pub(crate) fn spawn_with_options(
         term: &str,
         semantic_extensions: bool,
@@ -88,7 +113,7 @@ impl PtyShell {
         let slave: File = owned_file(pty.slave);
         let stdin = slave.try_clone().expect("clone pty slave");
         let stdout = slave.try_clone().expect("clone pty slave");
-        let home = tempfile::tempdir().expect("temporary home");
+        let home = short_lived_home();
         if let Some(config) = config {
             let directory = home.path().join(".config/oslo");
             std::fs::create_dir_all(&directory).expect("create config directory");

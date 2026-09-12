@@ -300,10 +300,16 @@ fn is_risky_word(word: &str) -> bool {
     }
     if is_assignment(word) {
         let (name, value) = word.split_once('=').unwrap_or((word, ""));
-        let name = name.to_ascii_uppercase();
-        if SECRET_NAMES.iter().any(|secret| name.contains(secret)) && could_be_a_secret(value) {
+        let upper = name.to_ascii_uppercase();
+        if SECRET_NAMES.iter().any(|secret| upper.contains(secret)) && could_be_a_secret(value) {
             return true;
         }
+        // **The value is judged, never `NAME=value`.** The name is a label the user chose, and
+        // gluing it to the value makes an ordinary assignment look like a key: `WAYLAND_DISPLAY=
+        // wayland-0` is 25 characters with upper case, lower case and a digit in it, which is
+        // every test [`looks_like_a_key`] applies — so it was reduced to `export` and vanished
+        // from the history it was typed into.
+        return is_known_key(value) || looks_like_a_key(value);
     }
     is_known_key(word) || looks_like_a_key(word)
 }

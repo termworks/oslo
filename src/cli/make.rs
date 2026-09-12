@@ -110,9 +110,38 @@ pub(crate) fn run(args: &[String]) -> i32 {
         return 1;
     }
 
+    #[cfg(feature = "watch")]
+    if let Some(request) = oslo_runtime::lua::api::make::take_watch() {
+        return watch(root, request);
+    }
+
     // `__main` always ends by setting one. A missing status means it raised past its own handler,
     // which the `eval_as` above would already have reported — so this is the belt to that braces.
     oslo_runtime::lua::api::make::status().unwrap_or(1)
+}
+
+#[cfg(feature = "watch")]
+fn watch(root: std::path::PathBuf, request: oslo_runtime::lua::api::make::WatchRequest) -> i32 {
+    let mut argv = vec![
+        "/proc/self/exe".to_string(),
+        "make".to_string(),
+        request.target.clone(),
+    ];
+    argv.extend(request.args);
+    crate::cli::watch::launch(crate::cli::watch::Request {
+        spec: oslo::watch::WatchSpec {
+            name: format!("make-{}", request.target),
+            root,
+            patterns: request.patterns,
+            argv,
+            initial: request.initial,
+            debounce: std::time::Duration::from_millis(100),
+            policy: request.policy,
+            grace: std::time::Duration::from_millis(1000),
+        },
+        scratch: crate::cli::watch::ScratchChoice::Auto,
+        attach: false,
+    })
 }
 
 /// The page, which has to answer in a directory holding no project at all.
@@ -159,7 +188,10 @@ const OPTIONS: &str = "OPTIONS\n  -l, --list        the recipes and what they sa
      -n, --dry-run     name every recipe that would run, and run none\n  \
      -f, --force       run even a recipe that is up to date\n  \
      -k, --keep-going  carry on after a recipe fails\n  \
-     -q, --quiet       no progress lines, only what the recipes print\n  \
+     -q, --quiet       no progress lines, only what the recipes print\n      \
+     --watch       watch the resolved recipe inputs and rerun the target\n      \
+     --postpone    wait for a change before the first watched run\n      \
+     --restart     restart a running watched target after a change\n  \
      -h, --help        this text\n";
 
 #[cfg(test)]

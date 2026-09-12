@@ -53,6 +53,11 @@ pub struct Spec {
     /// means rebuilding all of it somewhere else to gain one turning glyph.
     ///
     /// So the tool draws the frame. oslo only decides when to ask again.
+    ///
+    /// **The clock does not run where nothing can be drawn.** On `TERM=dumb` — a program driving
+    /// oslo over a pty, a serial console — a frame has no product, so asking for one would be a
+    /// process spawned six times a second for a picture that never appears. See
+    /// `oslo_ui::prompt::animation::animate_in`.
     pub every: Option<Duration>,
 
     /// `frames = <ms>` — ask the tool for every frame of the next `<ms>` at once, and animate from
@@ -486,14 +491,47 @@ pub(crate) fn run(command: &str, args: &[String], timeout: Duration) -> Option<S
         Some(path) => path.as_os_str(),
         None => std::ffi::OsStr::new(command),
     };
-    let mut child = Command::new(command)
+    let mut command = Command::new(command);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Left alone on purpose: a tool's complaints belong on the terminal where the user can see
         // them, not folded into the prompt.
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+
+    // **A process group of its own, so the deadline can reach what the tool started.** The thing
+    // that holds the pipe open is usually not the tool but something it left behind, and killing
+    // only the tool leaves that grandchild holding the write end — which is the difference between
+    // a deadline and a suggestion. One signal to the group is what `timeout(1)` does, and what
+    // `oslo_shell::spec::run` already does for completion macros.
+    //
+    // SAFETY: `setpgid` is async-signal-safe and is all this does between `fork` and `exec`.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            let _ =
+                nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), nix::unistd::Pid::from_raw(0));
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().ok()?;
+    let group = nix::unistd::Pid::from_raw(child.id() as i32);
+
+    // **Drained while the tool runs, on a thread of its own.** A pipe holds 64 KB; a tool with more
+    // to say than that blocks on the write, so a loop that only polls for exit would wait out the
+    // whole deadline, kill a tool that was working perfectly well, and throw the output away. The
+    // prompt then draws as if the tool had failed — on every keystroke.
+    let (done, reading) = std::sync::mpsc::channel();
+    let mut pipe = child.stdout.take()?;
+    std::thread::Builder::new()
+        .name("oslo-prompt-read".to_string())
+        .spawn(move || {
+            use std::io::Read;
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            let _ = done.send(text);
+        })
         .ok()?;
 
     let deadline = std::time::Instant::now() + timeout;
@@ -505,7 +543,9 @@ pub(crate) fn run(command: &str, args: &[String], timeout: Duration) -> Option<S
             }
             Ok(None) => {
                 // Overran. Killed rather than left behind: one hung prompt tool per keystroke
-                // would otherwise become hundreds of processes in a session.
+                // would otherwise become hundreds of processes in a session. The whole group, so a
+                // grandchild holding the pipe goes with it — see above.
+                let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -519,12 +559,25 @@ pub(crate) fn run(command: &str, args: &[String], timeout: Duration) -> Option<S
         }
     }
 
-    // Read the pipe *after* the wait loop, and not with `wait_with_output`: the loop above has
-    // already reaped the child, so `wait_with_output` fails and every run would return nothing.
-    // The test caught exactly that.
-    use std::io::Read;
-    let mut text = String::new();
-    child.stdout.take()?.read_to_string(&mut text).ok()?;
+    // **The read is on the clock too.** It used to run unbounded after the wait loop, so a tool
+    // that exited cleanly but left anything behind holding the write end — a `&`, an ssh
+    // ControlMaster, a daemonising helper — never reached EOF. The thread drawing the prompt then
+    // never returned: an interactive shell that never prompts, never reads a line, and cannot be
+    // exited. Waiting on the channel instead means the worst case is a prompt that draws without
+    // this tool's output.
+    // The tool has exited by now, so anything still holding the pipe is something it left running.
+    // **Closing that pipe is what ends the wait**: kill the group, the reader sees EOF, and the
+    // output the tool did write is used. Abandoning the reader instead leaks one thread per prompt
+    // — measured, four in six seconds — and loses the output as well.
+    let grace = Duration::from_millis(20);
+    let text = match reading.recv_timeout(grace) {
+        Ok(text) => text,
+        Err(_) => {
+            let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            reading.recv_timeout(left.max(grace)).ok()?
+        }
+    };
     Some(text.trim_end_matches('\n').to_string())
 }
 

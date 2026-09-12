@@ -36,6 +36,7 @@ pub fn open(
     now: i64,
     fuzzy: Fuzzy,
     seed: &str,
+    scope: Option<Scope>,
 ) -> Option<Outcome> {
     if commands.is_empty() {
         return None;
@@ -54,6 +55,7 @@ pub fn open(
 
     let mut stdout = io::stdout();
     let mut state = State::new(commands, cwd, fuzzy, seed);
+    state.start_in(scope);
     let mut keys = Keys::on(restore.fd());
 
     // The last frame written, so an unchanged one is not written again.
@@ -291,6 +293,18 @@ impl State {
             session: oslo_base::track::session::id(),
             host: oslo_base::track::session::host(),
         }
+    }
+
+    /// Open in `wanted`, or — for `None`, the `auto` setting — in the workspace.
+    ///
+    /// Whichever it is, a scope with nothing in it falls back to global: outside a repository, or
+    /// in one nothing has been run in yet, an empty finder would read as lost history.
+    fn start_in(&mut self, wanted: Option<Scope>) {
+        self.scope = wanted.unwrap_or(Scope::Workspace);
+        if self.total() == 0 {
+            self.scope = Scope::Global;
+        }
+        self.refilter();
     }
 
     fn refilter(&mut self) {

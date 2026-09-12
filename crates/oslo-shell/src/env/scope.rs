@@ -172,8 +172,19 @@ impl Default for Environment {
 impl Environment {
     pub fn new() -> Self {
         let mut vars = HashMap::new();
-        for (k, v) in env::vars() {
-            vars.insert(k, (v, true));
+        // **`env::vars()` panics on a byte that is not UTF-8**, and this runs for every mode the
+        // shell has — `-c`, a script, a subshell, the prompt. One Latin-1 byte anywhere in the
+        // environment therefore killed the process with `SIGABRT` before a single command ran, and
+        // the ordinary way to get one is a directory named in a locale that is not this one.
+        //
+        // Such a name is **skipped rather than mangled**. The shell cannot hold it — a Rust
+        // `String` is UTF-8 — and replacing the byte would hand a child a value that is neither
+        // what was set nor what it expects. Skipped, the variable is simply not oslo's to read, and
+        // the real bytes still reach every child through the environment `execve` inherits.
+        for (key, value) in env::vars_os() {
+            if let (Some(key), Some(value)) = (key.to_str(), value.to_str()) {
+                vars.insert(key.to_string(), (value.to_string(), true));
+            }
         }
 
         let pid = std::process::id();

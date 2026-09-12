@@ -34,6 +34,8 @@ pub mod secret;
 pub mod sync;
 pub mod tools;
 pub mod warn;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 use oslo::env::options::ShellOption;
 use std::fmt::Write as _;

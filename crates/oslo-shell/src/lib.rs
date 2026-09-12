@@ -55,6 +55,8 @@ pub mod spec;
 /// The rune→oslo lowering and the nesting guard. There is one shell parser and it is rune's;
 /// this is the conversion into oslo's own tree, which is why it is not called `parser`.
 pub mod syntax;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 pub use env::Environment;
 pub use exec::{JobManager, eval_command_list};

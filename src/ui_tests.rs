@@ -367,3 +367,6 @@ fn highlighting_tells_a_real_command_from_an_unknown_one() {
 
 #[path = "ui_tests/plugged.rs"]
 mod plugged;
+
+#[path = "ui_tests/globbing.rs"]
+mod globbing;

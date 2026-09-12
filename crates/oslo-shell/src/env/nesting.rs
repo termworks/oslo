@@ -10,11 +10,26 @@ use oslo_base::error::{Result, ShellError};
 
 /// Deepest shell-function nesting, in the spirit of bash's `FUNCNEST`.
 ///
-/// Measured, not guessed: a debug build overflows its 8 MiB stack somewhere between 300 and 400
-/// levels of plain function recursion, and a nested *program* burns the same stack at the same
-/// time, so the limits here and in [`oslo_base::nesting`] have to fit in one budget together.
-/// 100 is an order of magnitude more than recursive shell code actually uses.
-pub const MAX_FUNCTION_DEPTH: usize = 100;
+/// Measured, not guessed, and measured **again** because the first numbers went stale: the
+/// interpreter runs on its own thread with a fixed 16 MiB stack, so `ulimit -s` does not reach it
+/// and a debug build overflows at about 1,010 levels of plain function recursion — not the 300 to
+/// 400 on 8 MiB this comment used to claim. Both figures were checked by lifting the cap and
+/// bisecting, under `ulimit -s 8192` and `16384` alike, which answered identically.
+///
+/// **100 was refusing ordinary code.** `f 500` runs in bash and in dash; oslo alone answered
+/// `maximum nesting level exceeded`, and recursive shell functions — a tree walk, a parser — reach
+/// a few hundred without trying.
+///
+/// **A count is not what runs out, so this is no longer the only check.** Three things spend one
+/// stack — this, the `source`/`eval` chain below, and nested compound commands — and each limit was
+/// measured while the other two were idle. Together they were not: a `source` chain 49 deep calling
+/// a function recursing 20 deep inside 45 levels of `{ ( … ) }` overflowed and aborted while this
+/// counter said ninety-odd levels were free, at the old 100 exactly as at this 1000.
+///
+/// [`oslo_base::stack`] measures the stack itself, and [`DepthGuard::enter`] asks it as well as the
+/// count. This number is now the *ceiling on how deep a script may sensibly go*, not the thing
+/// standing between the shell and a crash.
+pub const MAX_FUNCTION_DEPTH: usize = 1000;
 
 /// Deepest nesting of `source` and `eval`, which re-enter the parser as well as the evaluator.
 ///
@@ -37,9 +52,15 @@ impl DepthGuard {
         Self { depth: 0, limit }
     }
 
-    /// Descend one level, or fail if that would exceed the limit.
+    /// Descend one level, or fail if that would exceed the limit — or the stack.
+    ///
+    /// **The count is the cheap answer and the stack is the true one.** A level costs a different
+    /// amount of stack depending on what is nested inside it, and this counter is one of three
+    /// spending the same stack, so its limit alone was never a guarantee: twenty levels of
+    /// recursion inside enough nesting overflowed while the count said a hundred were free. See
+    /// [`oslo_base::stack`].
     pub fn enter(&mut self) -> Result<()> {
-        if self.depth >= self.limit {
+        if self.depth >= self.limit || oslo_base::stack::exhausted() {
             return Err(ShellError::ExecutionError(
                 "maximum nesting level exceeded".to_string(),
             ));

@@ -6,3 +6,7 @@ flags:
   "-l, --list-shells": "Print list of shells and exit"
   "-u, -h, --help": "Print help message and exit"
   "-v, --version": "Print version and exit"
+completion:
+  positionalany: ["$users"]
+  flag:
+    shell: ["$shells"]

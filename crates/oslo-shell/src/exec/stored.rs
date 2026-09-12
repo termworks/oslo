@@ -37,6 +37,9 @@
 //!
 //! For any other interpreter the name goes in `$OSLO_SCRIPT` and `$0` stays the fd path. That is
 //! honest; writing a file named after the script to make one variable prettier is not.
+//!
+//! A name is not a path, so a script that hands `$0` to the `argc` program is given an `argc`
+//! function that routes that one call to oslo — see `argc_prelude`.
 
 use crate::env::Environment;
 use oslo_base::macros::{self, Kind};
@@ -169,8 +172,17 @@ fn script(body: &str, name: &str, args: &[String]) -> i32 {
 
     let mut command = match &shell {
         Some(interp) => {
+            let prelude = match interp.as_str() {
+                "oslo" => String::new(),
+                _ => std::env::current_exe()
+                    .map(|exe| argc_prelude(body, &exe.to_string_lossy()))
+                    .unwrap_or_default(),
+            };
             let mut command = std::process::Command::new(interp);
-            command.arg("-c").arg(format!(". {path} \"$@\"")).arg(name);
+            command
+                .arg("-c")
+                .arg(format!("{prelude}. {path} \"$@\""))
+                .arg(name);
             command.args(args);
             command
         }
@@ -196,6 +208,23 @@ fn script(body: &str, name: &str, args: &[String]) -> i32 {
             126
         }
     }
+}
+
+/// An `argc` for the child shell that sends `--argc-eval <name>` to oslo when `<name>` is no file.
+///
+/// **A stored script's `$0` is its name**, so `eval "$(argc --argc-eval "$0" "$@")"` handed the
+/// `argc` program a word it cannot open: `Error: Failed to load script at 'con'`. oslo's own
+/// `--argc-eval` reads the store first. Every other call — and any `$0` that is a real file — still
+/// goes to the `argc` on `$PATH`, untouched.
+fn argc_prelude(body: &str, oslo: &str) -> String {
+    if !cfg!(feature = "argc") || !body.contains("--argc-eval") {
+        return String::new();
+    }
+    let oslo = format!("'{}'", oslo.replace('\'', "'\\''"));
+    format!(
+        "argc() {{ if [ \"$1\" = --argc-eval ] && [ ! -e \"$2\" ]; then shift; {oslo} \
+         --argc-eval \"$@\"; else command argc \"$@\"; fi; }}; "
+    )
 }
 
 /// An anonymous in-memory file holding `body`, ready to be executed.

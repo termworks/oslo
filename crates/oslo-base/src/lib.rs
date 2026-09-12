@@ -51,6 +51,7 @@ pub mod feature;
 /// Shell pattern matching — `*`, `?`, `[…]` — shared by expansion, `case`, and the prompt.
 pub mod glob;
 pub mod hooks;
+pub mod lossless;
 pub mod macros;
 /// What this session said, kept after it has scrolled off.
 pub mod messages;
@@ -63,6 +64,10 @@ pub mod prompts;
 pub mod quiet;
 #[cfg(feature = "secrets")]
 pub mod secrets;
+/// Untrusted text on its way into a diagnostic, with what the terminal would obey spelled out.
+pub mod shown;
+/// How much stack is left, for the constructs that re-enter the interpreter.
+pub mod stack;
 /// A database a config or a plugin owns, kept apart from oslo's own.
 pub mod store;
 /// The shell's version, as one number rather than one per crate.

@@ -86,7 +86,10 @@ impl OsloHelper {
     /// whatever it already holds and this is the one place that forgets the concrete type.
     pub fn new<S: Shell + 'static>(env: Arc<Mutex<S>>) -> Self {
         let env: Arc<Mutex<dyn Shell>> = env;
-        let interactive = env.lock().unwrap().interactive();
+        let interactive = env
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .interactive();
         let frecency = if interactive {
             FrecencyStore::from_history()
         } else {
@@ -119,7 +122,7 @@ impl OsloHelper {
     pub fn continuation_prompt(&self) -> String {
         self.env
             .lock()
-            .unwrap()
+            .unwrap_or_else(|held| held.into_inner())
             .var("PS2")
             .map(str::to_string)
             .unwrap_or_else(|| DEFAULT_PS2.to_string())
@@ -316,7 +319,7 @@ impl OsloHelper {
         if prompt::language().is_some_and(|language| language != "sh") {
             return None;
         }
-        let env = self.env.lock().unwrap();
+        let env = self.env.lock().unwrap_or_else(|held| held.into_inner());
         let path = env.var("PATH").unwrap_or_default().to_string();
         let has =
             |name: &str| env.is_builtin(name) || env.alias(name).is_some() || env.is_function(name);

@@ -73,9 +73,30 @@ pub enum Binary {
     Shr,
 }
 
+/// How deeply brackets may nest before the expression is refused.
+///
+/// **A recursive-descent parser recurses, and a stack is finite.** `math "((((…1…))))"` at twenty
+/// thousand brackets overflowed the stack and aborted the process — the shell died on an
+/// expression somebody typed, where `echo $(( … ))` at the same depth answers `maximum nesting
+/// level exceeded` and carries on. The tree this builds is walked again by `eval`, which recurses
+/// the same way, so bounding it here bounds both.
+///
+/// **The number is about the smallest stack this runs on, not about arithmetic.** One bracket
+/// costs a frame at every level of the precedence chain above, so the cost per bracket is a dozen
+/// frames rather than one: 256 was tried first and still overflowed a 2 MiB thread — which is what
+/// `libtest` gives a test, and less than the 16 MiB the shell hands its interpreter. A hundred
+/// matches `oslo_base::nesting::MAX_INPUT_NESTING`, the shell's own limit on the same shape, and no
+/// expression anybody writes comes close. The constant is duplicated rather than shared because
+/// this crate does not depend on `oslo-base`.
+const MAX_DEPTH: usize = 100;
+
 /// Parse a whole expression, which must use every token.
 pub fn parse(tokens: &[Token]) -> Result<Expr, String> {
-    let mut p = Parser { tokens, at: 0 };
+    let mut p = Parser {
+        tokens,
+        at: 0,
+        depth: 0,
+    };
     let expr = p.assignment()?;
     if p.at < p.tokens.len() {
         return Err(format!("{} is left over", p.describe_here()));
@@ -86,6 +107,8 @@ pub fn parse(tokens: &[Token]) -> Result<Expr, String> {
 struct Parser<'a> {
     tokens: &'a [Token],
     at: usize,
+    /// Brackets currently open, against [`MAX_DEPTH`].
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -110,6 +133,23 @@ impl Parser<'_> {
             return true;
         }
         false
+    }
+
+    /// Run `inner` one bracket deeper, refusing past [`MAX_DEPTH`].
+    ///
+    /// The depth is put back on the way out, including the error path, so a expression that
+    /// recovers is not charged for brackets it has already closed.
+    fn nested<T>(
+        &mut self,
+        inner: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.depth >= MAX_DEPTH {
+            return Err(format!("brackets nested deeper than {MAX_DEPTH}"));
+        }
+        self.depth += 1;
+        let answer = inner(self);
+        self.depth -= 1;
+        answer
     }
 
     fn describe_here(&self) -> String {
@@ -301,6 +341,9 @@ impl Parser<'_> {
         Parser {
             tokens: self.tokens,
             at: self.at + 1,
+            // The lookahead inherits the depth it is being asked about, so a bracket already open
+            // still counts against the limit inside it.
+            depth: self.depth,
         }
     }
 
@@ -361,7 +404,7 @@ impl Parser<'_> {
             }
             Some(Token::LParen) => {
                 self.at += 1;
-                let inner = self.conversion()?;
+                let inner = self.nested(|p| p.conversion())?;
                 if !self.eat(&Token::RParen) {
                     return Err("a bracket was opened and not closed".to_string());
                 }

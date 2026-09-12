@@ -100,7 +100,7 @@ pub fn makes_redirections_permanent(cmd_name: &str, words: &[String]) -> bool {
 /// the wording — and the `exec: ` prefix — that bash gives it.
 fn unavailable(name: &str) -> String {
     if !name.contains('/') {
-        return format!("exec: {name}: not found");
+        return format!("exec: {}: not found", oslo_base::shown::shown(name));
     }
     let reason = match std::fs::metadata(name) {
         Err(e) => oslo_base::error::reason(&e),
@@ -143,8 +143,12 @@ pub fn builtin_exec(_env: &mut Environment, args: &[String]) -> Result<i32> {
     }
 
     let c_path = exec_cstring(std::os::unix::ffi::OsStrExt::as_bytes(program.as_os_str()));
-    let mut c_args = vec![exec_cstring(argv0.as_bytes())];
-    c_args.extend(inv.operands[1..].iter().map(|a| exec_cstring(a.as_bytes())));
+    let mut c_args = vec![exec_cstring(&oslo_base::lossless::decode(&argv0))];
+    c_args.extend(
+        inv.operands[1..]
+            .iter()
+            .map(|a| exec_cstring(&oslo_base::lossless::decode(a))),
+    );
 
     // **The last chance anything has to be written down.** `exec` is an ordinary way out of an
     // interactive shell — `exec $SHELL` after editing a config is how most people restart one — but
@@ -255,5 +259,53 @@ mod tests {
     fn an_unknown_option_is_reported() {
         assert!(parse(&words(&["exec", "-Z"])).is_err());
         assert!(parse(&words(&["exec", "-a"])).is_err());
+    }
+
+    /// **`exec` settles the history writer first, and a forked child has no writer to settle.**
+    ///
+    /// Only the forking thread survives `fork`, so the `oslo-history` loop is gone in the child —
+    /// but the `Receiver` it was looping over is still in the inherited memory, so `send` succeeds
+    /// and the job is queued into something nothing will ever drain. `settle` then blocked for the
+    /// life of the process, and `exec` calls it unconditionally: `( exec /bin/true )` at an
+    /// interactive prompt never returned, and the parent blocked behind it in `waitpid`. Measured
+    /// before the fix: `rc=137` with nothing after it running; after: `rc=0`.
+    #[test]
+    fn settling_the_writer_does_not_hang_a_forked_child() {
+        use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+        use nix::unistd::{ForkResult, fork};
+
+        // Start the writer thread here, so the child inherits a queue nothing is draining.
+        oslo_base::track::writer::defer(|| {});
+        oslo_base::track::writer::settle();
+
+        // SAFETY: the child calls `settle` and `_exit` and nothing else — no allocation across the
+        // fork, and it never returns into the test harness.
+        match unsafe { fork() }.expect("fork") {
+            ForkResult::Child => {
+                oslo_base::track::writer::settle();
+                unsafe { nix::libc::_exit(7) };
+            }
+            ForkResult::Parent { child } => {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(WaitStatus::Exited(_, code)) => {
+                            assert_eq!(code, 7, "the child got past settle");
+                            return;
+                        }
+                        Ok(_) if std::time::Instant::now() < deadline => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Ok(_) => {
+                            let _ =
+                                nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+                            let _ = waitpid(child, None);
+                            panic!("still inside settle after five seconds");
+                        }
+                        Err(e) => panic!("waitpid: {e}"),
+                    }
+                }
+            }
+        }
     }
 }

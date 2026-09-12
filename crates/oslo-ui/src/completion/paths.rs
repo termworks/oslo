@@ -19,7 +19,7 @@ fn has_glob(text: &str) -> bool {
 ///
 /// `rm "tw*"` is a file whose name ends in a star and the shell will not expand it, so completion
 /// must not offer what it would have matched — the two would be describing different commands.
-fn globs_unquoted(text: &str) -> bool {
+pub(crate) fn globs_unquoted(text: &str) -> bool {
     let mut quote = None;
     let mut escaped = false;
     for ch in text.chars() {
@@ -118,93 +118,6 @@ fn directories_named(dir_part: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// How many directory entries the highlighter will look at before giving up on one word.
-///
-/// **A budget, in the spirit of `MAX_PATH_CHECKS`**, which caps that function's `stat` calls for
-/// exactly this reason. Without one, this walked every entry of the directory on *every keystroke*:
-/// a pattern with a literal tail (`*.dat`) has no match for any of the prefixes on the way to it, so
-/// `*`, `*.`, `*.d`, `*.da` each read the lot. Measured at 14.9 ms per keystroke in a 62,000-file
-/// tree, and 110 ms for a line carrying eight globs — against the 3,373 allocations per keystroke
-/// that were considered bad enough to justify the whole command index.
-///
-/// Giving up answers "no match", which is the colour an unresolved glob already takes. It is also
-/// almost always the true answer: the walk returns on the *first* hit, so a pattern that matches
-/// anything usually leaves early, and the case that runs out of budget is the one that was going to
-/// say no anyway.
-const MAX_GLOB_ENTRIES: usize = 2_000;
-
-/// Whether a path pattern matches anything on disk.
-///
-/// What the highlighter needs and could not ask: a globbed word reaches it in pieces — `tw*` is
-/// `tw` then `*` — and checking a piece as a path answers about `tw`, which nobody typed. Resolved
-/// once, as a whole word, so `rm *.txt` can say whether it is about to hit anything.
-///
-/// Bounded by [`MAX_GLOB_ENTRIES`]: this runs on the repaint path, once per globbing word.
-///
-/// **One budget for the whole word**, brace branches included. Each branch used to recurse into a
-/// fresh call and so a fresh budget, which defeats the bound with an ordinary numeric range:
-/// `mv img{001..500}*.jpg` while nothing matches yet is 500 branches that `any()` cannot
-/// short-circuit, each reading up to 2,000 entries — a million per keystroke, against a documented
-/// cap of two thousand, and `MAX_PATH_CHECKS` multiplies it by the globbing words on the line.
-pub(crate) fn glob_matches_anything(stem: &str) -> bool {
-    let mut budget = MAX_GLOB_ENTRIES;
-    matches_within(stem, &mut budget)
-}
-
-/// [`glob_matches_anything`], spending a budget the caller owns.
-fn matches_within(stem: &str, budget: &mut usize) -> bool {
-    // **A brace list is asked of each branch.** `three/{fo*,x}` reached here whole, and the literal
-    // string matched nothing — so a word that globs onto real files was marked as matching none,
-    // which is worse than saying nothing. Braces expand before globs in the shell, and they do here
-    // too. One alternative that hits is enough: the word as a whole reaches something.
-    let branches = oslo_base::brace::expand_braces_text(stem);
-    if branches.len() > 1 {
-        // Not `any()` with a closure that re-enters the public entry: the budget is shared across
-        // the branches, so five hundred of them cost what one deep directory costs.
-        return branches.iter().any(|one| matches_within(one, budget));
-    }
-    let (dir_part, last) = match stem.rfind('/') {
-        Some(i) => (&stem[..=i], &stem[i + 1..]),
-        None => ("", stem),
-    };
-    let pattern = has_glob(last).then(|| ShellPattern::from_unquoted(last));
-    for (_, read_from) in directories_named(dir_part) {
-        let read_from = if read_from.is_empty() {
-            "."
-        } else {
-            &read_from
-        };
-        let Ok(entries) = fs::read_dir(read_from) else {
-            continue;
-        };
-        // A pattern only in the *directory* part — `*/notes.txt` — is answered by whether the walk
-        // above found a directory at all, plus the name being there.
-        let Some(pattern) = &pattern else {
-            if std::path::Path::new(read_from).join(last).exists() {
-                return true;
-            }
-            continue;
-        };
-        for entry in entries.flatten() {
-            if *budget == 0 {
-                return false;
-            }
-            *budget -= 1;
-            // Borrowed, not owned: this used to allocate a `String` per entry, so one keystroke in a
-            // 20,000-file directory allocated 20,000 of them and then threw them all away.
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.') && !last.starts_with('.') {
-                continue;
-            }
-            if pattern.matches(&name) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn join(base: &str, part: &str) -> String {
     match base.is_empty() || base.ends_with('/') {
         true => format!("{base}{part}"),
@@ -262,7 +175,7 @@ pub(crate) struct Wanted {
 }
 
 impl Wanted {
-    fn accepts(&self, name: &str, is_dir: bool) -> bool {
+    pub(crate) fn accepts(&self, name: &str, is_dir: bool) -> bool {
         if self.only_dirs && !is_dir {
             return false;
         }
@@ -353,9 +266,23 @@ impl OsloHelper {
             return;
         }
 
-        // **A `*` in the last component means "show me what this matches".** `rm /one/tw*` is a
-        // line whose whole risk is which files it hits, and Tab answered nothing at all: the stem
-        // was looked up as a literal prefix and no file is named `tw*`.
+        // **A glob asks the shell's own engine**, so Tab and the command agree on what it names:
+        // `**` recursive, closed braces expanded, `~` written back as typed. See `super::glob`.
+        if crate::settings::current().completion.glob != crate::settings::GlobTab::Literal {
+            if self.glob_candidates(word, wanted, out) {
+                return;
+            }
+            // Nothing matched even with a `*` added, so the characters are part of a real name —
+            // `weird[1` — and it completes by prefix, escaped on the way back.
+            let (head, read_from) = plain_directory(dir_part);
+            if let Ok(entries) = fs::read_dir(wanted.read(&read_from)) {
+                let entries = entries_of(entries);
+                self.offer_from(&entries, &head, prefix, None, word, wanted, out);
+            }
+            return;
+        }
+
+        // `oslo.completion.glob = "literal"`: the matches one level at a time.
         let pattern = has_glob(prefix).then(|| ShellPattern::from_unquoted(prefix));
 
         // One entry for a plain directory; several when the *directory* part globs too, as in
@@ -502,86 +429,5 @@ mod tests {
         assert!(!globs_unquoted("plain"));
         // A star outside the quotes still globs, which is why this is per character.
         assert!(globs_unquoted("\"a\"*"));
-    }
-}
-
-/// **The entry budget covers the whole word, brace branches included.**
-///
-/// This runs on the repaint path, once per globbing word, and the bound is what keeps it there.
-/// Each brace branch used to recurse into a fresh call and so a fresh budget, which an ordinary
-/// numeric range defeats outright: `img{001..500}*.jpg` while nothing matches is five hundred
-/// branches that `any()` cannot short-circuit, each free to read two thousand entries.
-#[cfg(test)]
-mod budget_tests {
-    use super::{MAX_GLOB_ENTRIES, matches_within};
-
-    /// A directory with more entries than one branch may read, so a branch that is allowed its own
-    /// budget can be told apart from one sharing the word's.
-    fn crowded() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        for i in 0..(MAX_GLOB_ENTRIES + 50) {
-            std::fs::write(dir.path().join(format!("f{i:05}.dat")), "").expect("write");
-        }
-        dir
-    }
-
-    #[test]
-    fn every_branch_spends_the_same_budget() {
-        let dir = crowded();
-        let base = dir.path().display().to_string();
-
-        // Nothing matches `*.nomatch`, so each branch reads its directory to the end — which is
-        // what makes the budget observable at all.
-        let stem = format!("{base}/{{a,b,c,d,e}}*.nomatch");
-        let mut budget = MAX_GLOB_ENTRIES;
-        assert!(!matches_within(&stem, &mut budget), "nothing matches");
-        assert_eq!(
-            budget, 0,
-            "the five branches shared one budget and exhausted it"
-        );
-
-        // The bound holds however many branches there are: with a budget of its own, each of these
-        // would read the whole directory again.
-        let many: Vec<String> = (0..40).map(|i| format!("x{i}")).collect();
-        let stem = format!("{base}/{{{}}}*.nomatch", many.join(","));
-        let mut budget = MAX_GLOB_ENTRIES;
-        assert!(!matches_within(&stem, &mut budget));
-        assert_eq!(budget, 0, "still one budget, not forty");
-    }
-
-    /// A branch that matches within the budget still says so, and the walk leaves early.
-    ///
-    /// A small directory on purpose: `read_dir` has no order, so in a crowded one whether the hit
-    /// falls inside the budget is a coin toss rather than a property worth asserting.
-    #[test]
-    fn a_branch_that_matches_still_says_so() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("found.dat"), "").expect("write");
-        let base = dir.path().display().to_string();
-
-        let mut budget = MAX_GLOB_ENTRIES;
-        assert!(matches_within(
-            &format!("{base}/{{nope,fou}}*.dat"),
-            &mut budget
-        ));
-        assert!(budget > 0, "it returned on the hit rather than reading on");
-    }
-
-    /// **What sharing the budget costs, stated rather than hidden.**
-    ///
-    /// A branch that exhausts the budget starves the ones after it, so a later branch that would
-    /// have matched answers no. That is the give-up this bound is built on — "no match" is the
-    /// colour an unresolved glob already takes — and it is the price of not reading a million
-    /// entries per keystroke. It only bites when an earlier branch reads two thousand entries
-    /// without a hit, which is already the pathological case.
-    #[test]
-    fn a_starved_branch_answers_no() {
-        let dir = crowded();
-        let base = dir.path().display().to_string();
-        let mut budget = MAX_GLOB_ENTRIES;
-        assert!(
-            !matches_within(&format!("{base}/{{nope,f00001}}*.dat"), &mut budget),
-            "the first branch spent the budget before the second could look"
-        );
     }
 }

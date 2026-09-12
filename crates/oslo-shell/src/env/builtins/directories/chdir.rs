@@ -107,7 +107,8 @@ fn attempt(base: &str, operand: &str, mode: PathMode) -> io::Result<Landing> {
     match mode {
         PathMode::Physical => {
             let resolved = fs::canonicalize(&absolute)?;
-            env::set_current_dir(&resolved)?;
+            // Built from the shell's own text, so its carried bytes are still stand-ins.
+            env::set_current_dir(oslo_base::lossless::to_os(&resolved.to_string_lossy()))?;
             Ok(Landing {
                 pwd: resolved.to_string_lossy().into_owned(),
                 display: logical,
@@ -117,15 +118,16 @@ fn attempt(base: &str, operand: &str, mode: PathMode) -> io::Result<Landing> {
             // The lexical path is only used when the path as written also exists. Cancelling
             // `..` first would make `cd nosuch/..` a silent success that leaves the shell where
             // it started, and bash rejects it for the same reason.
-            let intact = fs::metadata(&absolute).is_ok_and(|meta| meta.is_dir());
+            let intact =
+                fs::metadata(oslo_base::lossless::to_os(&absolute)).is_ok_and(|meta| meta.is_dir());
             if intact {
-                env::set_current_dir(&logical)?;
+                env::set_current_dir(oslo_base::lossless::to_os(&logical))?;
                 Ok(Landing {
                     pwd: logical.clone(),
                     display: logical,
                 })
             } else {
-                env::set_current_dir(&absolute)?;
+                env::set_current_dir(oslo_base::lossless::to_os(&absolute))?;
                 // A path that stat() refused but chdir() accepted is too strange to describe
                 // logically; fall back to what the kernel says.
                 let pwd = env::current_dir()
@@ -266,7 +268,8 @@ pub fn report_failure(origin: &str, caller: &str, operand: &str, e: &io::Error) 
         eprintln!("{origin}{caller}: {NULL_DIRECTORY}");
     } else {
         eprintln!(
-            "{origin}{caller}: {operand}: {}",
+            "{origin}{caller}: {}: {}",
+            oslo_base::shown::shown(operand),
             oslo_base::error::reason(e)
         );
     }

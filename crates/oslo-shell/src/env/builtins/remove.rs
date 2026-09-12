@@ -80,7 +80,9 @@ pub fn builtin_rm(env: &mut Environment, args: &[String]) -> Result<i32> {
     let mode = mode_for(env, &options);
     let mut status = 0;
     for operand in operands {
-        match remove_operand(Path::new(operand), operand, &options, &mode, &origin) {
+        // The name's real bytes: `rm b*` over `bad\xffname` must reach that file.
+        let real = oslo_base::lossless::to_os(operand);
+        match remove_operand(Path::new(&real), operand, &options, &mode, &origin) {
             Removal::Gone => {}
             Removal::Failed => status = 1,
             // A Ctrl-C part-way through stops the whole line, not just the operand it landed in:
@@ -98,10 +100,31 @@ enum Removal {
     Interrupted,
 }
 
+/// Whether a person is actually typing at a prompt — the one condition the loose mode rests on.
+///
+/// **`-i` alone is not a prompt.** `ShellOption::Interactive` is set by the `-i` *flag*, and
+/// `sh -i -c '…'` is an ordinary scripted form: the `bash -ic` trick that loads interactive rc
+/// files for nvm and direnv, `SHELL='bash -i'` in a Makefile, ssh and CI shims. With the flag
+/// alone as the test, a bare `rm dir` in one of those became `rm -rf dir` and answered **0** —
+/// POSIX and bash both refuse a directory without `-r` and exit 1, so a caller had no way to know
+/// a tree had been deleted. `Rm::to_tmp` is off by default, so there was no trash to recover from
+/// either. That is the worst outcome this file can produce, and it was reachable from a script.
+///
+/// Three flags together, because each rules out a case the others do not: `Interactive` says the
+/// session is interactive, the absence of `CommandString` says the shell was not handed a program
+/// with `-c`, and the absence of `StdinInput` says it is not reading one from a pipe with `-s`.
+/// All three are recorded when the shell is invoked, so this asks what the shell was *asked to be*
+/// rather than probing a descriptor that a redirection could have moved.
+fn at_a_prompt(env: &Environment) -> bool {
+    let options = env.options();
+    options.is_set(ShellOption::Interactive)
+        && !options.is_set(ShellOption::CommandString)
+        && !options.is_set(ShellOption::StdinInput)
+}
+
 /// The behaviour this shell allows, which is the whole safety argument in five lines.
 fn mode_for(env: &Environment, options: &Options) -> Mode {
-    let at_a_prompt = env.options().is_set(ShellOption::Interactive);
-    if options.strict || !at_a_prompt {
+    if options.strict || !at_a_prompt(env) {
         return Mode {
             loose: false,
             trash: None,
@@ -132,12 +155,16 @@ fn remove_operand(
             if options.force {
                 return Removal::Gone;
             }
-            eprintln!("{origin}rm: cannot remove '{shown}': No such file or directory");
+            eprintln!(
+                "{origin}rm: cannot remove {}: No such file or directory",
+                oslo_base::shown::quoted(shown)
+            );
             return Removal::Failed;
         }
         Err(e) => {
             eprintln!(
-                "{origin}rm: cannot remove '{shown}': {}",
+                "{origin}rm: cannot remove {}: {}",
+                oslo_base::shown::quoted(shown),
                 oslo_base::error::reason(&e)
             );
             return Removal::Failed;
@@ -250,7 +277,10 @@ fn refuse(
     if options.recursive || options.dir || mode.loose {
         return None;
     }
-    Some(format!("cannot remove '{shown}': Is a directory"))
+    Some(format!(
+        "cannot remove {}: Is a directory",
+        oslo_base::shown::quoted(shown)
+    ))
 }
 
 /// Whether the last component of an operand is `.` or `..`.
@@ -352,7 +382,7 @@ fn delegate(args: &[String]) -> Result<i32> {
 /// `/bin/sh` may be running with a `$PATH` that has not been set up yet.
 fn external_rm() -> Option<PathBuf> {
     if let Some(found) = super::spawn::resolve_program("rm")
-        && found != Path::new("/usr/bin/oslo")
+        && !is_this_shell(&found)
     {
         return Some(found);
     }
@@ -360,6 +390,26 @@ fn external_rm() -> Option<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .find(|p| p.is_file())
+}
+
+/// Whether a path found on `$PATH` is this very shell.
+///
+/// **Both sides are resolved before they are compared.** This used to test the found path against
+/// the literal `/usr/bin/oslo`, which is one of the places oslo can be and not the only one: an
+/// install under `~/.local/bin`, a build being tested, or — the shape this shell already ships —
+/// a *symlink* named for another program pointing at it. `resolve_program` answers the link, so a
+/// name-only test never matched and oslo would have handed `rm` to itself.
+///
+/// A path that cannot be resolved is treated as not-this-shell: the fallbacks below are literal
+/// files, and refusing to run a real `rm` because its link could not be read would be the worse
+/// mistake of the two.
+fn is_this_shell(candidate: &Path) -> bool {
+    let Ok(found) = candidate.canonicalize() else {
+        return false;
+    };
+    std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .is_ok_and(|exe| exe == found)
 }
 
 #[cfg(test)]

@@ -593,3 +593,5 @@ commands:
             description: "flush policies"
             flags:
               "-h, --help": ""
+completion:
+  positionalany: ["$interfaces"]

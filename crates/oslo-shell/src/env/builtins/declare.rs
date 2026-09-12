@@ -138,7 +138,10 @@ fn apply(env: &mut Environment, operand: &str, attrs: &Attributes, builtin: &str
         crate::env::complain(
             &[builtin.to_string(), operand.to_string()],
             operand,
-            &format!("{builtin}: `{operand}': not a valid identifier"),
+            &format!(
+                "{builtin}: `{}': not a valid identifier",
+                oslo_base::shown::shown(operand)
+            ),
             "not a name",
             Some(
                 "a name starts with a letter or underscore and continues with letters, digits or underscores",
@@ -263,7 +266,7 @@ fn print_variables(env: &mut Environment, names: &[String]) -> i32 {
                 crate::env::complain(
                     &crate::env::line("declare", names),
                     name,
-                    &format!("declare: {name}: not found"),
+                    &format!("declare: {}: not found", oslo_base::shown::shown(name)),
                     "no variable of that name",
                     Some("`declare -p` on its own lists every variable there is"),
                 );

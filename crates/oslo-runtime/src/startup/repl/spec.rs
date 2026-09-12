@@ -9,6 +9,9 @@
 //!   completed. Only where there is a reader for it.
 //! * **the recipe source**, so `make <Tab>` offers what this project declared. Not a file and not
 //!   a description of one: the `.make.lua` being completed for *is* the spec — see [`recipes`].
+//! * **the remote lister**, so `scp host:/pa<Tab>` can ask that machine. The one completion source
+//!   that opens a connection, and installed only at a prompt: a script has no menu to fill, and a
+//!   shell that forked `ssh` from a `-c` line would be doing it where nobody asked.
 
 // `.make.lua` is the `make` feature's file, so the source that reads it is that feature's too.
 #[cfg(feature = "make")]
@@ -16,10 +19,20 @@
 mod recipes;
 
 /// Register them, once, as the shell starts.
-pub(super) fn register() {
+///
+/// The runner is handed this session's environment because `$aliases` and `$functions` are answered
+/// out of it, in this process. Every other macro forks, and a fork would see none of it.
+pub(super) fn register(env: &std::sync::Arc<std::sync::Mutex<oslo_shell::env::Environment>>) {
     #[cfg(feature = "make")]
     recipes::register();
-    oslo_ui::spec::action::set_runner(Some(std::rc::Rc::new(oslo_shell::spec::run::offers)));
+    let held = std::sync::Arc::clone(env);
+    oslo_ui::spec::action::set_runner(Some(std::rc::Rc::new(
+        move |name: &str, arg: &str, query: &_| {
+            oslo_shell::spec::state::offers(name, &held)
+                .unwrap_or_else(|| oslo_shell::spec::run::offers(name, arg, query))
+        },
+    )));
+    oslo_ui::spec::remote::set_lister(Some(std::rc::Rc::new(oslo_shell::spec::remote::list)));
     #[cfg(feature = "compgen")]
     oslo_ui::spec::custom::set_loader(Some(std::rc::Rc::new(oslo_shell::spec::find)));
 }

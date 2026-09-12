@@ -57,6 +57,35 @@ impl Paths {
     }
 }
 
+/// The longest a Unix socket path may be, counting the terminating NUL.
+///
+/// `sockaddr_un.sun_path` is a fixed 108-byte array on Linux and there is no way to ask for more.
+const SUN_PATH: usize = 108;
+
+/// Refuse a scratch whose socket path would not fit in `sockaddr_un`, before anything is created.
+///
+/// **The length was only discovered at `bind`**, which is four steps too late: by then the lock
+/// file, the attach file and the meta file all exist, and a shell has been forked to sit behind a
+/// socket that will never be listening. The keeper then exits and leaves that state on disk under a
+/// name `scratch -l` still shows, so the next attempt meets a scratch that looks real and answers
+/// nothing.
+///
+/// It is not a hypothetical path length: `$OSLO_SCRATCH_DIR` under a long project or session
+/// directory reaches 108 bytes easily, and the error that came back — `path must be shorter than
+/// SUN_LEN`, from `nix` — named neither the path nor the limit.
+pub fn room_for_a_socket(name: &str) -> io::Result<()> {
+    let sock = Paths::new(name).sock();
+    let used = sock.as_os_str().len() + 1;
+    if used <= SUN_PATH {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "the socket for {name} would be {used} bytes and a Unix socket path may be {SUN_PATH}: \
+         set $OSLO_SCRATCH_DIR to somewhere shorter, or use a shorter name ({})",
+        sock.display()
+    )))
+}
+
 /// What a scratch says about itself. Written once by the keeper, read by anything listing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Meta {

@@ -135,6 +135,7 @@ fn read_syntax(table: &oslo_base::value::Table, into: &mut Syntax, problems: &mu
     field(table, "error", p, &mut into.error, problems);
     field(table, "danger", p, &mut into.danger, problems);
     field(table, "glob", p, &mut into.glob, problems);
+    field(table, "glob_nomatch", p, &mut into.glob_nomatch, problems);
     field(table, "coordinate", p, &mut into.coordinate, problems);
     field(table, "number", p, &mut into.number, problems);
     field(table, "assignment", p, &mut into.assignment, problems);
@@ -400,7 +401,7 @@ mod tests {
                  single_quote = '29', double_quote = '30', escape = '31',
                  operator = '32', redirection = '33', ['end'] = '34', comment = '35',
                  variable = '36', autosuggestion = '37', match_bracket = '38',
-                 repair = '39', coordinate = '96'
+                 repair = '39', coordinate = '96', glob_nomatch = '97'
                },
                pager = {
                  bg = '#101010', text = '40', text_sel = '41', sel_bg = '#202020',
@@ -430,6 +431,7 @@ mod tests {
             ("valid_path", s.valid_path != ds.valid_path),
             ("option", s.option != ds.option),
             ("glob", s.glob != ds.glob),
+            ("glob_nomatch", s.glob_nomatch != ds.glob_nomatch),
             ("coordinate", s.coordinate != ds.coordinate),
             ("number", s.number != ds.number),
             ("assignment", s.assignment != ds.assignment),
@@ -447,7 +449,7 @@ mod tests {
         ];
         assert_eq!(
             syntax.len(),
-            24,
+            25,
             "a syntax role was added without a case here"
         );
 

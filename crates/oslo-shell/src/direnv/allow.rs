@@ -22,7 +22,20 @@
 //! wrongly, and a token whose file has gone is garbage the [`Allow::prune`] sweep can drop.
 
 use sha2::{Digest, Sha256};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+
+/// A path as the bytes the kernel holds, for hashing.
+///
+/// **`to_string_lossy` is not injective and this is a security key.** Every byte that is not valid
+/// UTF-8 becomes `U+FFFD`, so `.../pr\xffoj/.envrc` and `.../pr\xfeoj/.envrc` hash the same — two
+/// different files sharing one allow decision. A path is bytes to the kernel, so hash the bytes.
+///
+/// Nothing already allowed is invalidated: for a path that *is* valid UTF-8 — every real one —
+/// these are the same bytes `to_string_lossy` produced.
+fn path_bytes(path: &Path) -> &[u8] {
+    path.as_os_str().as_bytes()
+}
 
 /// What the shell may do with an rc file it has found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +81,7 @@ fn content_key(path: &Path) -> Option<String> {
     let absolute = path.canonicalize().ok()?;
     let contents = std::fs::read(&absolute).ok()?;
     let mut hasher = Sha256::new();
-    hasher.update(absolute.to_string_lossy().as_bytes());
+    hasher.update(path_bytes(&absolute));
     hasher.update(b"\n");
     hasher.update(&contents);
     Some(hex(&hasher.finalize()))
@@ -83,7 +96,7 @@ fn path_key(path: &Path) -> Option<String> {
         false => std::env::current_dir().ok()?.join(path),
     };
     let mut hasher = Sha256::new();
-    hasher.update(absolute.to_string_lossy().as_bytes());
+    hasher.update(path_bytes(&absolute));
     hasher.update(b"\n");
     Some(hex(&hasher.finalize()))
 }
@@ -205,6 +218,37 @@ mod tests {
 
     fn store_in(dir: &Path) -> Allow {
         Allow::new(Some(dir.to_str().expect("utf8")), None)
+    }
+
+    /// **Two paths that differ must not share one decision.** The key is a security boundary, and
+    /// hashing `to_string_lossy` collapsed every invalid byte to `U+FFFD` — so `pr\xffoj` and
+    /// `pr\xfeoj` produced the same digest, and allowing one allowed the other.
+    #[test]
+    fn paths_that_differ_only_outside_utf8_get_different_keys() {
+        use std::ffi::OsStr;
+        let first = PathBuf::from(OsStr::from_bytes(b"/tmp/pr\xffoj/.envrc"));
+        let second = PathBuf::from(OsStr::from_bytes(b"/tmp/pr\xfeoj/.envrc"));
+        assert_ne!(first, second, "the two paths are different to begin with");
+        assert_ne!(
+            path_key(&first),
+            path_key(&second),
+            "two different paths shared one deny key"
+        );
+    }
+
+    /// And the fix costs nothing already recorded: a valid-UTF-8 path hashes to what it always did.
+    #[test]
+    fn an_ordinary_path_keeps_the_key_it_had() {
+        let path = Path::new("/tmp/project/.envrc");
+        let mut expected = Sha256::new();
+        // What the previous implementation hashed, byte for byte.
+        expected.update(path.to_string_lossy().as_bytes());
+        expected.update(b"\n");
+        assert_eq!(
+            path_key(path),
+            Some(hex(&expected.finalize())),
+            "an existing deny token would have stopped matching"
+        );
     }
 
     /// The property the gate exists for: allowing a file is allowing *that text*.

@@ -77,6 +77,8 @@ const NAMESPACES: &[(&str, &str)] = &[
     ("oslo.theme", "table"),
     ("oslo.ui", "table"),
     ("oslo.word", "table"),
+    #[cfg(feature = "watch")]
+    ("oslo.watch", "table"),
     ("oslo.run", "function"),
     ("oslo.pipe", "function"),
     ("oslo.lines", "function"),
@@ -111,7 +113,10 @@ const FUNCTIONS: &[&str] = &[
     "oslo.fs.glob",
     "oslo.fs.read",
     "oslo.fs.write",
+    #[cfg(feature = "watch")]
     "oslo.fs.watch",
+    #[cfg(feature = "watch")]
+    "oslo.watch.start",
     "oslo.path.join",
     "oslo.path.parent",
     "oslo.json.decode",

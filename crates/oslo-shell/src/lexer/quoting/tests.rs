@@ -15,6 +15,27 @@ fn parts(src: &str) -> Vec<WordPart> {
     }
 }
 
+/// **An `extglob` group is part of its word**, spaces and `|` included, and quotes and `$` inside
+/// it keep their meaning. rune reads it that way; re-lexing the word must not undo that.
+#[test]
+fn an_extglob_group_keeps_its_word_together() {
+    let got = parts("@(\"a b\"|$v)");
+    assert!(
+        matches!(
+            got.as_slice(),
+            [WordPart::Literal(open), WordPart::DoubleQuoted(_), WordPart::Literal(bar), _, WordPart::Literal(close)]
+                if open == "@(" && bar == "|" && close == ")"
+        ),
+        "{got:?}"
+    );
+    let mut lexer = Lexer::new("+(a b) next");
+    assert!(matches!(lexer.next(), Ok(Token::Word(_))));
+    assert!(
+        matches!(lexer.next(), Ok(Token::Word(w)) if w.parts == [WordPart::Literal("next".into())]),
+        "the space after the group still ends the word"
+    );
+}
+
 /// **A comment inside a `$( … )` inside a heredoc body is not shell.**
 ///
 /// A lone apostrophe in one opened a quote that ran to the end of the file, so the `)` closing
@@ -327,4 +348,31 @@ fn every_token_consumes_at_least_one_character() {
             }
         }
     }
+}
+
+/// **`\` before a newline is a line continuation: both characters go.**
+///
+/// Every other character is escaped *to itself* and kept as a [`WordPart::Escaped`]. Doing that to
+/// a newline spliced a real line break into the middle of the word, so
+/// `P=/usr/bin:\` + newline + `/usr/local/bin` produced a `$P` containing one — where bash and dash
+/// join the halves. POSIX 2.2.1 names the newline as the single exception to the escape rule.
+#[test]
+fn a_backslash_before_a_newline_joins_the_word() {
+    assert_eq!(
+        parts("a\\\nb"),
+        vec![WordPart::Literal("ab".into())],
+        "the continuation left something behind"
+    );
+    // The halves of a split path become one word with nothing between them.
+    assert_eq!(
+        parts("/usr/bin:\\\n/usr/local/bin"),
+        vec![WordPart::Literal("/usr/bin:/usr/local/bin".into())]
+    );
+    // And nothing else changes: a backslash before any other character still escapes it, which is
+    // what keeps `echo \*` from globbing.
+    assert_eq!(
+        parts("\\*"),
+        vec![WordPart::Escaped("*".into())],
+        "an ordinary escape was swallowed with the newline case"
+    );
 }

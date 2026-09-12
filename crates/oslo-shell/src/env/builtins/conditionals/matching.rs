@@ -128,22 +128,26 @@ thread_local! {
 }
 
 fn compile(source: &str) -> TestResult<Regex> {
-    if let Some(hit) = COMPILED.with(|c| c.borrow().get(source).cloned()) {
+    // `nocasematch` is part of the key: the same source is a different automaton with it on.
+    let nocase = oslo_base::glob::walk::nocasematch();
+    let key = format!("{}{source}", u8::from(nocase));
+    if let Some(hit) = COMPILED.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(hit);
     }
-    let built = build(source)?;
+    let built = build(source, nocase)?;
     COMPILED.with(|c| {
         let mut cache = c.borrow_mut();
         if cache.len() >= CACHED_PATTERNS {
             cache.clear();
         }
-        cache.insert(source.to_string(), built.clone());
+        cache.insert(key, built.clone());
     });
     Ok(built)
 }
 
-fn build(source: &str) -> TestResult<Regex> {
+fn build(source: &str, nocase: bool) -> TestResult<Regex> {
     RegexBuilder::new(source)
+        .case_insensitive(nocase)
         // POSIX `.` matches every character including newline; the regex crate's default excludes
         // it. `[[ $'a\nb' =~ a.b ]]` is true in bash, and now here too.
         .dot_matches_new_line(true)

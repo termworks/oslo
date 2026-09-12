@@ -213,13 +213,21 @@ fn restore_terminal_modes(fd: RawFd) {
 ///
 /// SIGTTOU is blocked for the call by [`give_terminal_to`]: at this moment the shell is *not* the
 /// foreground group, so an unguarded `tcsetpgrp` is precisely the call that would stop it.
-pub(crate) fn reclaim_terminal() {
+///
+/// **`tidy` says whether the job left the terminal the way it meant to.** A job that exited on its
+/// own did: `stty -echo` is a program whose whole purpose is to change these settings, and putting
+/// the snapshot back one instant later made it — and `stty sane`, and `reset` — a no-op at an oslo
+/// prompt. Measured against dash, which keeps the change; oslo undid it.
+///
+/// A job that was killed or stopped did not, and that is the case [`restore_terminal_modes`] exists
+/// for: a TUI cut down by a signal has no chance to tidy, and the damage would otherwise outlive it.
+pub(crate) fn reclaim_terminal(tidy: bool) {
     if !job_control_active() {
         return;
     }
     give_terminal_to(shell_pgid());
     let fd = TERMINAL_FD.load(Ordering::SeqCst);
-    if fd != NO_JOB_CONTROL {
+    if !tidy && fd != NO_JOB_CONTROL {
         restore_terminal_modes(fd);
     }
 }
@@ -285,5 +293,46 @@ mod tests {
         let first = Pid::from_raw(i32::MAX);
         assert_eq!(place_child(first, None), first);
         assert_eq!(place_child(Pid::from_raw(i32::MAX - 1), Some(first)), first);
+    }
+}
+
+/// Whether a job that ended with `status` left the terminal the way it meant to.
+///
+/// A shell reports a signal death as `128 + signo`, so anything below that is a program that
+/// returned on its own — and a program that returned chose whatever it did to the terminal.
+/// `stty -echo` is exactly such a program, and restoring over it made `stty`, `stty sane` and
+/// `reset` no-ops at an oslo prompt.
+///
+/// At or above 128 the job was killed or stopped and had no chance to tidy, which is the case
+/// [`restore_terminal_modes`] exists for.
+pub(crate) fn left_it_deliberately(status: i32) -> bool {
+    status < 128
+}
+
+#[cfg(test)]
+mod deliberate_tests {
+    /// **`stty` is a program whose whole purpose is to change the terminal**, and it exits 0.
+    /// Restoring the snapshot taken a moment earlier made it — and `stty sane`, and `reset` — a
+    /// no-op at an oslo prompt. Measured against dash, which keeps the change.
+    #[test]
+    fn a_program_that_returned_chose_what_it_left() {
+        for status in [0, 1, 2, 127] {
+            assert!(
+                super::left_it_deliberately(status),
+                "status {status} is a program that returned on its own"
+            );
+        }
+    }
+
+    /// A shell reports a signal death as `128 + signo`. Those had no chance to tidy, and repairing
+    /// after them is what the snapshot is for: a TUI cut down by SIGKILL leaves echo off.
+    #[test]
+    fn a_job_that_was_killed_did_not() {
+        for signo in [1, 2, 9, 15, 19] {
+            assert!(
+                !super::left_it_deliberately(128 + signo),
+                "128+{signo} was killed or stopped"
+            );
+        }
     }
 }

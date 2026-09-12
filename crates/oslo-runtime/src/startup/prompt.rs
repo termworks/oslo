@@ -100,7 +100,10 @@ pub fn primary_prompt(
             if mode == Mode::Lua {
                 oslo_ui::prompt::render_default_left_prompt(last_status, mode.name())
             } else {
-                rc::ps1(&mut env_struct.lock().unwrap(), last_status)
+                rc::ps1(
+                    &mut env_struct.lock().unwrap_or_else(|held| held.into_inner()),
+                    last_status,
+                )
             }
         })
 }

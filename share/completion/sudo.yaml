@@ -5,3 +5,7 @@ flags:
   "-g, --group=": "Run command as the specified group name or ID"
   "-h, --help": "Display help message and exit"
   "-u, --user=": "Run command as specified user name or ID"
+completion:
+  flag:
+    group: ["$groups"]
+    user: ["$users"]

@@ -12,6 +12,7 @@ default = []
 # default; a build without it has no keeper, no client and no runtime directory, and the key that
 # opens the finder does nothing.
 scratch = []
+watch = ["nix/inotify"]
 # `direnv` — directory environments: `.env.lua`, `.envrc`, and the dev shell an `.envrc` can ask
 # for. Off by default; a build without it never reads a directory file and never runs one.
 direnv = []
@@ -80,7 +81,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 which = "7.0"
 
 # The shell parser, oslo's own. Lowered into oslo's AST in `syntax/rune_adapter/`.
-rune = { git = "https://github.com/onix-os/rune", tag = "v0.1.3" }
+rune.workspace = true
 
 # The allow list for directory environments, keyed by a hash of the rc file's path and contents.
 sha2 = "0.10"

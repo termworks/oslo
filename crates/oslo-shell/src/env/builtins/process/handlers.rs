@@ -90,6 +90,16 @@ pub fn disposition<'a>(env: &'a Environment, condition: &str) -> Disposition<'a>
 /// they cannot be caught or ignored by anything, and a shell that claimed otherwise would be
 /// promising cleanup it can never perform.
 pub fn arm(signum: i32, disposition: &Disposition<'_>) -> bool {
+    // An ignored signal is inherited by everything the shell forks, which is what `trap '' INT`
+    // is *for*; the child reset would otherwise undo it. See `job::signals::note_deliberate_ignore`.
+    crate::exec::job::note_deliberate_ignore(signum, matches!(disposition, Disposition::Ignore));
+    // **"Back to how it was" is not the system default in an interactive shell.** The shell
+    // installs its own SIGINT handler once, at REPL start, and writing `SIG_DFL` over it left the
+    // session with none — the next Ctrl-C killed the shell. See `job::signals::restore_shell_signal`.
+    if matches!(disposition, Disposition::Default) && crate::exec::job::restore_shell_signal(signum)
+    {
+        return true;
+    }
     let handler: libc::sighandler_t = match disposition {
         Disposition::Default => libc::SIG_DFL,
         Disposition::Ignore => libc::SIG_IGN,
@@ -111,6 +121,18 @@ pub fn arm(signum: i32, disposition: &Disposition<'_>) -> bool {
         action.sa_flags = 0;
         libc::sigaction(signum, &action, std::ptr::null_mut()) == 0
     }
+}
+
+/// The lowest-numbered signal whose trap has arrived and not yet run, without taking it.
+///
+/// For the one caller that must not wait for a command boundary: `wait` blocks inside the kernel,
+/// and POSIX says a trapped signal ends that block — the trap runs and `wait` returns `128 + signo`
+/// rather than going back to sleep until the child it was watching finishes on its own.
+///
+/// Peeking rather than draining, because running the bodies is still [`run_pending_traps`]'s.
+pub fn pending_signal() -> Option<i32> {
+    let pending = PENDING.load(Ordering::SeqCst);
+    (pending != 0).then(|| pending.trailing_zeros() as i32 + 1)
 }
 
 /// Run the handler of every signal that has arrived since the last check.
@@ -212,6 +234,52 @@ pub fn run_debug_trap(env: &mut Environment) {
     if let Err(e) = outcome {
         eprintln!("{}trap: DEBUG: {e}", origin_now());
     }
+}
+
+/// Whether an ERR handler is on the stack, so a failure inside it does not fire it again.
+static IN_ERR_TRAP: AtomicBool = AtomicBool::new(false);
+
+/// Run the ERR trap, for a command that has just failed.
+///
+/// **`set -e; trap cleanup ERR` is the error-handling idiom**, and the condition was refused
+/// outright: the handler was never installed, so every script that relied on it lost its cleanup.
+///
+/// Fired from the one place that already knows which failures count — the `set -e` judgement in
+/// `pipeline::run_and_record`. That is not a convenience: bash exempts a failing command from ERR
+/// under exactly the POSIX 2.9.1 rules errexit uses (an `if`/`while` condition, every command of
+/// an and-or list but the last, anything under `!`), so deriving the two from one condition is
+/// what keeps them from drifting. The difference is that ERR fires whether or not `set -e` is on.
+///
+/// Unlike DEBUG this **propagates**: `trap 'exit 1' ERR` is the point of the condition for many
+/// scripts, and swallowing the `exit` would leave the shell running past the failure it was
+/// written to stop.
+///
+/// # The one place this is not bash
+///
+/// bash does not inherit the ERR trap into a function body unless `set -E` is on; oslo behaves as
+/// though it always is. The two are observable together only under `set -e`: `set -e; trap 'echo
+/// ERR' ERR; f() { false; }; f` prints nothing under bash and `ERR` here, and `bash -E` prints
+/// `ERR` too. Every other shape tested — the call reporting its own failure, `case`, `for`, `if`
+/// bodies, brace groups, pipelines, subshells, `$?` inside the handler, `trap -p`, `trap - ERR`,
+/// the exemptions and the recursion guard — agrees with bash exactly.
+///
+/// Left this way deliberately rather than by omission: `set -E` is a shell option oslo does not
+/// have, and of the two ways to be wrong without it, running a cleanup handler that bash would
+/// have skipped is the one that does not silently drop a script's error handling.
+pub fn run_err_trap(env: &mut Environment) -> Result<()> {
+    if IN_ERR_TRAP.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    let Disposition::Run(text) = disposition(env, "ERR") else {
+        return Ok(());
+    };
+    let action = text.to_string();
+
+    IN_ERR_TRAP.store(true, Ordering::SeqCst);
+    let outcome = run_handler(env, &action);
+    IN_ERR_TRAP.store(false, Ordering::SeqCst);
+
+    outcome.map(|_| ())
 }
 
 /// Run the EXIT trap and give the status the shell should finally exit with.

@@ -74,3 +74,6 @@ flags:
   "-o=*": {description: "override preference setting", nargs: -1}
   "-K=": "keytab file to use for kerberos decryption"
   "-G=": "dump one of several available reports and exit default report=\"fields\" use \"-G help\" for more help"
+completion:
+  flag:
+    interface: ["$interfaces"]

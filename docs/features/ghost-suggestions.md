@@ -313,16 +313,6 @@ The cheap tests run first: `min_chars` and `max_line` are integer comparisons, a
 to discover that the line was two characters long would be the expensive way to answer a cheap
 question.
 
-### Worked examples
-
-Two, in `examples/plugins/`:
-
-- **`tldr`** — synchronous, answering from `oslo.db`. Offers what people actually do with a command,
-  in the dropdown *and* as a ghost.
-- **`slowpoke`** — asynchronous, the shape an LLM plugin has. Deliberately slow and deliberately
-  deterministic, so it exercises the debounce, the reply and the repaint while still being something
-  a test can assert on.
-
 ## Measurements
 
 The provider mechanism costs a shell that has none **nothing**. `bench/keystroke.rs`, min of three

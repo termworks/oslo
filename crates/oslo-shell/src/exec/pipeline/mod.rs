@@ -26,7 +26,7 @@ mod structured;
 mod timing;
 
 pub(crate) use errexit::{clear_status_exempt, errexit_suspended, suspend_errexit};
-use errexit::{set_status_exempt, status_exempt};
+use errexit::{err_reported, set_err_reported, set_status_exempt, status_exempt};
 
 use crate::env::Environment;
 use crate::env::builtins::run_exit_trap;
@@ -55,14 +55,30 @@ pub use waiting::{
 /// error one. See the `interrupt` submodule for why the outermost frame is where a Ctrl-C
 /// stops being an unwind and becomes a status.
 pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> {
+    // **The third spender of the stack, and the one nothing counted.** A function call and a
+    // `source` chain each had a counter; a nested compound command had only the *parse-time* limit
+    // on how deep the input may be, which says nothing about how much stack running it costs. This
+    // is where `{ … }`, `( … )`, a loop body and a branch all re-enter, so it is where the question
+    // is asked. See `oslo_base::stack`.
+    if oslo_base::stack::exhausted() {
+        return Err(ShellError::ExecutionError(
+            "maximum nesting level exceeded".to_string(),
+        ));
+    }
     let frame = ListFrame::enter();
-    frame.absorb(run_list_items(env, cmd_list))
+    let outermost = frame.is_outermost();
+    frame.absorb(run_list_items(env, cmd_list, outermost))
 }
 
-fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> {
+fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool) -> Result<i32> {
     let mut last_status = 0;
+    // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
+    let mut abandoned: Option<u32> = None;
 
     for item in &cmd_list.items {
+        if abandoned.is_some_and(|line| line > 0 && item.line == line) {
+            continue;
+        }
         // `set -n`: read the program, run none of it. Checked per command rather than once before
         // the list so that `set -n` *within* a script stops execution from that point, which is
         // where bash stops too — and so that `oslo -n script` never reaches a command at all.
@@ -91,6 +107,12 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> 
         if job::interrupt_pending() {
             return Err(interrupt::raise(env));
         }
+        // A SIGTERM or SIGHUP that arrived while an EXIT trap was set. Ending as an ordinary
+        // `exit 128 + signo` is what runs that trap: the shell dies of the signal either way, and
+        // this is the difference between the cleanup happening and not.
+        if let Some(signum) = job::fatal_signal_pending() {
+            return Err(ShellError::Exit(128 + signum));
+        }
 
         if item.op == ListOp::Background {
             jobs::spawn_background(env, &item.and_or)?;
@@ -99,8 +121,27 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> 
             last_status = 0;
             env.last_status = 0;
         } else {
-            last_status = eval_and_or_list(env, &item.and_or)?;
+            last_status = match eval_and_or_list(env, &item.and_or) {
+                // **`failglob` abandons the top-level command, not the script.** bash drops the
+                // rest of that line — the whole `if` around the miss, the function it was in —
+                // reports it with status 1, and carries on with the next line. Only the outermost
+                // list catches it; everywhere below, it unwinds like any other error.
+                Err(error @ ShellError::NoMatch(_)) if outermost => {
+                    eprintln!("{}{error}", env.origin());
+                    abandoned = Some(item.line);
+                    env.last_status = 1;
+                    1
+                }
+                other => other?,
+            };
         }
+    }
+
+    // And once more on the way out, for a signal that arrived during the *last* command of the
+    // list: there is no boundary after it, and the shell would otherwise end normally and report
+    // the command's status rather than the signal's.
+    if let Some(signum) = job::fatal_signal_pending() {
+        return Err(ShellError::Exit(128 + signum));
     }
 
     Ok(last_status)
@@ -195,6 +236,7 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
     // evaluation — a compound's body setting it on the way out — and never left over from an
     // unrelated command that ran earlier.
     set_status_exempt(false);
+    set_err_reported(false);
 
     if !judged {
         let _exempt = suspend_errexit();
@@ -213,8 +255,17 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
     let inherited = status_exempt();
     // `! cmd` is exempt whichever way it comes out, so `set -e; ! true` does not end the shell
     // even though the pipeline reports 1.
-    if status != 0 && !pipeline.negated && !inherited && env.errexit() && !errexit_suspended() {
-        return Err(ShellError::Exit(status));
+    // The ERR trap shares this condition and not `set -e` itself: bash fires it for exactly the
+    // failures errexit is allowed to judge, whether or not errexit is on. See `run_err_trap`.
+    if status != 0 && !pipeline.negated && !inherited && !errexit_suspended() {
+        // Once per failure, not once per construct carrying its status out — see `ERR_REPORTED`.
+        if !err_reported() {
+            crate::env::builtins::run_err_trap(env)?;
+            set_err_reported(true);
+        }
+        if env.errexit() {
+            return Err(ShellError::Exit(status));
+        }
     }
     // Carried on rather than cleared, so it survives another layer of nesting: the outer `if` of
     // `if true; then if true; then false && :; fi; fi` inherits from the inner one, which
@@ -393,7 +444,14 @@ fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
         stopped |= was_stopped;
         stage_statuses.push(status);
     }
-    job::reclaim_terminal();
+    // Every stage exited on its own, and none was stopped: the terminal is as they left it on
+    // purpose. See `job::reclaim_terminal`.
+    job::reclaim_terminal(
+        !stopped
+            && stage_statuses
+                .iter()
+                .all(|status| job::left_it_deliberately(*status)),
+    );
     if stopped && let Some(pgid) = pgid {
         jobs::remember_stopped_pipeline(pgid, &pids, pipeline);
     }

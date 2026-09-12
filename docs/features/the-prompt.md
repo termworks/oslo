@@ -299,6 +299,26 @@ whole cycle, and oslo plays it back. `every` then only says how often to *redraw
 
 One spawn per 1200 ms rather than one per 150 ms, for the same glyph turning at the same speed.
 
+**And no spawn at all where nothing can be drawn.** `TERM=dumb` says the terminal cannot draw — it
+is why oslo already sends no colour, no OSC 133 marks and no terminal queries — so a frame there has
+no product, and asking for one would be a process spawned six times a second for a picture that
+never appears.
+
+This is not a hypothetical. It was found by a program driving oslo over a pty as a command channel:
+its test suite finished in 0.4 s under `bash` and did not finish in 180 s under oslo. It presented
+as a per-keystroke render — `strace` showed two `git status` per character typed — and it was
+nothing of the kind. oslo renders a prompt once per prompt, then and now; what was ticking was
+`every`, six times a second, into a terminal with nothing on it, and each tick ran a prompt tool
+that itself shelled out to `git`, `sudo` and `oslo scratch`.
+
+Measured on a 0×0 pty with `TERM=dumb`, one external prompt at `every = 150`, eight seconds:
+**53 spawns before, 2 after** — the first render and the `async` answer landing. On a real terminal
+the same test still spawns 53, because there the frames are the point.
+
+The clock is simply never armed, so nothing downstream has to know: the wait goes back to blocking
+on a key, and the prompt is rendered once per prompt — which is what a terminal that cannot draw
+wanted from the start.
+
 **Opt-in, because it is a promise about the tool**: that it understands the horizon and answers with
 a list rather than a picture. Anything else it prints is drawn as the prompt, exactly as before, so
 `frames` cannot break a tool that turns out not to speak it.

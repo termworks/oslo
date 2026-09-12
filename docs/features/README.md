@@ -36,6 +36,10 @@ just `cd`, and the word `direnv` falls through to `$PATH` so the real one still 
 `oslo-minimal` there is no `oslo.make`, no `oslo make` tool and no `make` builtin, so the word falls
 through to `$PATH` and GNU make answers — which is what it does on every other shell.
 
+**[Watch services](watch.md) are `oslo` only**, behind the independent `watch` cargo feature. A
+build without it has no `oslo watch`, `oslo.watch`, or `oslo.fs.watch`; `scratch`, `direnv`, and
+`make` gain their watch integrations only when both corresponding features are present.
+
 **[The `text` verbs](structured-pipelines.md#text--strings-where-several-of-them-are-rows) are
 `oslo` only**, behind the `text` cargo feature — `split`, `replace`, `trim` and the rest, answering
 a pipeline in rows rather than lines, with
@@ -127,6 +131,7 @@ scripts/demo/embed.sh                            # put the players back in the d
 | [Ghost suggestions](ghost-suggestions.md) | The grey continuation, and the five sources you order yourself |
 | [Prediction and repair](prediction-and-repair.md) | A model of what you run: what comes next, and what you meant |
 | [Completion and matching](completion-and-matching.md) | The dropdown, and matching as a transform rather than a prefix test |
+| [Globbing](globbing.md) | bash's patterns exactly, byte-safe names, and qualifiers at the prompt |
 | [Abbreviations](abbreviations.md) | `gco ` becomes `git checkout ` in the buffer, where you can see it |
 | [Macros](macros.md) | `oslo macros` — aliases, abbreviations, functions, scripts and variables, in a database with a manager |
 | [Arguments in comments](argc.md) | A script declares its options in comments and the shell parses them |
@@ -149,6 +154,7 @@ scripts/demo/embed.sh                            # put the players back in the d
 | [Directory environments](directory-environments.md) | `.env.lua` per project, with an allow gate and an undo record |
 | [nix, as data](nix.md) | Every `nix --json` answer as a Lua table, extended in Lua |
 | [Build recipes](build-recipes.md) | `.make.lua` — a justfile in the language the config is already in |
+| [Watch services](watch.md) | inotify-backed command reruns from the CLI, directory environments, and recipes |
 | [The filesystem navigator](nav.md) | `nav`: type to filter, arrows to move, Esc to take the shell there |
 | [rm, and the things that can bite](rm-and-safety.md) | Recoverable at the prompt, POSIX in a script |
 | [Scratches](scratch.md) | Named sessions that outlive the terminal they were opened in |

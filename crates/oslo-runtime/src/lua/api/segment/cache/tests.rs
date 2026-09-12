@@ -16,6 +16,7 @@ fn made(text: &str) -> Rendered {
 
 #[test]
 fn a_segment_is_reused_until_it_has_something_new_to_say() {
+    let _serial = crate::serial::generation();
     forget();
 
     // Nothing kept yet.

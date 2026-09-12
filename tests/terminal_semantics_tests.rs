@@ -59,7 +59,7 @@ fn blank_partial_interrupt_and_eof_close_without_command_start() {
 
 #[test]
 fn multiline_input_has_secondary_prompt_marks_in_one_interaction() {
-    let mut shell = PtyShell::spawn_with_extensions("xterm-256color", true);
+    let mut shell = PtyShell::configured("xterm-256color", true, "oslo.autopair.enabled = false\n");
     shell.wait_for_marks(2);
     shell.send(b"printf '%s\\n' \"left\n");
     let continued = shell.wait_for_marks(4);

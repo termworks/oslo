@@ -1,9 +1,11 @@
 //! Builds completion candidates for Tab.
 
+mod glob;
 pub mod lua;
 mod paths;
+pub mod qualified;
+pub(crate) use glob::glob_matches_anything;
 pub(crate) use paths::executable;
-pub(crate) use paths::glob_matches_anything;
 pub(crate) use paths::takes_only_directories;
 pub mod provider;
 mod segment;
@@ -177,6 +179,29 @@ impl OsloHelper {
             return lua::candidates(line, pos).unwrap_or((pos, Vec::new()));
         }
 
+        // **`pattern(qualifiers)` completes whole**, right after its `)`. Its words are split at the
+        // spaces inside the parentheses, so the ordinary word here would be `1M)`. See `qualified`.
+        if let Some(q) = qualified::at(line, pos).filter(|q| q.end == pos) {
+            let words = qualified::expand(&q).unwrap_or_default();
+            let mut out = Vec::new();
+            if words.len() > 1 {
+                out.push(CompletionCandidate {
+                    display: format!("all {} matches", words.len()),
+                    replacement: words.join(" "),
+                    description: None,
+                    kind: Some("glob".to_string()),
+                    path: None,
+                    detail: None,
+                });
+            }
+            out.extend(
+                words
+                    .into_iter()
+                    .map(|w| CompletionCandidate::new(w.clone(), w, None)),
+            );
+            return (q.start, out);
+        }
+
         // oslo's own shorthands first: both look like ordinary words and neither completes like
         // one, so the retarget has to happen before anything reads `stem`.
         // Where a chosen candidate is written, when something narrower than the word decides — a
@@ -328,6 +353,15 @@ impl OsloHelper {
         // `git checkout` first. Frecency still orders candidates that matched equally well.
         let by_name = crate::settings::current().completion.sort == crate::settings::Sort::Alpha;
         out.sort_by(|a, b| {
+            // **The row that takes every match of a glob stays on top.** It matches nothing the way
+            // a name does — `all 3 matches` is no prefix of `*.log` — so a fuzzy pass sank it to
+            // the bottom of the very menu it heads.
+            let whole = |c: &CompletionCandidate| c.kind.as_deref() == Some("glob");
+            match (whole(a), whole(b)) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {}
+            }
             if by_name {
                 return a.display.cmp(&b.display);
             }
@@ -363,7 +397,7 @@ impl OsloHelper {
         quote: Quote,
         out: &mut Vec<CompletionCandidate>,
     ) {
-        let env = self.env.lock().unwrap();
+        let env = self.env.lock().unwrap_or_else(|held| held.into_inner());
         for name in env.vars().keys() {
             if matches_prefix(name, prefix, self.case_sensitive()) {
                 let value = match braced {
@@ -395,7 +429,7 @@ impl OsloHelper {
         // its own kind rather than a `builtin`: they behave differently, and lumping them meant
         // the badge told you `builtin` about something you had defined yourself a minute earlier.
         let (path, shell_names) = {
-            let env = self.env.lock().unwrap();
+            let env = self.env.lock().unwrap_or_else(|held| held.into_inner());
             let mut names: Vec<(String, &str, Option<String>)> = Vec::new();
             for b in env.builtin_names() {
                 if matches_prefix(&b, stem, self.case_sensitive()) {
@@ -484,7 +518,7 @@ impl OsloHelper {
         let Some(primary) = word.prior_words.first() else {
             return boosts;
         };
-        let command = self.resolve_head(&unquote(primary));
+        let command = self.resolve_head(primary);
         let ctx = provider::Ctx {
             command,
             words: word.prior_words.iter().map(|w| unquote(w)).collect(),

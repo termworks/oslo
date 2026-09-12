@@ -20,27 +20,28 @@
 //! the stderr of a non-interactive shell would break `2>&1 | grep`, break every conformance suite,
 //! and break scripts written before oslo existed. So this is the *drawn face* of an error and the
 //! one-liner is its transport — the same split `render_display` and `render_transport` are two
-//! functions for — and [`enabled`] is what decides between them.
+//! functions for — and [`crate::diag::enabled`] is what decides between them.
 //!
 //! The first line of the report **is** the one-liner. So nothing is lost when it draws, nothing is
 //! printed twice, and a caller that has drawn one simply does not print its own.
 //!
 //! # The source is manufactured here, not carried from a parser
 //!
-//! A [`Snapshot`] joins a command's own words back into one line and remembers where each of them
+//! A [`crate::diag::Snapshot`] joins a command's own words back into one line and remembers where
+//! each of them
 //! landed. That line is a perfectly good thing to point into, and it costs nothing upstream: no
 //! parser learns to keep spans, no error type grows a field, no signature changes. It is what makes
 //! this affordable across three hundred sites rather than affordable across five.
 //!
 //! Where a *real* source exists — a script, an `init.lua`, the text of a `where` expression —
-//! [`draw_source`] points into that instead, and the report names the file.
+//! [`crate::diag::draw_source`] points into that instead, and the report names the file.
 //!
 //! # Nothing here may panic
 //!
 //! Release builds are `panic = "abort"`, so a panic on the diagnostic path kills the shell *while
 //! it is already reporting an error* — the worst possible moment and the hardest to reproduce. No
 //! `unwrap` on a span, no slicing at a byte offset that might not be a character boundary. See
-//! [`floor_boundary`].
+//! [`crate::diag::floor_boundary`].
 
 use std::io::IsTerminal;
 use std::ops::Range;

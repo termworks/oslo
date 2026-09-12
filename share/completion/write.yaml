@@ -1,0 +1,9 @@
+name: write
+description: "Send a message to another user's terminal"
+flags:
+  "-h, --help": "Display help and exit"
+  "-V, --version": "Display version and exit"
+completion:
+  positional:
+    - ["$users"]
+    - ["$terminals"]

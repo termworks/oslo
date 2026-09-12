@@ -1,5 +1,160 @@
 # Changelog
 
+## [0.7.0] - 2026-09-12
+
+### <!-- 0 -->⛰️  Features
+
+- Extglob patterns and the shopt option
+- Glob qualifiers at the prompt
+- One oslo.glob with qualifiers, and oslo.shopt
+- Qualifiers, regex and a glob builtin
+- Expand-glob, list-glob and a no-match colour
+- Tab expands a glob with the shell's engine
+- Nullglob, failglob, dotglob and friends
+- Open history on the workspace in a repo
+- Run the ERR condition
+- List the other machine over ssh
+- Hosts from the history you typed
+- Complete git refs without running git
+- Complete jobs, aliases and functions
+- Wire the sources into many more specs
+- Eleven more sources for the machine
+- Point shipped specs at the sources
+- Eight sources for what the machine knows
+- Watch recipe inputs
+- Declare watch commands
+- Select scratch launch
+- Host watch workers
+- Add watch tool
+- Add command runner
+- Add event source
+- Hostname completion for the ssh family
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Extglob groups keep quotes and $ inside
+- Failglob drops one command, not the script
+- Glob menu rows read from where the pattern starts
+- A name that is not UTF-8 keeps its bytes
+- Quoting decides per character everywhere
+- Sort matches the way bash does
+- A bash-exact globstar in one walker
+- An escaped command word skips its alias
+- Reread hosts when their files change
+- Route stored argc-eval scripts to oslo
+- Give ssh listings 10s and show why
+- A poisoned lock is not a second failure
+- A poisoned lock is not a second failure
+- Guard nesting on the stack, not a count
+- Spell control bytes in diagnostics
+- Let a function recurse past a hundred
+- Keep a quoted csv field as text
+- Hand a deep table back without recursing
+- Free a deep table without recursing
+- Bound bracket nesting instead of overflowing
+- Build and test without built-in crypto
+- Start without a worker thread if need be
+- Join a word across a line continuation
+- Key the allow gate on path bytes
+- Honour -t and end on a fatal signal
+- Run the EXIT trap when a signal ends the shell
+- Give a sourced file its own arguments
+- End the wait on a trapped signal
+- Let an ignored signal reach children
+- Keep what a command did to the terminal
+- An interactive shell ignores SIGQUIT
+- Trap - INT keeps the shell's own handler
+- A byte that is not UTF-8 no longer aborts
+- Settle waits only in the process that queued
+- Three aborts reachable from a format
+- Bound the read from an external tool
+- Trim $HISTFILE to its own lines
+- Refuse an oversized socket path early
+- Offer nothing after host:
+- BASH_SOURCE names the running file
+- $(<file) reads the file
+- An unreadable directory may still be empty
+- -i alone is not a prompt
+- Errexit carries the command status
+- Recognise this shell through a symlink
+- Set $_ to the last argument
+- Set $BASH so a script can re-exec
+- Answer the --argc-eval idiom
+- A stored macro is one thing, not two
+- Judge an assignment on its value
+- Repair rustdoc links
+- Reject coproc by name
+- Reject adjacent commands
+- Keep oversized fd word
+- Create autopair namespace
+- Detach persistent services
+- Scan new recursive trees
+- Isolate watch bootstrap
+- Satisfy strict lint
+- TERM=dumb turns the line editor off
+- No animation clock where nothing is drawn
+
+### <!-- 2 -->🚜 Refactor
+
+- Move the format tests to their own file
+
+### <!-- 3 -->📚 Documentation
+
+- Globbing, its options and its gaps
+- Condense future plans, keep the substance
+- Restore full plan details under the ranking
+- Rank and shorten future plans
+- Drop the fzf preview from future plans
+- Correct the nesting overflow report
+- Record what the queue does not fix
+- Fix the links rustdoc refuses
+- Record what a blocked shell still misses
+- Record what opt-level z costs
+- List every built-in tool
+- Remove missing example links
+- Explain watch services
+
+### <!-- 4 -->⚡ Performance
+
+- Size the stack for the release build
+- Bring tables across without recursing
+- Every crate at opt-level z
+
+### <!-- 6 -->🧪 Testing
+
+- The glob corpus and a benchmark
+- Count the glob_nomatch theme role
+- A temporary home on a short path
+- Guard suites CI cannot build
+- Guard against exponential backtracking
+- Walk every shipped spec for panics
+- Cover ERR and keep the width guard
+- Prove the quoting against a real shell
+- Pin the rm builtin against the program
+- Pin $_ and $BASH against bash
+- Catch completion keys naming no flag
+- Cover scratch daemon
+- Isolate animation clock
+- Disable autopair in multiline case
+- Drop removed examples
+- Use runtimepath grants
+- Isolate piped terminal mode
+- Use drawable terminal
+- Accept prompted Lua output
+- Record parse name collision
+- Refresh kept messages
+- Cover process policies
+- Cover event and path cases
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Future plans
+
+### Build
+
+- Rune v0.1.4
+- Keep the rune pin in one place
+
 ## [0.6.2] - 2026-09-02
 
 ### <!-- 1 -->🐛 Bug Fixes

@@ -21,6 +21,8 @@
 //! `cd` the shell that called it. That is the semantics, not a regression.
 
 use super::util::{int, ok, put, text};
+#[cfg(feature = "watch")]
+use oslo_base::value::LuaError;
 use oslo_base::value::{Table, Value};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -46,6 +48,18 @@ struct Invocation {
     args: Vec<String>,
     /// What the process should exit with. `None` until the runner says.
     status: Option<i32>,
+    #[cfg(feature = "watch")]
+    watch: Option<WatchRequest>,
+}
+
+#[cfg(feature = "watch")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRequest {
+    pub target: String,
+    pub args: Vec<String>,
+    pub patterns: Vec<String>,
+    pub initial: bool,
+    pub policy: oslo_shell::watch::Policy,
 }
 
 /// Record what the tool was asked, before the engine is handed the recipe file.
@@ -56,6 +70,8 @@ pub fn begin(file: &Path, root: &Path, args: &[String]) {
             root: root.to_path_buf(),
             args: args.to_vec(),
             status: None,
+            #[cfg(feature = "watch")]
+            watch: None,
         };
     });
 }
@@ -68,6 +84,11 @@ pub fn emitted() -> Option<String> {
 /// The status the runner asked to exit with, if it got far enough to ask.
 pub fn status() -> Option<i32> {
     INVOCATION.with(|slot| slot.borrow().status)
+}
+
+#[cfg(feature = "watch")]
+pub fn take_watch() -> Option<WatchRequest> {
+    INVOCATION.with(|slot| slot.borrow_mut().watch.take())
 }
 
 /// Build the `oslo.make` table: the parts that have to be Rust, and nothing else.
@@ -113,6 +134,50 @@ pub fn build() -> Value {
         ok(Value::Nil)
     });
 
+    #[cfg(feature = "watch")]
+    put(&mut make, "__watch", |_, args| {
+        let value = args
+            .first()
+            .ok_or_else(|| LuaError::new("oslo.make.__watch: expected a table".to_string()))?;
+        let Value::Table(request) = value else {
+            return Err(LuaError::new(
+                "oslo.make.__watch: expected a table".to_string(),
+            ));
+        };
+        let request = request.borrow();
+        let target = watch_text(&request.get_str("target"), "target")?;
+        let args = watch_strings(&request.get_str("args"), "args")?;
+        let patterns = watch_strings(&request.get_str("paths"), "paths")?;
+        let initial = match request.get_str("initial") {
+            Value::Bool(value) => value,
+            other => {
+                return Err(LuaError::new(format!(
+                    "oslo.make.__watch: initial must be a boolean, got {}",
+                    other.type_name()
+                )));
+            }
+        };
+        let policy = match watch_text(&request.get_str("policy"), "policy")?.as_str() {
+            "coalesce" => oslo_shell::watch::Policy::Coalesce,
+            "restart" => oslo_shell::watch::Policy::Restart,
+            other => {
+                return Err(LuaError::new(format!(
+                    "oslo.make.__watch: unknown policy {other:?}"
+                )));
+            }
+        };
+        INVOCATION.with(|slot| {
+            slot.borrow_mut().watch = Some(WatchRequest {
+                target,
+                args,
+                patterns,
+                initial,
+                policy,
+            });
+        });
+        ok(Value::Nil)
+    });
+
     // oslo.make.__relative(path) -> the path as it reads from the project root.
     //
     // Only for messages. A recipe that printed an absolute path for every file in the tree would
@@ -130,6 +195,33 @@ pub fn build() -> Value {
     });
 
     Value::table(make)
+}
+
+#[cfg(feature = "watch")]
+fn watch_text(value: &Value, field: &str) -> Result<String, LuaError> {
+    match value {
+        Value::Str(text) => Ok(text.to_string()),
+        other => Err(LuaError::new(format!(
+            "oslo.make.__watch: {field} must be a string, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+#[cfg(feature = "watch")]
+fn watch_strings(value: &Value, field: &str) -> Result<Vec<String>, LuaError> {
+    let Value::Table(items) = value else {
+        return Err(LuaError::new(format!(
+            "oslo.make.__watch: {field} must be a list of strings"
+        )));
+    };
+    items
+        .borrow()
+        .sequence()
+        .iter()
+        .enumerate()
+        .map(|(index, value)| watch_text(value, &format!("{field}[{}]", index + 1)))
+        .collect()
 }
 
 /// Run `make.lua`, which fills `oslo.make` in with everything a recipe file talks to.

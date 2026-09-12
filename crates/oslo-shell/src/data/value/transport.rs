@@ -13,7 +13,7 @@ use super::*;
 /// exactly the data a shell meets most — a filename with a tab in it, a `cmdline` spanning lines —
 /// and it corrupted every hand-over into a byte suffix, which is rendered the same way.
 ///
-/// See [`escape_cell`] for the form. Nothing *un*escapes on the way back in: `lines` and `parse`
+/// See `escape_cell` for the form. Nothing *un*escapes on the way back in: `lines` and `parse`
 /// read arbitrary bytes from programs that never heard of oslo, and a backslash in their output is
 /// a backslash.
 pub fn render_transport(value: &Val) -> String {
@@ -59,7 +59,7 @@ fn escape_cell(text: &str) -> String {
     out
 }
 
-/// The inverse of [`escape_cell`], for a reader that knows it is reading oslo's own transport.
+/// The inverse of `escape_cell`, for a reader that knows it is reading oslo's own transport.
 ///
 /// Deliberately **not** applied by `lines` or `parse`: those read whatever a program wrote, and a
 /// program that emits a literal backslash means one.

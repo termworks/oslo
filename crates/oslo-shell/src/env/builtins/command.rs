@@ -94,7 +94,7 @@ fn run(env: &mut Environment, operands: &[String], default_path: bool) -> Result
             crate::env::complain(
                 &crate::env::line("command", operands),
                 name,
-                &format!("{name}: command not found"),
+                &format!("{}: command not found", oslo_base::shown::shown(name)),
                 "no command of this name",
                 Some(
                     "`command` looks at builtins and $PATH only; an alias or function of this name is skipped on purpose",
@@ -127,7 +127,7 @@ fn describe(
                     crate::env::complain(
                         &crate::env::line("command", operands),
                         name,
-                        &format!("command: {name}: not found"),
+                        &format!("command: {}: not found", oslo_base::shown::shown(name)),
                         "no command of this name",
                         Some(
                             "looked at builtins and $PATH; `command` skips aliases and functions on purpose",

@@ -248,6 +248,20 @@ pub struct Completion {
     /// wrong for one of them. A shell filter naming `file` and `option` would have silently
     /// emptied every Lua dropdown.
     pub lua_sources: Option<Vec<String>>,
+    /// What Tab does with a word that globs.
+    pub glob: GlobTab,
+}
+
+/// `oslo.completion.glob`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlobTab {
+    /// A menu whose first row, `all 12 matches`, puts every match on the line.
+    #[default]
+    Menu,
+    /// Tab puts every match on the line at once, as zsh's `expand-or-complete` does.
+    Expand,
+    /// The pattern's matches one level at a time, each replacing the whole pattern.
+    Literal,
 }
 
 /// `oslo.completion.sort`.
@@ -276,6 +290,7 @@ impl Default for Completion {
             sort: Sort::default(),
             sh_sources: None,
             lua_sources: None,
+            glob: GlobTab::Menu,
         }
     }
 }
@@ -352,6 +367,9 @@ pub struct Finder {
     /// cannot lose something by a mistyped keystroke. Turn it off if you are clearing a lot at
     /// once and the question is in the way.
     pub confirm_delete: bool,
+    /// The scope it opens in. `None` is `"auto"`: the workspace inside a git worktree that has
+    /// history of its own, global everywhere else.
+    pub scope: Option<crate::finder::Scope>,
 }
 
 impl Default for Finder {
@@ -366,6 +384,7 @@ impl Default for Finder {
             // Far more than anyone has, so the list is "everything" in practice, and still a bound
             // rather than an unbounded read on a store that has been collecting for years.
             limit: 10_000,
+            scope: None,
         }
     }
 }

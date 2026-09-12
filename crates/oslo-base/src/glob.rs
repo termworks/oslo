@@ -16,6 +16,11 @@
 //! answering both is the only arrangement in which what completion offers and what the shell then
 //! expands cannot disagree.
 
+pub mod collate;
+pub mod ext;
+pub mod qualify;
+pub mod walk;
+
 /// One element of a compiled pattern.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Item {
@@ -27,6 +32,11 @@ pub enum Item {
     Star,
     /// `[abc]`, `[a-z]`, `[!abc]`.
     Class { negated: bool, members: Vec<Member> },
+    /// `@(a|b)` and the other `extglob` groups: each alternative compiled on its own.
+    Ext {
+        kind: ext::ExtKind,
+        alts: Vec<Vec<Item>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -61,21 +71,42 @@ fn in_named_class(name: &str, ch: char) -> bool {
 
 impl Item {
     pub fn matches_char(&self, ch: char) -> bool {
+        self.matches_char_with(ch, false)
+    }
+
+    /// `nocase` is `nocaseglob` and `nocasematch`: a letter also matches its other case, in a
+    /// bracket as well as out of one.
+    pub fn matches_char_with(&self, ch: char, nocase: bool) -> bool {
         match self {
-            Item::Ch(c) => *c == ch,
+            Item::Ch(c) => *c == ch || (nocase && same_letter(*c, ch)),
             Item::Any => true,
-            // `*` is handled by the outer loop; it never consumes a single character on its own.
-            Item::Star => false,
+            // `*` and a group are handled by the matcher; neither is one character on its own.
+            Item::Star | Item::Ext { .. } => false,
             Item::Class { negated, members } => {
-                let hit = members.iter().any(|m| match m {
-                    Member::Ch(c) => *c == ch,
-                    Member::Range(lo, hi) => *lo <= ch && ch <= *hi,
-                    Member::Named(name) => in_named_class(name, ch),
+                let hit = members.iter().any(|m| {
+                    member_has(m, ch)
+                        || (nocase
+                            && ch
+                                .to_lowercase()
+                                .chain(ch.to_uppercase())
+                                .any(|other| member_has(m, other)))
                 });
                 hit != *negated
             }
         }
     }
+}
+
+fn member_has(member: &Member, ch: char) -> bool {
+    match member {
+        Member::Ch(c) => *c == ch,
+        Member::Range(lo, hi) => *lo <= ch && ch <= *hi,
+        Member::Named(name) => in_named_class(name, ch),
+    }
+}
+
+fn same_letter(a: char, b: char) -> bool {
+    a.to_lowercase().eq(b.to_lowercase())
 }
 
 /// Compile a run of `(character, is-it-a-metacharacter)` pairs, reporting whether any character
@@ -84,12 +115,37 @@ impl Item {
 /// The flag is what lets pathname expansion skip the directory walk for a word that only *looks*
 /// like a pattern, and what makes an unterminated `[` fall back to literal text.
 pub fn compile_items(chars: &[(char, bool)]) -> (Vec<Item>, bool) {
+    compile_items_with(chars, walk::extglob())
+}
+
+/// [`compile_items`], with `extglob` decided by the caller rather than by `shopt`.
+pub fn compile_items_with(chars: &[(char, bool)], extglob: bool) -> (Vec<Item>, bool) {
     let mut items = Vec::new();
     let mut has_metacharacter = false;
     let mut i = 0;
 
     while i < chars.len() {
         let (ch, globs) = chars[i];
+        // **An unquoted backslash escapes the next character.** Source-level backslashes are
+        // quoting and never arrive here live; one that does came out of an unquoted expansion —
+        // `v='a\*'; case 'a*' in $v)` — and bash 5.2 reads it as an escape, not a character.
+        if globs
+            && ch == '\\'
+            && let Some(&(next, _)) = chars.get(i + 1)
+        {
+            items.push(Item::Ch(next));
+            i += 2;
+            continue;
+        }
+        if globs
+            && extglob
+            && let Some((group, next)) = ext::parse(chars, i)
+        {
+            items.push(group);
+            has_metacharacter = true;
+            i = next;
+            continue;
+        }
         if globs {
             match ch {
                 '*' => {
@@ -152,9 +208,25 @@ fn parse_class(chars: &[(char, bool)], start: usize) -> Option<(Item, usize)> {
         if ch == ']' && globs && !members.is_empty() {
             return Some((Item::Class { negated, members }, i + 1));
         }
+        // An escaped character is a member, whatever it is: `[a\-c]` is three characters, not a
+        // range, and `[\]]` holds a `]`.
+        if globs
+            && ch == '\\'
+            && let Some(&(next, _)) = chars.get(i + 1)
+        {
+            members.push(Member::Ch(next));
+            i += 2;
+            continue;
+        }
         // `[[:digit:]]` nests a named class inside the bracket, so its `]` is not the closer.
         if let Some((name, next)) = parse_named_class(chars, i) {
             members.push(Member::Named(name));
+            i = next;
+            continue;
+        }
+        // `[[.a.]]` and `[[=e=]]`: a collating symbol and an equivalence class.
+        if let Some((member, next)) = parse_symbol(chars, i) {
+            members.push(member);
             i = next;
             continue;
         }
@@ -189,12 +261,41 @@ fn parse_named_class(chars: &[(char, bool)], start: usize) -> Option<(String, us
     None
 }
 
+/// Parse `[.x.]` or `[=x=]` at `start`: the member, and the index just past its closing `]`.
+///
+/// Only single characters are named, and both forms name exactly that character. An equivalence
+/// class could in principle take in accented forms, but bash 5.3 in `en_US.UTF-8` answers
+/// `case émile in [[=e=]]mile)` with no, so `[=e=]` is `e` and nothing else.
+fn parse_symbol(chars: &[(char, bool)], start: usize) -> Option<(Member, usize)> {
+    if chars.get(start)?.0 != '[' {
+        return None;
+    }
+    let kind = chars.get(start + 1)?.0;
+    if kind != '.' && kind != '=' {
+        return None;
+    }
+    let &(named, _) = chars.get(start + 2)?;
+    if chars.get(start + 3)?.0 != kind || chars.get(start + 4)?.0 != ']' {
+        return None;
+    }
+    Some((Member::Ch(named), start + 5))
+}
+
 /// Whether the whole of `name` matches a compiled item list.
 ///
-/// Backtracking on the most recent `*` only: shell patterns have no alternation, so one
-/// resumption point is enough and the match stays linear in practice.
+/// Backtracking on the most recent `*` only: without an `extglob` group there is no alternation,
+/// so one resumption point is enough and the match stays linear in practice. A pattern with a
+/// group goes to [`ext`].
 pub fn matches_items(items: &[Item], name: &str) -> bool {
+    matches_items_with(items, name, false)
+}
+
+/// [`matches_items`], case-insensitively when `nocase`.
+pub fn matches_items_with(items: &[Item], name: &str, nocase: bool) -> bool {
     let name: Vec<char> = name.chars().collect();
+    if items.iter().any(|item| matches!(item, Item::Ext { .. })) {
+        return ext::matches(items, &name, nocase);
+    }
     let (mut i, mut j) = (0, 0);
     // The most recent `*` and how much of the name it had swallowed, for backtracking.
     let mut star: Option<(usize, usize)> = None;
@@ -205,7 +306,7 @@ pub fn matches_items(items: &[Item], name: &str) -> bool {
                 star = Some((i, j));
                 i += 1;
             }
-            Some(item) if item.matches_char(name[j]) => {
+            Some(item) if item.matches_char_with(name[j], nocase) => {
                 i += 1;
                 j += 1;
             }
@@ -259,7 +360,10 @@ fn shortcuts(items: &[Item]) -> (Option<String>, Option<usize>) {
             _ => None,
         })
         .collect::<Option<String>>();
-    let fixed = (!items.iter().any(|item| matches!(item, Item::Star))).then_some(items.len());
+    let fixed = (!items
+        .iter()
+        .any(|item| matches!(item, Item::Star | Item::Ext { .. })))
+    .then_some(items.len());
     (literal, fixed)
 }
 
@@ -285,6 +389,12 @@ impl ShellPattern {
         Self::of(compile_items(chars).0)
     }
 
+    /// [`Self::from_chars`] with `extglob` decided by the caller: `[[ == ]]` has it whatever
+    /// `shopt` says, as in bash.
+    pub fn from_chars_with(chars: &[(char, bool)], extglob: bool) -> Self {
+        Self::of(compile_items_with(chars, extglob).0)
+    }
+
     /// Build from compiled items, reading the shortcuts off them once.
     fn of(items: Vec<Item>) -> Self {
         let (literal, fixed_chars) = shortcuts(&items);
@@ -307,6 +417,14 @@ impl ShellPattern {
     /// Does the whole of `text` match?
     pub fn matches(&self, text: &str) -> bool {
         matches_items(&self.items, text)
+    }
+
+    /// [`Self::matches`], ignoring case when `nocase` — `nocasematch` for `case` and `[[ ]]`.
+    pub fn matches_case(&self, text: &str, nocase: bool) -> bool {
+        match nocase {
+            true => matches_items_with(&self.items, text, true),
+            false => self.matches(text),
+        }
     }
 }
 
@@ -410,5 +528,63 @@ mod tests {
         assert!(ShellPattern::from_unquoted("[!a]").matches("b"));
         assert!(!ShellPattern::from_unquoted("[!a]").matches("a"));
         assert!(ShellPattern::from_unquoted("[^a]").matches("b"));
+    }
+
+    /// bash 5.2: a backslash that reaches the matcher unquoted — out of an unquoted expansion —
+    /// escapes the next character, at the top level and inside a bracket.
+    #[test]
+    fn a_live_backslash_escapes_the_next_character() {
+        assert!(ShellPattern::from_unquoted("a\\*").matches("a*"));
+        assert!(!ShellPattern::from_unquoted("a\\*").matches("abc"));
+        assert!(ShellPattern::from_unquoted("star\\*n*").matches("star*name"));
+        assert!(ShellPattern::from_unquoted("[a\\-c]").matches("-"));
+        assert!(
+            !ShellPattern::from_unquoted("[a\\-c]").matches("b"),
+            "not a range"
+        );
+        // A quoted backslash is only a backslash.
+        let quoted = ShellPattern::from_chars(&[('\\', false), ('*', true)]);
+        assert!(quoted.matches("\\x"));
+    }
+
+    #[test]
+    fn collating_symbols_and_equivalence_classes() {
+        assert!(ShellPattern::from_unquoted("[[.a.]]*").matches("abc"));
+        assert!(!ShellPattern::from_unquoted("[[.a.]]*").matches("bcd"));
+        // bash 5.3 in en_US.UTF-8: `[[=e=]]` is `e`, and not `é`.
+        let e = ShellPattern::from_unquoted("[[=e=]]mile");
+        assert!(e.matches("emile"));
+        assert!(!e.matches("émile"));
+        assert!(!e.matches("amile"));
+    }
+
+    /// **A pattern a user typed must not be able to hang the shell.**
+    ///
+    /// [`super::matches_items`] resumes from the most recent `*` and no other, which is what keeps
+    /// the match linear. A matcher that kept *every* star as a resumption point is the classic
+    /// catastrophic case: `a*a*…*b` against a run of `a`s that never reaches the `b` explores one
+    /// path per way of dividing the run, and that is exponential in the number of stars.
+    ///
+    /// Sixty-four characters and ten stars, so a matcher that regressed to full backtracking would
+    /// not finish within the life of the test run — while the real one answers in microseconds. The
+    /// bound is wall clock and enormously slack on purpose: the distance being tested is between
+    /// "instant" and "never", not between two timings.
+    ///
+    /// This reaches every shell pattern there is — `case`, `[[ == ]]`, `${x#…}` and filename
+    /// globbing all compile through here — so the input is one a script can be handed.
+    #[test]
+    fn a_pathological_pattern_does_not_take_exponential_time() {
+        let pattern = ShellPattern::from_unquoted("a*a*a*a*a*a*a*a*a*a*b");
+        let subject = "a".repeat(64);
+
+        let started = std::time::Instant::now();
+        assert!(!pattern.matches(&subject), "there is no `b` to match");
+        let took = started.elapsed();
+
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "the match took {took:?}: the star backtracking is no longer bounded to one \
+             resumption point"
+        );
     }
 }

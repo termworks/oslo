@@ -18,6 +18,7 @@ mod caller;
 mod chain;
 mod colon;
 mod command;
+mod compgen;
 mod conditionals;
 mod control;
 mod copy;
@@ -29,6 +30,7 @@ mod edit;
 mod emit;
 mod exec;
 mod getopts;
+mod glob;
 mod hash;
 mod io;
 mod jobs;
@@ -86,9 +88,10 @@ pub use make::builtin_make;
 pub use mapfile::builtin_mapfile;
 pub use messages::builtin_messages;
 pub use process::{
-    builtin_kill, builtin_trap, builtin_umask, run_debug_trap, run_exit_trap, run_pending_traps,
+    builtin_kill, builtin_trap, builtin_umask, pending_signal, run_debug_trap, run_err_trap,
+    run_exit_trap, run_pending_traps,
 };
-pub use shopt::builtin_shopt;
+pub use shopt::{builtin_shopt, option_state, set_option};
 pub use status::builtin_status;
 pub use suspend::builtin_suspend;
 pub use times::builtin_times;
@@ -243,6 +246,10 @@ pub fn register_default_builtins(env: &mut Environment) {
     env.register_custom_builtin("rm", remove::builtin_rm);
 
     env.register_custom_builtin("shopt", builtin_shopt);
+    // `compgen` — `-G`, `-W`, `-f` and `-d`, for scripts and completion functions that call it.
+    env.register_custom_builtin("compgen", compgen::builtin_compgen);
+    // `glob` — pathname expansion as a command, with the prompt's qualifiers and regex.
+    env.register_custom_builtin("glob", glob::builtin_glob);
     env.register_custom_builtin("caller", builtin_caller);
     // `chain` — what each link of the last `a && b` did. See its module docs: the shell already
     // computed this and dropped it, and `$PIPESTATUS` only answers one level down.
@@ -287,6 +294,8 @@ mod tests {
             "declare",
             "typeset",
             "shopt",
+            "compgen",
+            "glob",
             "mapfile",
             "readarray",
             "caller",

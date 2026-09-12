@@ -1,0 +1,7 @@
+name: wait
+description: "Wait for a job or process to finish"
+flags:
+  "-n": "Wait for the next job to finish, whichever it is"
+  "-f": "Wait for the job to end rather than merely to stop"
+completion:
+  positionalany: ["$jobs", "$pids"]

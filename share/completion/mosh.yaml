@@ -17,6 +17,7 @@ flags:
   "--experimental-remote-ip?": "Select the method for discovering the remote IP address to use for mosh"
   "--version": "Version and copyright information"
 completion:
+  positionalany: ["$hosts"]
   flag:
     predict: ["adaptive\tLocal echo for slower links [default]", "always\tUse local echo even on fast links", "never\tNever use local echo", "experimental\tAggressively echo even when incorrect"]
     family: ["inet\tUse IPv4 only", "ine6\tUse IPv6 only", "auto\tAutodetect network type for single-family hosts only", "all\tTry all network types", "prefer-inet4\tUse all network types, but try IPv4 first [default]", "prefer-inet6\tUse all network types, but try IPv6 first"]

@@ -25,6 +25,8 @@ vista = ["oslo-base/vista", "oslo-runtime/vista", "oslo-ui/vista"]
 
 scratch = ["oslo-shell/scratch", "oslo-runtime/scratch"]
 
+watch = ["oslo-shell/watch", "oslo-runtime/watch"]
+
 direnv = ["oslo-shell/direnv", "oslo-runtime/direnv"]
 
 # `make` — `.make.lua` recipes, the `oslo make` tool and the `make` builtin.
@@ -58,7 +60,7 @@ argc = { path = "vendor/argc", default-features = false, features = [
     "eval", "eval-bash", "compgen",
 ], optional = true }
 nix = { version = "0.29", features = [
-    "process", "signal", "term", "fs", "user", "resource", "hostname", "poll", "inotify",
+    "process", "signal", "term", "fs", "user", "resource", "hostname", "poll",
 ] }
 regex = { version = "1", default-features = false, features = [
     "std", "unicode-case", "unicode-perl",
@@ -74,9 +76,9 @@ oslo-luavm = { path = "crates/oslo-luavm" }
 oslo-runtime = { path = "crates/oslo-runtime" }
 oslo-shell = { path = "crates/oslo-shell" }
 oslo-ui = { path = "crates/oslo-ui" }
-# The parser, for `oslo fmt` — the formatter is rune's, the command is oslo's. One pin for the
-# whole tree; `oslo-shell` and `oslo-ui` name the same tag.
-rune = { git = "https://github.com/onix-os/rune", tag = "v0.1.3" }
+# The parser, for `oslo fmt` — the formatter is rune's, the command is oslo's. The pin itself is in
+# `[workspace.dependencies]`, so a bump is one edit rather than three that can drift.
+rune.workspace = true
 sha2 = "0.10"
 tempfile = "3.17"
 
@@ -93,7 +95,7 @@ oslo-ui = { path = "crates/oslo-ui" }
 # only one; `scripts/project-meta.sh` reads it the same way, falling back here when `[package]`
 # inherits rather than states it.
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
@@ -109,9 +111,27 @@ members = [
   "vendor/argc",
 ]
 
+# **One pin, in one place, because three copies of it are not one pin.**
+#
+# The tag used to be written out in this file, in `oslo-shell` and in `oslo-ui`, kept in step by
+# hand. Changing one and not the others does not fail: cargo resolves two `rune` packages and builds
+# both, so half the tree parses with one version and half with another, and nothing says so. That is
+# not a hypothetical — it happened while checking a branch of rune against this tree, and the only
+# symptom was a fix that appeared to do nothing.
+[workspace.dependencies]
+rune = { git = "https://github.com/onix-os/rune", tag = "v0.1.4" }
+
+[patch."https://github.com/onix-os/rune"]
+rune = { path = "../../onix/rune" }
+
 [[bench]]
 name = "fuzzy"
 path = "bench/fuzzy.rs"
+harness = false
+
+[[bench]]
+name = "glob"
+path = "bench/glob.rs"
 harness = false
 
 [[bench]]
@@ -143,33 +163,29 @@ panic = "abort"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-opt-level = "s"
+# **Every crate at "z".** Both profiles built from the same source, shipped size (after `.make.lua`
+# strips the unwind tables — measure before that and you are weighing 850 KB nobody ships):
+#
+#   shipped binary            5,666,432 at "s"   5,207,680 at "z"    -458,752  (-8.1%)
+#   startup                   ~700 µs            ~700 µs             nothing
+#   200,000-iteration loop    1.507 s            1.561 s             +3.6%
+#   paint, per keystroke      5.42 µs            5.96 µs             +0.54 µs
+#   hint, per keystroke       4.20 µs            4.83 µs             +0.63 µs
+#
+# **Startup is the one that had to be free**, and is: oslo is somebody's `bash`, so every
+# `#!/usr/bin/env bash` script on the machine pays it. Compared by minima over repeated rounds, the
+# sign flips between them — it is exec and page faults, not code speed.
+#
+# The keystroke cost is real and cannot be felt: +1.2 µs against the ~100 ms between two keys.
+#
+# The 3.6% is the one thing given up, and not where it looks. `oslo-shell` was already at "z" (see
+# its note below), so it comes from this line and the dependencies under fat LTO. It is also next to
+# nothing in context: bash runs that same loop in 293 ms against oslo's 1.5 s, so the interpreter is
+# 5x behind for reasons no optimisation level reaches, and 3.6% of it is not the lever worth pulling.
+#
+# No per-package overrides any more, because there is nothing left to override: this line covers the
+# workspace members and the one below covers their dependencies.
+opt-level = "z"
 
 [profile.release.package."*"]
-opt-level = "s"
-
-# Size, not speed, and measured rather than assumed: at `opt-level = 3` painting a 57-character
-# line took 2.41 µs per keystroke and at "s" it takes 3.02 µs. A keystroke is ~100 ms apart, so the
-# difference is 0.0006% of the gap between two keys — and it is 250 KB of binary.
-[profile.release.package.oslo-ui]
-opt-level = "s"
-
-[profile.release.package.argc]
-opt-level = "z"
-
-[profile.release.package.oslo-runtime]
-opt-level = "z"
-
-[profile.release.package.oslo-base]
-opt-level = "z"
-
-
-# **172 KB, and the crate that can most afford it.** `oslo-shell` is the parser, the expander and
-# the executor: its work happens once per *command*, where the shell is already about to fork, and
-# not once per keystroke like `oslo-ui`. Measured on the static musl build, everything else
-# unchanged: 6,579,392 bytes at "s" against 6,403,264 at "z".
-#
-# Taking the whole tree to "z" saves 307,200 instead, and the extra 131 KB comes almost entirely
-# out of `oslo-ui` — which is the one crate the note above says to leave alone.
-[profile.release.package.oslo-shell]
 opt-level = "z"

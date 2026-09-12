@@ -321,3 +321,105 @@ fn an_unknown_option_goes_to_the_real_rm() {
         "and there has to be one to hand it to"
     );
 }
+
+/// **A name on `$PATH` that is really this shell must not be handed the work.**
+///
+/// The test used to be against the literal `/usr/bin/oslo`, so it matched exactly one install and
+/// missed the shape oslo already ships: a symlink named for another program. `resolve_program`
+/// answers the link rather than its target, so the old check never fired and `rm` was handed to
+/// oslo — which then reported a *shell* usage error for an `rm` flag.
+#[test]
+fn this_shell_is_recognised_through_a_symlink() {
+    let exe = std::env::current_exe().expect("a test binary has a path");
+    assert!(
+        super::is_this_shell(&exe),
+        "the running binary is this shell"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("rm");
+    std::os::unix::fs::symlink(&exe, &link).unwrap();
+    assert!(
+        super::is_this_shell(&link),
+        "a link named `rm` pointing here is still here"
+    );
+}
+
+/// A real program is not this shell, and neither is a path that resolves to nothing.
+#[test]
+fn another_program_is_not_this_shell() {
+    for other in ["/usr/bin/rm", "/bin/sh", "/nonexistent/rm"] {
+        let path = std::path::Path::new(other);
+        assert!(!super::is_this_shell(path), "{other} was taken for oslo");
+    }
+}
+
+/// **`-i` alone is not a prompt, and this is the worst bug in the file if it is treated as one.**
+///
+/// `sh -i -c '…'` is an ordinary scripted form — the `bash -ic` trick that loads interactive rc
+/// files for nvm and direnv, `SHELL='bash -i'` in a Makefile, ssh and CI shims. With the flag alone
+/// as the test, a bare `rm dir` in one of those became `rm -rf dir` and answered **0**: POSIX and
+/// bash both refuse a directory without `-r` and exit 1, so the caller could not tell a tree had
+/// been deleted — and `to_tmp` is off by default, so there was no trash to recover it from.
+#[test]
+fn a_command_string_is_not_a_prompt() {
+    let dir = tree();
+    let mut env = shell(true);
+    env.set_option(ShellOption::CommandString, true);
+    assert_eq!(
+        run(&mut env, &[&path(&dir, "dir")]),
+        1,
+        "rm dir must refuse"
+    );
+    assert!(!gone(&dir, "dir"), "the tree must survive");
+}
+
+/// And neither is a program read from standard input with `-s`.
+#[test]
+fn a_script_on_stdin_is_not_a_prompt() {
+    let dir = tree();
+    let mut env = shell(true);
+    env.set_option(ShellOption::StdinInput, true);
+    assert_eq!(run(&mut env, &[&path(&dir, "dir")]), 1);
+    assert!(!gone(&dir, "dir"));
+}
+
+/// **Unreadable does not mean non-empty.** `rm -rf` opened every directory before unlinking it, so
+/// a mode-000 or mode-111 directory failed even when it was empty and its parent was writable —
+/// GNU rm falls back to `rmdir` there. Cleanup lines left whole trees on disk and returned 1, which
+/// under `set -e` ends the script; it was found because this project's own sandbox cleanup leaked.
+#[test]
+fn an_unreadable_but_empty_directory_still_goes() {
+    if nix::unistd::geteuid().is_root() {
+        return; // root is not refused the open, so there is nothing to fall back from.
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shut = dir.path().join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o111)).unwrap();
+
+    let mut env = shell(false);
+    let name = shut.display().to_string();
+    assert_eq!(run(&mut env, &["-rf", &name]), 0, "an empty one unlinks");
+    assert!(!shut.exists());
+}
+
+/// And one with something in it still fails, with the error that says why — as GNU rm does.
+#[test]
+fn an_unreadable_directory_with_contents_still_fails() {
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shut = dir.path().join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::write(shut.join("f"), "x").unwrap();
+    std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+
+    let mut env = shell(false);
+    let name = shut.display().to_string();
+    assert_eq!(run(&mut env, &["-rf", &name]), 1);
+    assert!(shut.exists(), "nothing was silently thrown away");
+    // So the temporary directory can be cleaned up when the test ends.
+    let _ = std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o755));
+}

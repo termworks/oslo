@@ -4,3 +4,8 @@ description: "Terminate or signal a process"
 flags:
   "-s=": "A symbolic signal name specifying the signal to be sent"
   "-l?": "If no operand is given, list the signal names; otherwise, write the signal name corresponding to exit_status"
+completion:
+  # A pid, and the signal names `-s` takes. See `oslo_ui::spec::sources::procs`.
+  flag:
+    s: ["$signals"]
+  positionalany: ["$pids"]

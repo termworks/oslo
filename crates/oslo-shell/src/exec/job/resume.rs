@@ -59,7 +59,7 @@ pub fn foreground_job(id: usize) -> Option<i32> {
     control::give_terminal_to(pgid);
     let _ = killpg(pgid, Signal::SIGCONT);
     let status = wait_for_foreground(id, pgid, &pids, &command);
-    control::reclaim_terminal();
+    control::reclaim_terminal(control::left_it_deliberately(status));
     Some(status)
 }
 
