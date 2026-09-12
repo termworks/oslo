@@ -225,9 +225,10 @@ impl Dirs {
     }
 }
 
-/// A directory entry's name as the rest of the shell carries it.
+/// A directory entry's name as the rest of the shell carries it: losslessly, see
+/// [`crate::lossless`], so `rm b*` gets `bad\xffname` and not a name that does not exist.
 fn name_of(name: &std::ffi::OsStr) -> String {
-    name.to_string_lossy().into_owned()
+    crate::lossless::encode(name)
 }
 
 /// Whether an entry is a directory once a link is followed.

@@ -83,7 +83,11 @@ pub(crate) fn run_external(
     // Both conversions take the raw bytes: a resolved path is an `OsStr`, not necessarily UTF-8
     // (a PATH entry can be any byte string), and `to_str().unwrap()` aborted the shell on one.
     let c_path = exec_cstring(path.as_os_str().as_bytes());
-    let c_args: Vec<CString> = words.iter().map(|w| exec_cstring(w.as_bytes())).collect();
+    // The bytes a glob read, not their UTF-8 stand-ins: see `oslo_base::lossless`.
+    let c_args: Vec<CString> = words
+        .iter()
+        .map(|w| exec_cstring(&oslo_base::lossless::decode(w)))
+        .collect();
 
     unsafe {
         match fork() {

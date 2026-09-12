@@ -101,7 +101,9 @@ pub(super) fn is_binary_op(op: &str) -> bool {
 }
 
 pub(super) fn eval_unary(env: &Environment, op: &str, target: &str) -> TestResult<bool> {
-    let path = std::path::Path::new(target);
+    // The bytes the name really has, not its UTF-8 stand-in: `[ -e "$f" ]` over a glob match.
+    let real = oslo_base::lossless::to_os(target);
+    let path = std::path::Path::new(&real);
 
     // Resolved lazily: the string predicates must not stat anything, or `[ -n "$x" ]` would pay a
     // syscall per loop iteration.
@@ -231,8 +233,12 @@ fn to_int(s: &str) -> TestResult<i64> {
 
 /// True when `a` exists and is newer than `b`, or when `b` does not exist.
 fn newer_than(a: &str, b: &str) -> bool {
-    let ma = fs::metadata(a).ok().and_then(|m| m.modified().ok());
-    let mb = fs::metadata(b).ok().and_then(|m| m.modified().ok());
+    let ma = fs::metadata(oslo_base::lossless::to_os(a))
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let mb = fs::metadata(oslo_base::lossless::to_os(b))
+        .ok()
+        .and_then(|m| m.modified().ok());
     match (ma, mb) {
         (Some(a), Some(b)) => a > b,
         (Some(_), None) => true,
@@ -242,7 +248,10 @@ fn newer_than(a: &str, b: &str) -> bool {
 
 /// True when both paths refer to the same device and inode.
 fn same_file(a: &str, b: &str) -> bool {
-    match (fs::metadata(a), fs::metadata(b)) {
+    match (
+        fs::metadata(oslo_base::lossless::to_os(a)),
+        fs::metadata(oslo_base::lossless::to_os(b)),
+    ) {
         (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
         _ => false,
     }

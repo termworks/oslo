@@ -37,6 +37,8 @@ use std::os::fd::BorrowedFd;
 /// Returns the status the calling builtin should return.
 pub(crate) fn write_stdout(name: &str, bytes: &[u8]) -> i32 {
     let _ = std::io::stdout().flush();
+    // A filename that is not UTF-8 is written with the bytes it has; see `oslo_base::lossless`.
+    let bytes = oslo_base::lossless::restore_bytes(bytes);
 
     // Safety: descriptor 1 is open for the lifetime of the shell, and this borrows it without
     // taking ownership, so nothing here can close it.

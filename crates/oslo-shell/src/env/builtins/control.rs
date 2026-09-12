@@ -302,7 +302,7 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
 
     let file_path = &args[1];
-    let content = match fs::read_to_string(file_path) {
+    let content = match fs::read_to_string(oslo_base::lossless::to_os(file_path)) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(

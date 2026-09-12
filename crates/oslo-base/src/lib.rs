@@ -51,6 +51,7 @@ pub mod feature;
 /// Shell pattern matching — `*`, `?`, `[…]` — shared by expansion, `case`, and the prompt.
 pub mod glob;
 pub mod hooks;
+pub mod lossless;
 pub mod macros;
 /// What this session said, kept after it has scrolled off.
 pub mod messages;

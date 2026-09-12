@@ -114,7 +114,10 @@ pub const NOT_EXECUTABLE: i32 = 126;
 /// which is what lets `command foo` keep reporting itself as `foo`.
 pub fn run_external(program: &Path, argv: &[String], display_name: &str) -> Result<i32> {
     let c_path = exec_cstring(std::os::unix::ffi::OsStrExt::as_bytes(program.as_os_str()));
-    let c_args: Vec<CString> = argv.iter().map(|a| exec_cstring(a.as_bytes())).collect();
+    let c_args: Vec<CString> = argv
+        .iter()
+        .map(|a| exec_cstring(&oslo_base::lossless::decode(a)))
+        .collect();
 
     // SAFETY: the child touches only async-signal-safe calls (`sigaction`, `sigprocmask`,
     // `execv`, `write` via `eprintln`, `_exit`) before it replaces itself. oslo is single

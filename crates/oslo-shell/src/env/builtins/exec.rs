@@ -143,8 +143,12 @@ pub fn builtin_exec(_env: &mut Environment, args: &[String]) -> Result<i32> {
     }
 
     let c_path = exec_cstring(std::os::unix::ffi::OsStrExt::as_bytes(program.as_os_str()));
-    let mut c_args = vec![exec_cstring(argv0.as_bytes())];
-    c_args.extend(inv.operands[1..].iter().map(|a| exec_cstring(a.as_bytes())));
+    let mut c_args = vec![exec_cstring(&oslo_base::lossless::decode(&argv0))];
+    c_args.extend(
+        inv.operands[1..]
+            .iter()
+            .map(|a| exec_cstring(&oslo_base::lossless::decode(a))),
+    );
 
     // **The last chance anything has to be written down.** `exec` is an ordinary way out of an
     // interactive shell — `exec $SHELL` after editing a config is how most people restart one — but

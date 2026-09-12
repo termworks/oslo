@@ -91,13 +91,14 @@ impl RedirectGuard {
 
             match redir.kind {
                 RedirectKind::Input => {
-                    let file = File::open(&target_str).map_err(|e| {
-                        ShellError::ExecutionError(format!(
-                            "{}: {}",
-                            shown(&target_str),
-                            reason(&e)
-                        ))
-                    })?;
+                    let file =
+                        File::open(oslo_base::lossless::to_os(&target_str)).map_err(|e| {
+                            ShellError::ExecutionError(format!(
+                                "{}: {}",
+                                shown(&target_str),
+                                reason(&e)
+                            ))
+                        })?;
                     install(file, target_fd)?;
                 }
                 // `>` and `>|` differ in exactly one situation, and only when `set -C` is on.
@@ -113,7 +114,7 @@ impl RedirectGuard {
                     let file = OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(&target_str)
+                        .open(oslo_base::lossless::to_os(&target_str))
                         .map_err(|e| {
                             ShellError::ExecutionError(format!(
                                 "{}: {}",
@@ -129,7 +130,7 @@ impl RedirectGuard {
                         .write(true)
                         .create(true)
                         .truncate(false)
-                        .open(&target_str)
+                        .open(oslo_base::lossless::to_os(&target_str))
                         .map_err(|e| {
                             ShellError::ExecutionError(format!(
                                 "{}: {}",
@@ -264,21 +265,23 @@ fn name_of(target: &oslo_base::ast::Word, expanded: &[String]) -> String {
 ///   overwrite, and POSIX scopes the restriction to regular files for that reason.
 /// * `>|`, which is the escape hatch — see the caller.
 fn open_for_output(path: &str, refuse_existing: bool) -> Result<File> {
+    // Opened by its real bytes, reported by its text; see `oslo_base::lossless`.
+    let real = oslo_base::lossless::to_os(path);
     if !refuse_existing {
         return OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(path)
+            .open(&real)
             .map_err(|e| ShellError::ExecutionError(format!("{}: {}", shown(path), reason(&e))));
     }
 
-    match OpenOptions::new().write(true).create_new(true).open(path) {
+    match OpenOptions::new().write(true).create_new(true).open(&real) {
         Ok(file) => Ok(file),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // `symlink_metadata` is wrong here: `> link-to-dev-null` follows the link in every
             // shell, so the question is what the *target* is.
-            let regular = std::fs::metadata(path).is_ok_and(|m| m.is_file());
+            let regular = std::fs::metadata(&real).is_ok_and(|m| m.is_file());
             if regular {
                 return Err(ShellError::ExecutionError(format!(
                     "{}: cannot overwrite existing file",
@@ -287,7 +290,7 @@ fn open_for_output(path: &str, refuse_existing: bool) -> Result<File> {
             }
             OpenOptions::new()
                 .write(true)
-                .open(path)
+                .open(&real)
                 .map_err(|e| ShellError::ExecutionError(format!("{}: {}", shown(path), reason(&e))))
         }
         Err(e) => Err(ShellError::ExecutionError(format!(

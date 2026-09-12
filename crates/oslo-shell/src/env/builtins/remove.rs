@@ -80,7 +80,9 @@ pub fn builtin_rm(env: &mut Environment, args: &[String]) -> Result<i32> {
     let mode = mode_for(env, &options);
     let mut status = 0;
     for operand in operands {
-        match remove_operand(Path::new(operand), operand, &options, &mode, &origin) {
+        // The name's real bytes: `rm b*` over `bad\xffname` must reach that file.
+        let real = oslo_base::lossless::to_os(operand);
+        match remove_operand(Path::new(&real), operand, &options, &mode, &origin) {
             Removal::Gone => {}
             Removal::Failed => status = 1,
             // A Ctrl-C part-way through stops the whole line, not just the operand it landed in:
