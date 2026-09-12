@@ -196,7 +196,9 @@ pub(super) fn eval_binary(mode: Mode, left: &str, op: &str, right: &str) -> Test
 fn pattern_or_literal(mode: Mode, left: &str, right: &str) -> bool {
     match mode {
         Mode::Posix => left == right,
-        Mode::Extended => marked_pattern(right).matches(left),
+        Mode::Extended => {
+            marked_pattern(right).matches_case(left, oslo_base::glob::walk::nocasematch())
+        }
     }
 }
 

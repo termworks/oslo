@@ -8,6 +8,7 @@ const GLOBSTAR: Options = Options {
     globstar: true,
     dotglob: false,
     collate: false,
+    nocase: false,
 };
 
 /// The audit's tree: nested dirs, a hidden dir, an empty dir, and links to a dir, a file and nowhere.
@@ -185,6 +186,7 @@ fn dotglob_opens_hidden_entries_at_every_depth() {
         globstar: true,
         dotglob: true,
         collate: false,
+        nocase: false,
     };
     assert_eq!(
         glob(dir.path(), "**/*.txt", both),

@@ -22,7 +22,7 @@
 //! `a/**/*.rs` reads each directory to find the ones below it and then again to match `*.rs`. The
 //! `Dirs` cache makes that one `readdir` per directory per expansion.
 
-use super::{Item, compile_items, matches_items};
+use super::{Item, compile_items, matches_items_with};
 use std::collections::HashMap;
 use std::fs;
 use std::rc::Rc;
@@ -37,6 +37,8 @@ pub struct Options {
     pub dotglob: bool,
     /// Sort matches by the locale's rules rather than by bytes; see [`super::collate`].
     pub collate: bool,
+    /// Match names case-insensitively: `nocaseglob`.
+    pub nocase: bool,
 }
 
 /// The shell's own settings, switched by `shopt`.
@@ -45,6 +47,10 @@ pub struct Options {
 /// exactly what bash does. Callers that are not the shell — Lua, Tab — pass their own [`Options`].
 static GLOBSTAR: AtomicBool = AtomicBool::new(false);
 static DOTGLOB: AtomicBool = AtomicBool::new(false);
+static NOCASEGLOB: AtomicBool = AtomicBool::new(false);
+static NULLGLOB: AtomicBool = AtomicBool::new(false);
+static FAILGLOB: AtomicBool = AtomicBool::new(false);
+static NOCASEMATCH: AtomicBool = AtomicBool::new(false);
 
 /// `shopt -s globstar` / `shopt -u globstar`.
 pub fn set_globstar(on: bool) {
@@ -56,12 +62,45 @@ pub fn set_dotglob(on: bool) {
     DOTGLOB.store(on, Ordering::Relaxed);
 }
 
+/// `shopt -s nocaseglob` / `shopt -u nocaseglob`.
+pub fn set_nocaseglob(on: bool) {
+    NOCASEGLOB.store(on, Ordering::Relaxed);
+}
+
+/// `shopt -s nullglob`: a pattern that matches nothing expands to nothing.
+pub fn set_nullglob(on: bool) {
+    NULLGLOB.store(on, Ordering::Relaxed);
+}
+
+/// `shopt -s failglob`: a pattern that matches nothing is an error, and the command does not run.
+pub fn set_failglob(on: bool) {
+    FAILGLOB.store(on, Ordering::Relaxed);
+}
+
+/// `shopt -s nocasematch`: `case` and `[[ ]]` match case-insensitively.
+pub fn set_nocasematch(on: bool) {
+    NOCASEMATCH.store(on, Ordering::Relaxed);
+}
+
+pub fn nullglob() -> bool {
+    NULLGLOB.load(Ordering::Relaxed)
+}
+
+pub fn failglob() -> bool {
+    FAILGLOB.load(Ordering::Relaxed)
+}
+
+pub fn nocasematch() -> bool {
+    NOCASEMATCH.load(Ordering::Relaxed)
+}
+
 /// The options the shell is running with right now.
 pub fn shell_options() -> Options {
     Options {
         globstar: GLOBSTAR.load(Ordering::Relaxed),
         dotglob: DOTGLOB.load(Ordering::Relaxed),
         collate: super::collate::locale_collates(),
+        nocase: NOCASEGLOB.load(Ordering::Relaxed),
     }
 }
 
@@ -138,7 +177,7 @@ fn name_matches(items: &[Item], name: &str, options: &Options) -> bool {
     if name.starts_with('.') && !options.dotglob && items.first() != Some(&Item::Ch('.')) {
         return false;
     }
-    matches_items(items, name)
+    matches_items_with(items, name, options.nocase)
 }
 
 /// What `readdir` said an entry is, before anything follows a link.

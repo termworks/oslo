@@ -8,7 +8,13 @@ use crate::expand::word::{Run, field_text};
 use oslo_base::glob::walk;
 
 pub use oslo_base::glob::ShellPattern;
-pub use oslo_base::glob::walk::{set_dotglob, set_globstar};
+pub use oslo_base::glob::walk::{
+    set_dotglob, set_failglob, set_globstar, set_nocaseglob, set_nocasematch, set_nullglob,
+};
+
+/// A pattern that matched nothing while `failglob` is on, as the text it was written as.
+#[derive(Debug)]
+pub struct NoMatch(pub String);
 
 /// Compile a pattern from expanded runs, honouring the quoting each run carries.
 ///
@@ -27,21 +33,51 @@ fn chars_of(field: &[Run]) -> Vec<(char, bool)> {
 
 /// Expand one field against the filesystem, or yield its literal text when it matches nothing.
 ///
+/// For callers outside word expansion — Lua, `run` — which have no `GLOBIGNORE` and nowhere to
+/// report `failglob`; see [`expand_field`] for the shell's own.
+pub fn expand_glob(field: &[Run]) -> Vec<String> {
+    expand_field(field, None).unwrap_or_else(|NoMatch(text)| vec![text])
+}
+
+/// Expand one field the way word expansion does: `GLOBIGNORE`, `nullglob` and `failglob` applied.
+///
 /// Rebuilt run by run rather than from the field's flat text: `echo "a"*` globs on the trailing
 /// `*`, and `echo "a*"` does not glob at all.
-pub fn expand_glob(field: &[Run]) -> Vec<String> {
+pub fn expand_field(field: &[Run], globignore: Option<&str>) -> Result<Vec<String>, NoMatch> {
     // **Asked before anything is built.** Almost every field is a plain word, and finding that out
     // must not cost a character vector per argument of every command.
     if !field
         .iter()
         .any(|run| run.globs() && run.text.contains(['*', '?', '[']))
     {
-        return vec![field_text(field)];
+        return Ok(vec![field_text(field)]);
     }
-    match walk::expand(&chars_of(field), &walk::shell_options()) {
-        Some(matched) if !matched.is_empty() => matched,
-        _ => vec![field_text(field)],
+    let ignore: Vec<ShellPattern> = globignore
+        .unwrap_or_default()
+        .split(':')
+        .filter(|pattern| !pattern.is_empty())
+        .map(ShellPattern::from_unquoted)
+        .collect();
+    let mut options = walk::shell_options();
+    // Setting `GLOBIGNORE` turns `dotglob` on, as bash does: the list is how hidden files get
+    // filtered, so they have to be candidates first. `.` and `..` never are.
+    if !ignore.is_empty() {
+        options.dotglob = true;
     }
+    let Some(mut matched) = walk::expand(&chars_of(field), &options) else {
+        return Ok(vec![field_text(field)]);
+    };
+    matched.retain(|path| !ignore.iter().any(|pattern| pattern.matches(path)));
+    if !matched.is_empty() {
+        return Ok(matched);
+    }
+    if walk::failglob() {
+        return Err(NoMatch(field_text(field)));
+    }
+    if walk::nullglob() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![field_text(field)])
 }
 
 #[cfg(test)]

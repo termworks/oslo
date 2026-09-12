@@ -18,6 +18,7 @@ mod caller;
 mod chain;
 mod colon;
 mod command;
+mod compgen;
 mod conditionals;
 mod control;
 mod copy;
@@ -244,6 +245,8 @@ pub fn register_default_builtins(env: &mut Environment) {
     env.register_custom_builtin("rm", remove::builtin_rm);
 
     env.register_custom_builtin("shopt", builtin_shopt);
+    // `compgen` — `-G`, `-W`, `-f` and `-d`, for scripts and completion functions that call it.
+    env.register_custom_builtin("compgen", compgen::builtin_compgen);
     env.register_custom_builtin("caller", builtin_caller);
     // `chain` — what each link of the last `a && b` did. See its module docs: the shell already
     // computed this and dropped it, and `$PIPESTATUS` only answers one level down.
@@ -288,6 +291,7 @@ mod tests {
             "declare",
             "typeset",
             "shopt",
+            "compgen",
             "mapfile",
             "readarray",
             "caller",

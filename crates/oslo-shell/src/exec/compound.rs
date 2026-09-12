@@ -142,7 +142,8 @@ fn eval_conditional_loop(
 fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) -> Result<bool> {
     for pat_word in patterns {
         let runs = expand_word_to_pattern(env, pat_word)?;
-        if crate::expand::glob::pattern_from_runs(&runs).matches(subject) {
+        let nocase = oslo_base::glob::walk::nocasematch();
+        if crate::expand::glob::pattern_from_runs(&runs).matches_case(subject, nocase) {
             return Ok(true);
         }
     }

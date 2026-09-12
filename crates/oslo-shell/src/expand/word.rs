@@ -18,7 +18,7 @@
 use crate::env::Environment;
 use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::fields::{ifs_of, split_field};
-use crate::expand::glob::expand_glob;
+use crate::expand::glob::{NoMatch, expand_field};
 use crate::expand::param::{expand_array_ref, expand_param};
 use crate::expand::tilde::expand_tilde;
 use oslo_base::ast::{ParamExpansion, Word, WordPart};
@@ -344,6 +344,7 @@ fn expand_word_at(env: &mut Environment, word: &Word, place: Place) -> Result<Ve
     let glob = !env.noglob();
     let fields = expand_word_fields(env, word)?;
     let ifs = ifs_of(env);
+    let globignore = env.get_var("GLOBIGNORE").map(str::to_string);
     for field in fields {
         // **`@name` is substituted here, where a tilde is, and for the same reason.** It names a
         // directory, so the glob that follows it is the user's own and has to run: `@proj/*.rs` was
@@ -363,7 +364,12 @@ fn expand_word_at(env: &mut Environment, word: &Word, place: Place) -> Result<Ve
             crate::expand::sugar::equals_field(env, field).map_err(ShellError::ExpansionError)?;
         for split in split_field(ifs, field) {
             if glob {
-                out.extend(expand_glob(&split));
+                // `failglob` is bash's `no match: zz*`: the command does not run, status 1.
+                let words =
+                    expand_field(&split, globignore.as_deref()).map_err(|NoMatch(text)| {
+                        ShellError::ExpansionError(format!("no match: {text}"))
+                    })?;
+                out.extend(words);
             } else {
                 out.push(field_text(&split));
             }

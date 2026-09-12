@@ -64,21 +64,42 @@ fn in_named_class(name: &str, ch: char) -> bool {
 
 impl Item {
     pub fn matches_char(&self, ch: char) -> bool {
+        self.matches_char_with(ch, false)
+    }
+
+    /// `nocase` is `nocaseglob` and `nocasematch`: a letter also matches its other case, in a
+    /// bracket as well as out of one.
+    pub fn matches_char_with(&self, ch: char, nocase: bool) -> bool {
         match self {
-            Item::Ch(c) => *c == ch,
+            Item::Ch(c) => *c == ch || (nocase && same_letter(*c, ch)),
             Item::Any => true,
             // `*` is handled by the outer loop; it never consumes a single character on its own.
             Item::Star => false,
             Item::Class { negated, members } => {
-                let hit = members.iter().any(|m| match m {
-                    Member::Ch(c) => *c == ch,
-                    Member::Range(lo, hi) => *lo <= ch && ch <= *hi,
-                    Member::Named(name) => in_named_class(name, ch),
+                let hit = members.iter().any(|m| {
+                    member_has(m, ch)
+                        || (nocase
+                            && ch
+                                .to_lowercase()
+                                .chain(ch.to_uppercase())
+                                .any(|other| member_has(m, other)))
                 });
                 hit != *negated
             }
         }
     }
+}
+
+fn member_has(member: &Member, ch: char) -> bool {
+    match member {
+        Member::Ch(c) => *c == ch,
+        Member::Range(lo, hi) => *lo <= ch && ch <= *hi,
+        Member::Named(name) => in_named_class(name, ch),
+    }
+}
+
+fn same_letter(a: char, b: char) -> bool {
+    a.to_lowercase().eq(b.to_lowercase())
 }
 
 /// Compile a run of `(character, is-it-a-metacharacter)` pairs, reporting whether any character
@@ -244,6 +265,11 @@ fn parse_symbol(chars: &[(char, bool)], start: usize) -> Option<(Member, usize)>
 /// Backtracking on the most recent `*` only: shell patterns have no alternation, so one
 /// resumption point is enough and the match stays linear in practice.
 pub fn matches_items(items: &[Item], name: &str) -> bool {
+    matches_items_with(items, name, false)
+}
+
+/// [`matches_items`], case-insensitively when `nocase`.
+pub fn matches_items_with(items: &[Item], name: &str, nocase: bool) -> bool {
     let name: Vec<char> = name.chars().collect();
     let (mut i, mut j) = (0, 0);
     // The most recent `*` and how much of the name it had swallowed, for backtracking.
@@ -255,7 +281,7 @@ pub fn matches_items(items: &[Item], name: &str) -> bool {
                 star = Some((i, j));
                 i += 1;
             }
-            Some(item) if item.matches_char(name[j]) => {
+            Some(item) if item.matches_char_with(name[j], nocase) => {
                 i += 1;
                 j += 1;
             }
@@ -357,6 +383,14 @@ impl ShellPattern {
     /// Does the whole of `text` match?
     pub fn matches(&self, text: &str) -> bool {
         matches_items(&self.items, text)
+    }
+
+    /// [`Self::matches`], ignoring case when `nocase` — `nocasematch` for `case` and `[[ ]]`.
+    pub fn matches_case(&self, text: &str, nocase: bool) -> bool {
+        match nocase {
+            true => matches_items_with(&self.items, text, true),
+            false => self.matches(text),
+        }
     }
 }
 
