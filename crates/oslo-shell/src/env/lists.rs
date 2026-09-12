@@ -114,44 +114,13 @@ pub fn absolute(path: &str, base: &Path) -> PathBuf {
     out
 }
 
-/// Whether `text` matches a `*`/`?` pattern.
+/// Whether `text` matches a shell pattern.
 ///
-/// The shell's own globber is not what is wanted here: it matches *filenames*, walking the directory
-/// tree as it goes, and an entry named for removal need not exist. `*` crosses `/` for the same
-/// reason — `PATH_rm "/nix/*"` is meant to take out everything under it.
+/// The shell's own matcher, not its globber: an entry named for removal need not exist, so nothing
+/// walks the filesystem, and `*` crosses `/` — `PATH_rm "/nix/*"` is meant to take out everything
+/// under it.
 pub fn glob(pattern: &str, text: &str) -> bool {
-    let (pattern, text): (Vec<char>, Vec<char>) =
-        (pattern.chars().collect(), text.chars().collect());
-    let (mut p, mut t) = (0usize, 0usize);
-    // Where to resume if a `*` turns out to have swallowed too little: the classic backtracking
-    // pair, which is linear in practice and cannot blow up on a pattern of nothing but stars.
-    let (mut star, mut resume) = (None, 0usize);
-    while t < text.len() {
-        match pattern.get(p) {
-            Some('*') => {
-                star = Some(p);
-                resume = t;
-                p += 1;
-            }
-            Some('?') => {
-                p += 1;
-                t += 1;
-            }
-            Some(c) if *c == text[t] => {
-                p += 1;
-                t += 1;
-            }
-            _ => match star {
-                Some(at) => {
-                    p = at + 1;
-                    resume += 1;
-                    t = resume;
-                }
-                None => return false,
-            },
-        }
-    }
-    pattern[p..].iter().all(|c| *c == '*')
+    oslo_base::glob::ShellPattern::from_unquoted(pattern).matches(text)
 }
 
 /// Where a relative entry resolves from when nobody said: the shell's current directory.
