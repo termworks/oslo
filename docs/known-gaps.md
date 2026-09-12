@@ -176,6 +176,27 @@ exit status of a signal nobody sends on purpose.
 
 ---
 
+## extglob
+
+```console
+$ oslo -c 'shopt -s extglob'
+oslo: shopt: extglob: cannot be turned on: the extended pattern operators are not implemented
+$ oslo -c 'echo @(a|b)'
+oslo: syntax error: commands must be separated by `;`, `&`, or a newline
+```
+
+`?(…)`, `*(…)`, `+(…)`, `@(…)` and `!(…)` need the parser before they need the matcher: it reads
+`@(a|b)` as a word followed by a subshell, so the line fails to parse, as it does in bash with
+`extglob` off. **One place breaks the rule above**: bash enables extglob inside `[[ ]]` whatever
+`shopt` says, and there oslo parses `[[ ab == @(ab|c) ]]` and answers false, matching `@(` as
+literal characters instead of refusing.
+
+**What to do about it today**: a `case` with one arm per alternative, or `[[ $f =~ ^(a|b)$ ]]`.
+For filenames at the prompt, the `re` qualifier — `*(re '^(a|b)$')` — see
+[globbing.md](features/globbing.md#qualifiers).
+
+---
+
 ## Closed since this list was first written
 
 | Was | Now |

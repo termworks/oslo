@@ -127,6 +127,7 @@ redirections, 35 control flow, 25 arithmetic, 17 exit status, 15 traps, 15 quoti
 | traps | signals at command boundaries, `EXIT` on every exit path, `DEBUG`, `trap` listing and restore |
 | job control | real process groups and `tcsetpgrp`; `set -m` turns it on in a script that has a terminal |
 | options | `errexit` with its exemptions, `nounset`, `pipefail`, `noglob`, `xtrace`, `noexec`, `allexport` |
+| globbing | `**` as bash 5.3, `nullglob` `failglob` `dotglob` `nocaseglob` `nocasematch`, `GLOBIGNORE`, `compgen -G`, locale order, non-UTF-8 names — see [globbing.md](globbing.md); not extglob |
 
 `--posix` is a real mode rather than a label. What it changes, each verified against
 `bash --posix`: a special builtin's *utility* error ends a non-interactive shell (`export BAD-NAME=1`

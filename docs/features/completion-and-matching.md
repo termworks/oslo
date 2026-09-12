@@ -720,6 +720,15 @@ The shape all three want is the same: a spec that is *computed from what the she
 rather than read from a file. `oslo.completion.spec` takes a function for a position already; what
 is missing is the same idea one level up — a spec whose whole self is answered on demand.
 
+## Globs
+
+A word that globs is answered by the shell's own pattern engine rather than by a prefix test: the
+menu's first row, `all N matches`, puts every match on the line, and the rows below it are the
+matches one by one. `**` is recursive, closed braces are expanded first, and a pattern that matches
+nothing is retried with a trailing `*`. `oslo.completion.glob` chooses between `"menu"` (the
+default), `"expand"` and `"literal"`. A qualified glob — `*.log(older 7d)` — is expanded whole. All
+of it is in [globbing.md](globbing.md#at-the-prompt).
+
 ## Measurements
 
 From `cargo bench --bench fuzzy` on this machine — one short pattern (`gco`, `smart`) scored
@@ -793,6 +802,8 @@ the command's shape already is.
 | `crates/oslo-ui/src/spec/custom.rs` | the specs a config or a plugin declared |
 | `crates/oslo-ui/src/completion/provider.rs` | the candidate providers, their kinds and offsets |
 | `crates/oslo-ui/src/completion/paths.rs` | `path_candidates` — the one builder that reads the disk |
+| `crates/oslo-ui/src/completion/glob.rs` | a glob word: the `all N matches` row, the budgets |
+| `crates/oslo-ui/src/completion/qualified.rs` | `pattern(qualifiers)`, turned into filenames |
 | `crates/oslo-runtime/src/lua/api/complete.rs` | `oslo.completion.provider` — the Lua reader |
 | `crates/oslo-ui/src/spec/definitions/` | the four written by hand: `git`, `cargo`, `docker`, `npm` |
 | `crates/oslo-runtime/src/lua/api/spec.rs` | `oslo.completion.spec` — the Lua reader |

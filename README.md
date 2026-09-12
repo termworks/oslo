@@ -90,6 +90,7 @@ and requires zero structured edges. → [posix-fidelity.md](docs/features/posix-
 | [Ghost suggestions](docs/features/ghost-suggestions.md) | the grey continuation, five sources you order yourself |
 | [Prediction and repair](docs/features/prediction-and-repair.md) | a model of what you run: what comes next, and what you meant |
 | [Completion](docs/features/completion-and-matching.md) | the dropdown, matching as a transform rather than a prefix test, and carapace specs |
+| [Globbing](docs/features/globbing.md) | bash's `**` and options exactly, non-UTF-8 names intact, `*.log(older 7d)` at the prompt |
 | [The Lua interpreter](docs/features/lua-interpreter.md) | Lua in pure Rust — what lets a static musl binary speak it with no C toolchain |
 | [Your own tools](docs/features/your-own-tools.md) | `register_tool`, builtins and autoloaded functions from Lua |
 | [Hooks](docs/features/hooks.md) | thirty-two moments a config can attach to |
