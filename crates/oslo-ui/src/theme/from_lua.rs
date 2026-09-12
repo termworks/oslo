@@ -401,7 +401,7 @@ mod tests {
                  single_quote = '29', double_quote = '30', escape = '31',
                  operator = '32', redirection = '33', ['end'] = '34', comment = '35',
                  variable = '36', autosuggestion = '37', match_bracket = '38',
-                 repair = '39', coordinate = '96'
+                 repair = '39', coordinate = '96', glob_nomatch = '97'
                },
                pager = {
                  bg = '#101010', text = '40', text_sel = '41', sel_bg = '#202020',
@@ -449,7 +449,7 @@ mod tests {
         ];
         assert_eq!(
             syntax.len(),
-            24,
+            25,
             "a syntax role was added without a case here"
         );
 
