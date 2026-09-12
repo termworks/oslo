@@ -127,6 +127,11 @@ path = "bench/fuzzy.rs"
 harness = false
 
 [[bench]]
+name = "glob"
+path = "bench/glob.rs"
+harness = false
+
+[[bench]]
 name = "keystroke"
 path = "bench/keystroke.rs"
 harness = false
