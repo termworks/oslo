@@ -95,6 +95,11 @@ Numbered rather than timestamped so the name stays readable. **The original path
 anywhere**, and there is no restore command: finding a file again means recognising it in the trash
 directory and moving it back yourself.
 
+**What is already inside the trash directory is removed, not moved again.** With the trash at
+`/tmp`, `rm x` in `/tmp` used to rename `x` to `x.1` right beside itself — the file stayed, and
+every retry added another `.1`. Removing something from the trash means removing it, so the trash
+declines and `rm` deletes it the ordinary way.
+
 ### A failed move is a failure
 
 If the move cannot be made, `rm` reports it and returns non-zero. It does not fall back to
