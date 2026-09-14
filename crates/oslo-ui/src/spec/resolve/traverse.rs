@@ -71,7 +71,9 @@ fn upwards(from: &str, wanted: &[impl AsRef<str>]) -> Option<String> {
     while let Some(dir) = at {
         for name in wanted {
             let candidate = dir.join(name.as_ref());
-            if candidate.exists() {
+            // A `.git` has to be a repository, not an empty directory of that name.
+            let real = name.as_ref() != ".git" || oslo_base::repo::is_repository(&candidate);
+            if candidate.exists() && real {
                 return Some(candidate.display().to_string());
             }
         }

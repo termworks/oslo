@@ -87,16 +87,7 @@ pub fn identity_in_a_repository() -> Option<PathBuf> {
     }
 }
 
-/// Whether `.git` is a repository rather than a directory that merely has the name.
-///
-/// **Measured, because the first version of this cried wolf on the machine it was written on.**
-/// `~/.git` there is an empty directory left behind by something, and `git -C ~ rev-parse` answers
-/// "not a git repository" — so a bare `exists()` warned that a key was about to be committed to a
-/// repository that does not exist. A real one is a directory with `HEAD` in it, or a *file* saying
-/// where the directory is, which is what a worktree and a submodule have.
-pub(super) fn is_repository(dot_git: &Path) -> bool {
-    dot_git.is_file() || dot_git.join("HEAD").exists()
-}
+pub(super) use crate::repo::is_repository;
 
 /// Write bytes where only this user can read them, before anything is in them.
 ///
