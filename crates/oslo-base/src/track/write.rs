@@ -58,7 +58,7 @@ impl Track {
     /// case of starting a shell somewhere familiar costs no `fsync` at all. Only the first time
     /// anybody has ever run a command in a directory does this write.
     pub fn prime(&self, at: &Visit<'_>) -> bool {
-        if !self.writable || redact::is_excluded(at.path) {
+        if !self.writable {
             self.forget_current();
             return false;
         }
@@ -80,23 +80,14 @@ impl Track {
         if !self.writable {
             return false;
         }
-        let here_excluded = redact::is_excluded(step.ran_in.path);
-        // Leaving an excluded directory for one worth remembering is still a real arrival, so the
-        // two halves are gated separately rather than the whole step being dropped.
-        let moved_to = step
-            .moved_to
-            .filter(|to| to.path != step.ran_in.path)
-            .filter(|to| !redact::is_excluded(to.path));
-        if here_excluded && moved_to.is_none() {
-            return false;
-        }
+        let moved_to = step.moved_to.filter(|to| to.path != step.ran_in.path);
 
         let cached = self.cached_id(step.ran_in.path);
         // The lock is deliberately not held across the transaction: where the shell ended up comes
         // back out of the closure and is stored afterwards.
         let Some(next) = self
             .store
-            .write(|writer| write_step(writer, step, cached, here_excluded, moved_to))
+            .write(|writer| write_step(writer, step, cached, moved_to))
         else {
             return false;
         };
@@ -124,20 +115,11 @@ impl Track {
         if !self.writable {
             return false;
         }
-        let here_excluded = redact::is_excluded(step.ran_in.path);
-        let moved_to = step
-            .moved_to
-            .filter(|to| to.path != step.ran_in.path)
-            .filter(|to| !redact::is_excluded(to.path));
-        // Nowhere worth remembering, but the line still ran and still reported. It ran somewhere
-        // excluded, so segment zero names no directory at all — which is the point of excluding it.
-        if here_excluded && moved_to.is_none() {
-            return self.record_outcome(history_id, rows);
-        }
+        let moved_to = step.moved_to.filter(|to| to.path != step.ran_in.path);
 
         let cached = self.cached_id(step.ran_in.path);
         let Some(next) = self.store.write(|writer| {
-            let next = write_step(writer, step, cached, here_excluded, moved_to)?;
+            let next = write_step(writer, step, cached, moved_to)?;
             let here = next.as_ref().map_or(0, |(id, _)| *id);
             write_outcomes(writer, history_id, &settled(rows, here))?;
             Some(next)
@@ -218,33 +200,28 @@ fn write_step(
     writer: &Writer<'_, '_>,
     step: &Step<'_>,
     cached: Option<u64>,
-    here_excluded: bool,
     moved_to: Option<Visit<'_>>,
 ) -> Option<Option<(u64, String)>> {
     let at = now();
-    let mut here = None;
-    if !here_excluded {
-        // The cached id is checked against the store rather than trusted. It is one point lookup
-        // on eight fixed bytes, and it is what makes a directory another terminal's prune sweep
-        // dropped between two commands cost a re-resolve instead of a run row filed under an id
-        // that no longer names anything.
-        let id = match cached.filter(|id| writer.has(Tree::Dir, &key::dir(*id))) {
-            Some(id) => id,
-            None => resolve_dir(writer, &step.ran_in)?,
-        };
-        here = Some(id);
+    // The cached id is checked against the store rather than trusted. It is one point lookup on
+    // eight fixed bytes, and it is what makes a directory another terminal's prune sweep dropped
+    // between two commands cost a re-resolve instead of a run row filed under an id that no longer
+    // names anything.
+    let id = match cached.filter(|id| writer.has(Tree::Dir, &key::dir(*id))) {
+        Some(id) => id,
+        None => resolve_dir(writer, &step.ran_in)?,
+    };
 
-        let dwell = capped(step.dwell_ms);
-        if dwell > 0 {
-            add_dwell(writer, id, dwell)?;
-        }
-        if let Some(run) = step.run {
-            record_run(writer, id, &run, at)?;
-        }
+    let dwell = capped(step.dwell_ms);
+    if dwell > 0 {
+        add_dwell(writer, id, dwell)?;
+    }
+    if let Some(run) = step.run {
+        record_run(writer, id, &run, at)?;
     }
 
     let Some(to) = moved_to else {
-        return Some(here.map(|id| (id, step.ran_in.path.to_string())));
+        return Some(Some((id, step.ran_in.path.to_string())));
     };
     Some(Some((arrive(writer, &to, at)?, to.path.to_string())))
 }
@@ -500,32 +477,35 @@ mod tests {
         assert!(dir_row(&track, "/w/alpha").is_some());
     }
 
-    /// The privacy rule that is about places rather than about words.
+    /// A place kept out of `cd` is still a place things ran: what ran in `/tmp` or a
+    /// `node_modules` is in the finder, and only the jump never offers the directory.
     #[test]
-    fn an_excluded_directory_leaves_no_trace() {
+    fn an_excluded_directory_is_recorded_but_never_a_jump_target() {
         let (_dir, track) = store();
-        assert!(!track.record(&ran("/w/p/node_modules/react", "npm test", 0)));
-        assert_eq!(rows(&track, Tree::Dir), 0);
-        assert_eq!(rows(&track, Tree::Run), 0);
+        assert!(track.record(&ran("/w/p/node_modules/react", "npm test", 0)));
+        assert!(track.record(&ran("/tmp", "wing template apply python ./x", 0)));
+        assert!(track.record(&ran("/w/p", "ls", 0)));
+        assert_eq!(rows(&track, Tree::Run), 3, "every command is remembered");
 
-        // Leaving one is still a real arrival somewhere worth remembering.
-        assert!(track.record(&Step {
-            ran_in: Visit::at("/w/p/node_modules/react"),
-            moved_to: Some(Visit::at("/w/p")),
-            dwell_ms: 5_000,
-            run: Some(Run {
-                argv: "cd ../..",
-                mode: SH,
-                status: Some(0),
-                duration_ms: 1,
-            }),
-        }));
-        assert_eq!(
-            rows(&track, Tree::Run),
-            0,
-            "not the command, though, and not its time"
+        let listed: Vec<String> = track.commands(10).into_iter().map(|c| c.line).collect();
+        assert!(listed.iter().any(|line| line == "npm test"), "{listed:?}");
+        assert!(
+            listed.iter().any(|line| line.starts_with("wing")),
+            "{listed:?}"
         );
-        assert_eq!(visits_of(&track, "/w/p"), 1);
+
+        let targets: Vec<String> = track
+            .directories_ranked("", 10)
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
+        assert!(targets.iter().any(|path| path == "/w/p"), "{targets:?}");
+        assert!(
+            !targets
+                .iter()
+                .any(|path| path == "/tmp" || path.contains("node_modules")),
+            "{targets:?}"
+        );
     }
 
     /// What `history -c` costs and what it does not: the lines go, the places stay — and the index
