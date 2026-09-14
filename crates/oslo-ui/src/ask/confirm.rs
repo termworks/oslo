@@ -101,9 +101,16 @@ pub fn confirm(spec: &Confirm) -> Answer<bool> {
                 panel.close();
                 return Answer::Given(yes);
             }
-            // The letters, because that is what people type without looking.
-            Key::Char('y') | Key::Char('Y') => yes = true,
-            Key::Char('n') | Key::Char('N') => yes = false,
+            // The letters answer, as the legend says — that is what people type without looking,
+            // and a `y` that only moved the highlight left the question waiting for an Enter.
+            Key::Char('y') | Key::Char('Y') => {
+                panel.close();
+                return Answer::Given(true);
+            }
+            Key::Char('n') | Key::Char('N') => {
+                panel.close();
+                return Answer::Given(false);
+            }
             Key::Left | Key::Right | Key::ToggleScope | Key::BackTab => yes = !yes,
             _ => {}
         }
