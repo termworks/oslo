@@ -22,6 +22,7 @@
 //! therefore never be *less* capable than the system's, which is the only honest way to shadow a
 //! command everything depends on.
 
+mod sudo;
 mod trash;
 mod walk;
 
@@ -53,6 +54,10 @@ struct Mode {
     loose: bool,
     /// Where a removal should move things, or `None` to unlink them.
     trash: Option<trash::Trash>,
+    /// A person at a terminal, at a prompt: questions are oslo's own widgets. See `walk::Walk`.
+    prompt: bool,
+    /// The write-protected answer, shared by every operand. See `walk::Walk::protected`.
+    protected: std::rc::Rc<std::cell::Cell<Option<bool>>>,
 }
 
 pub fn builtin_rm(env: &mut Environment, args: &[String]) -> Result<i32> {
@@ -79,16 +84,28 @@ pub fn builtin_rm(env: &mut Environment, args: &[String]) -> Result<i32> {
 
     let mode = mode_for(env, &options);
     let mut status = 0;
+    let mut denied = Vec::new();
     for operand in operands {
         // The name's real bytes: `rm b*` over `bad\xffname` must reach that file.
         let real = oslo_base::lossless::to_os(operand);
         match remove_operand(Path::new(&real), operand, &options, &mode, &origin) {
             Removal::Gone => {}
             Removal::Failed => status = 1,
+            Removal::Denied => {
+                status = 1;
+                denied.push(operand);
+            }
             // A Ctrl-C part-way through stops the whole line, not just the operand it landed in:
             // the next one is as likely to be the big tree as the one that was interrupted.
             Removal::Interrupted => return Ok(130),
         }
+    }
+    // At a prompt, what permission kept back can go with `sudo` — asked once, after the rest.
+    if !denied.is_empty()
+        && mode.prompt
+        && let Some(code) = sudo::offer(&denied, &options, &mode, &origin)
+    {
+        return Ok(code);
     }
     Ok(status)
 }
@@ -97,6 +114,8 @@ pub fn builtin_rm(env: &mut Environment, args: &[String]) -> Result<i32> {
 enum Removal {
     Gone,
     Failed,
+    /// Failed, and at least one of the failures was "Permission denied".
+    Denied,
     Interrupted,
 }
 
@@ -112,14 +131,16 @@ enum Removal {
 ///
 /// Three flags together, because each rules out a case the others do not: `Interactive` says the
 /// session is interactive, the absence of `CommandString` says the shell was not handed a program
-/// with `-c`, and the absence of `StdinInput` says it is not reading one from a pipe with `-s`.
-/// All three are recorded when the shell is invoked, so this asks what the shell was *asked to be*
-/// rather than probing a descriptor that a redirection could have moved.
+/// with `-c`, and `StdinInput` says it is reading one from a pipe with `-s` — **unless** the REPL
+/// set `Prompt`. The REPL reports `s` too, as bash's `himBHs` does, and reading that alone as a
+/// pipe switched every prompt convenience off in every real session. All of these are recorded
+/// when the shell starts, so this asks what the shell was *asked to be* rather than probing a
+/// descriptor that a redirection could have moved.
 fn at_a_prompt(env: &Environment) -> bool {
     let options = env.options();
     options.is_set(ShellOption::Interactive)
         && !options.is_set(ShellOption::CommandString)
-        && !options.is_set(ShellOption::StdinInput)
+        && (options.is_set(ShellOption::Prompt) || !options.is_set(ShellOption::StdinInput))
 }
 
 /// The behaviour this shell allows, which is the whole safety argument in five lines.
@@ -128,6 +149,8 @@ fn mode_for(env: &Environment, options: &Options) -> Mode {
         return Mode {
             loose: false,
             trash: None,
+            prompt: false,
+            protected: Default::default(),
         };
     }
     let all = oslo_ui::settings::current();
@@ -135,6 +158,8 @@ fn mode_for(env: &Environment, options: &Options) -> Mode {
     Mode {
         loose: true,
         trash: settings.to_tmp.then(|| trash::Trash::new(settings)),
+        prompt: std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        protected: Default::default(),
     }
 }
 
@@ -177,7 +202,7 @@ fn remove_operand(
     }
 
     if let Some(trash) = &mode.trash
-        && let Some(outcome) = trashed(trash, path, shown, &meta, options, origin)
+        && let Some(outcome) = trashed(trash, path, shown, &meta, options, origin, mode.prompt)
     {
         return outcome;
     }
@@ -186,21 +211,21 @@ fn remove_operand(
     // than the prompt's convenience does: `loose` is what makes a typed `rm dir` work without
     // `-r`, so a line that named `-d` has already said which of the two it meant.
     let recursive = options.recursive || (mode.loose && !options.dir);
-    let outcome = walk::remove_tree(
-        path,
-        shown,
-        &walk::Walk {
-            origin: origin.to_string(),
-            force: options.force,
-            interactive: options.interactive,
-            recursive,
-            verbose: options.verbose,
-        },
-    );
-    match outcome {
+    let walk = walk::Walk {
+        origin: origin.to_string(),
+        force: options.force,
+        interactive: options.interactive,
+        recursive,
+        verbose: options.verbose,
+        prompt: mode.prompt,
+        protected: std::rc::Rc::clone(&mode.protected),
+        denied: Default::default(),
+    };
+    match walk::remove_tree(path, shown, &walk) {
         walk::Outcome {
             interrupted: true, ..
         } => Removal::Interrupted,
+        walk::Outcome { failed: true, .. } if walk.denied.get() => Removal::Denied,
         walk::Outcome { failed: true, .. } => Removal::Failed,
         _ => Removal::Gone,
     }
@@ -216,12 +241,14 @@ fn trashed(
     meta: &std::fs::Metadata,
     options: &Options,
     origin: &str,
+    prompt: bool,
 ) -> Option<Removal> {
     // The prompt still comes first: a trashed removal is recoverable, not invisible, and `-i`
     // asked to be told before anything moved.
     if options.interactive
         && !options.force
-        && !walk::confirm(
+        && !walk::ask(
+            prompt,
             origin,
             &format!("remove {} '{shown}'", walk::describe(meta)),
         )

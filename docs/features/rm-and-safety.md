@@ -33,7 +33,7 @@ rm -rf build notes.txt
          │           canonicalises to /                   → refused
          │           a directory, no -r/-d, not loose     → "Is a directory"
          │
-         ├─ -i and not -f → ask on stdin; anything but y is no
+         ├─ -i and not -f → ask: oslo's yes/no at a prompt, a stdin line anywhere else
          │
          ├─ trash?  larger than the cap ──yes──→ decline, and the caller destroys it
          │          otherwise  rename(2) ─ EXDEV ─→ copy across, then unlink
@@ -45,6 +45,23 @@ rm -rf build notes.txt
 `mode_for` is the whole safety argument, and it is five lines of code. `ShellOption::Interactive`
 comes from the invocation and **`set -i` cannot fabricate it** — `ShellOption::from_letter` rejects
 the invocation flags outright, so no script can claim to be a prompt and unlock the extensions.
+
+### Write-protected files, and permission denied
+
+GNU `rm` asks once *per file* before removing one you cannot write to. A git repository's objects
+are all read-only, so `rm -r checkout` was two hundred questions — which nobody answers; they press
+Ctrl-C and reach for `sudo`. At a prompt, with a terminal, oslo asks **once per `rm`** with its own
+yes/no — "Remove them" or "Skip them" — and the answer holds for every write-protected file the
+same `rm` meets. Removing a read-only file only needs its directory to be writable, so this is not
+a `sudo` question.
+
+A real "Permission denied" is: a file in a directory you cannot write to. Those failures are
+reported as they happen, the rest of the tree still goes, and at the end **one** question offers
+to remove what is left of those operands with `sudo rm -f` — starting on no, since it cannot be
+undone. Esc or Ctrl-C on either question stops the `rm`.
+
+In a script, under `-s`, or with stdin not a terminal, none of this happens: the stdin line GNU
+prints is asked per file, and a write-protected file with nobody to ask goes.
 
 ### The size cap, and why it is a cap and not a mount check
 

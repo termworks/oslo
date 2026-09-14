@@ -58,6 +58,9 @@ pub enum ShellOption {
     CommandString,
     /// The program is being read from standard input. Set from the invocation, never by `set`.
     StdinInput,
+    /// oslo's own line editor is reading this shell's commands: a person at a prompt. Set by the
+    /// REPL alone — no letter and no name, so neither `set` nor `$-` can reach it.
+    Prompt,
 }
 
 /// How an option can be written.
@@ -269,6 +272,12 @@ pub const ALL: &[OptionSpec] = &[
         Some('s'),
         None,
         "commands are read from standard input (from the invocation)",
+    ),
+    spec(
+        ShellOption::Prompt,
+        None,
+        None,
+        "oslo's line editor is reading the commands (set by the prompt itself)",
     ),
 ];
 

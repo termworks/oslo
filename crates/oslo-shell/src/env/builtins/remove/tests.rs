@@ -146,6 +146,8 @@ fn a_trashed_file_is_moved_rather_than_destroyed() {
             max_to_tmp: 100,
             trash: bin.path().display().to_string(),
         })),
+        prompt: false,
+        protected: Default::default(),
     };
     let options = Options {
         force: false,
@@ -382,6 +384,19 @@ fn a_script_on_stdin_is_not_a_prompt() {
     env.set_option(ShellOption::StdinInput, true);
     assert_eq!(run(&mut env, &[&path(&dir, "dir")]), 1);
     assert!(!gone(&dir, "dir"));
+}
+
+/// **The REPL is a prompt**, though it reports `s` as bash does: its own mark says so. Without it,
+/// every prompt convenience was off in every real session — `rm dir` refused, and a write-protected
+/// file was asked about one at a time on stdin.
+#[test]
+fn the_repl_is_a_prompt_though_it_reads_stdin() {
+    let dir = tree();
+    let mut env = shell(true);
+    env.set_option(ShellOption::StdinInput, true);
+    env.set_option(ShellOption::Prompt, true);
+    assert_eq!(run(&mut env, &[&path(&dir, "dir")]), 0);
+    assert!(gone(&dir, "dir"));
 }
 
 /// **Unreadable does not mean non-empty.** `rm -rf` opened every directory before unlinking it, so
