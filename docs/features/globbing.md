@@ -169,7 +169,7 @@ wrong before Enter. Two actions show the expansion without choosing from a menu:
 | action | default key | does |
 |---|---|---|
 | `expand-glob` | `alt-*` | replace the word under the cursor with every match, quoted — bash's `C-x *` |
-| `list-glob` | `alt-g` | show the matches below the line until the next key — bash's `C-x g` |
+| `list-glob` | none — bind one | show the matches below the line until the next key — bash's `C-x g` |
 
 Single keys, because oslo binds single keys: there is no chord mechanism, and `ctrl-x` is taken.
 bash's names, `glob-expand-word` and `glob-list-expansions`, are accepted too.

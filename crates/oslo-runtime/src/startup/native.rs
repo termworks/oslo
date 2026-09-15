@@ -399,6 +399,10 @@ impl Assist for ShellAssist<'_> {
                 Some(oslo_ui::keys::Action::EditExternally) => Some(Bound::EditExternally),
                 Some(oslo_ui::keys::Action::ExpandGlob) => Some(Bound::ExpandGlob),
                 Some(oslo_ui::keys::Action::ListGlob) => Some(Bound::ListGlob),
+                Some(oslo_ui::keys::Action::YankLastArg) => Some(Bound::YankLastArg),
+                Some(oslo_ui::keys::Action::BeginningOfHistory) => Some(Bound::HistoryFirst),
+                Some(oslo_ui::keys::Action::EndOfHistory) => Some(Bound::HistoryLast),
+                Some(oslo_ui::keys::Action::InsertComment) => Some(Bound::InsertComment),
                 Some(oslo_ui::keys::Action::LuaHandler) => Some(Bound::Lua(name)),
                 // Unbound on purpose. Answering `None` here rather than with a do-nothing `Bound`
                 // is what makes it reach the *defaults* below and cancel them too — which is the
@@ -432,11 +436,18 @@ impl Assist for ShellAssist<'_> {
             return Some(Bound::AcceptHintWord);
         }
 
-        // `alt-*` and `alt-g` are bash's `C-x *` and `C-x g`, on single keys because oslo has no
-        // chords. Below every config binding, so `oslo.keys` can take either key back.
+        // `alt-*` is bash's `C-x *`, on a single key because oslo has no chords. Below every config
+        // binding, so `oslo.keys` can take it back. `list-glob` has no default key: an alt+letter
+        // is left for the config's own shortcuts.
+        if name == "alt-*" {
+            return Some(Bound::ExpandGlob);
+        }
+        // bash's history keys, on alt+symbol — nothing of an alt+letter set is taken.
         match name.as_str() {
-            "alt-*" => return Some(Bound::ExpandGlob),
-            "alt-g" => return Some(Bound::ListGlob),
+            "alt-." | "alt-_" => return Some(Bound::YankLastArg),
+            "alt-<" => return Some(Bound::HistoryFirst),
+            "alt->" => return Some(Bound::HistoryLast),
+            "alt-#" => return Some(Bound::InsertComment),
             _ => {}
         }
 
@@ -562,20 +573,24 @@ impl Assist for ShellAssist<'_> {
     }
 
     fn history_next(&mut self) -> Option<String> {
-        match self.back {
-            0 => None,
-            // Out the far end of the walk: the line being composed comes back.
-            1 => {
-                self.back = 0;
-                self.composing.take()
-            }
-            _ => {
-                self.back -= 1;
-                self.history.iter().rev().nth(self.back - 1).cloned()
-            }
-        }
+        recall::next(&self.history, &mut self.back, &mut self.composing)
+    }
+
+    fn history_line(&mut self, back: usize) -> Option<String> {
+        recall::line(&self.history, back)
+    }
+
+    fn history_oldest(&mut self, line: &str) -> Option<String> {
+        recall::oldest(&self.history, &mut self.back, &mut self.composing, line)
+    }
+
+    fn history_newest(&mut self) -> Option<String> {
+        recall::newest(&mut self.back, &mut self.composing)
     }
 }
+
+#[path = "native/recall.rs"]
+mod recall;
 
 #[cfg(test)]
 #[path = "native/tests.rs"]

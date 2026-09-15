@@ -30,6 +30,14 @@ pub enum Action {
     ExpandGlob,
     /// Show what the glob under the cursor matches, leaving the line alone.
     ListGlob,
+    /// bash's `yank-last-arg`: the previous command's last argument, walking back on each press.
+    YankLastArg,
+    /// bash's `beginning-of-history`: the oldest entry.
+    BeginningOfHistory,
+    /// bash's `end-of-history`: back to the line being composed.
+    EndOfHistory,
+    /// bash's `insert-comment`: comment the line out and run it, so it is only kept in history.
+    InsertComment,
     /// A function the config supplied. The function itself lives in [`super::editor`]; this only
     /// records that the key has one, because an `Action` has to stay plain data.
     LuaHandler,
@@ -63,6 +71,10 @@ impl Action {
             "edit-line" | "edit-command-line" => Some(Action::EditExternally),
             "expand-glob" | "glob-expand-word" => Some(Action::ExpandGlob),
             "list-glob" | "glob-list-expansions" => Some(Action::ListGlob),
+            "yank-last-arg" | "insert-last-argument" => Some(Action::YankLastArg),
+            "beginning-of-history" => Some(Action::BeginningOfHistory),
+            "end-of-history" => Some(Action::EndOfHistory),
+            "insert-comment" => Some(Action::InsertComment),
             "none" | "nothing" => Some(Action::Nothing),
             _ => None,
         }

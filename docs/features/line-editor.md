@@ -289,7 +289,9 @@ The action names are a fixed list, so a typo is reported rather than silently do
 `toggle-language` (or `toggle-mode`), `clear-screen`, `history-search` (or
 `history-search-backward`), `accept-suggestion`, `accept-suggestion-word` (or `accept-word`),
 `interrupt`, `complete`, `edit-line` (or `edit-command-line`), `expand-glob` (or `glob-expand-word`,
-on `alt-*` by default), `list-glob` (or `glob-list-expansions`, on `alt-g`), and `none` (or
+on `alt-*` by default), `list-glob` (or `glob-list-expansions`, no default key), `yank-last-arg`
+(or `insert-last-argument`, on `alt-.` and `alt-_`), `beginning-of-history` (on `alt-<`),
+`end-of-history` (on `alt->`), `insert-comment` (on `alt-#`), and `none` (or
 `nothing`). The two glob actions are described in [globbing.md](globbing.md#seeing-it-before-it-runs). `escape_delay` is the one worth raising over a
 slow link: Esc alone is recognised only when no further byte arrives within it, so too low a value
 makes an arrow key read as Esc. It is clamped to 1–2000 ms rather than refused.

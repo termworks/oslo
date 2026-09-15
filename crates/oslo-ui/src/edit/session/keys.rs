@@ -34,6 +34,14 @@ pub enum Bound {
     ExpandGlob,
     /// Show what the glob under the cursor matches.
     ListGlob,
+    /// `alt-.` / `alt-_`: the previous command's last argument; again, the one before's.
+    YankLastArg,
+    /// `alt-<`: the oldest history entry.
+    HistoryFirst,
+    /// `alt->`: back to the line being composed.
+    HistoryLast,
+    /// `alt-#`: comment the line out and run it — kept in history, and it does nothing.
+    InsertComment,
     /// A Lua function, by the key's name.
     Lua(String),
 }
@@ -74,7 +82,12 @@ pub enum Step {
 /// `Step` is the only way to see that every case is covered.
 impl super::Session {
     /// Carry out a binding the config asked for.
-    pub(super) fn perform(&mut self, bound: Bound, assist: &mut dyn Assist) -> Step {
+    pub(super) fn perform(
+        &mut self,
+        bound: Bound,
+        assist: &mut dyn Assist,
+        chain: Option<super::recall::LastArg>,
+    ) -> Step {
         let changed = |yes: bool| Step::Continue { redraw: yes };
         match bound {
             Bound::ToggleLanguage => Step::ToggleLanguage,
@@ -86,6 +99,10 @@ impl super::Session {
             Bound::EditExternally => Step::EditExternally,
             Bound::ExpandGlob => Step::ExpandGlob,
             Bound::ListGlob => Step::ListGlob,
+            Bound::YankLastArg => changed(self.yank_last_arg(chain, assist)),
+            Bound::HistoryFirst => changed(self.recall_oldest(assist)),
+            Bound::HistoryLast => changed(self.recall_newest(assist)),
+            Bound::InsertComment => self.insert_comment(),
             Bound::SearchHistory => match assist.search_history(&self.buffer.text()) {
                 Some(line) => {
                     let end = line.chars().count();
