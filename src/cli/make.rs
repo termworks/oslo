@@ -79,6 +79,8 @@ pub(crate) fn run(args: &[String]) -> i32 {
         return 1;
     };
     let shared = std::sync::Arc::new(std::sync::Mutex::new(env));
+    #[cfg(feature = "direnv")]
+    let directory_env = std::sync::Arc::clone(&shared);
     if !oslo_runtime::startup::lua_init::install_bindings(&engine, shared) {
         eprintln!("oslo make: the Lua bindings could not be installed");
         return 1;
@@ -91,6 +93,14 @@ pub(crate) fn run(args: &[String]) -> i32 {
     for path in &files {
         oslo_runtime::startup::lua_init::load_config(&engine, path);
     }
+
+    // **The project's own `.env.lua`, before its `.make.lua` is read.** A recipe resolves what the
+    // directory declares — a `$PATH` entry, a toolchain, a computed value — and without this it ran
+    // in whatever the calling shell was holding instead, which is a different environment on every
+    // machine and after every `cd`. After the config so a person's helpers are reachable from the
+    // file, and before the recipe file so a declaration at the top of it can read what was set.
+    #[cfg(feature = "direnv")]
+    oslo_runtime::startup::load_directory_environment(&directory_env, &engine, &root);
 
     // The recipe file is loaded by path so an error points into it rather than into a string.
     let Some(text) = file.to_str() else {
