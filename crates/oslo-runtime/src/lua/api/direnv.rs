@@ -108,6 +108,9 @@ fn nix_develop(it: &mut Table, env: &Arc<Mutex<Environment>>) {
                     devshell::Want {
                         hook: on("hook"),
                         functions: on("functions"),
+                        // `builtins.getEnv` is empty in a pure evaluation, so a flake that reads
+                        // the environment this file just set needs to be told it may.
+                        impure: on("impure"),
                     },
                 )
             }

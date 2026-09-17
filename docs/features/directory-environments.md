@@ -278,6 +278,27 @@ It runs **after** the variables are set, because a hook is written expecting the
 entering — and through oslo rather than through bash, so the `$PATH` it sees is the one the caller
 will have.
 
+### A flake that reads the environment
+
+`builtins.getEnv` answers `""` in a pure evaluation, whatever the variable actually holds. That is
+nix's rule: a flake that reads its surroundings evaluates differently on two machines, so nix wants
+to be told that is meant. A `.env.lua` that computes something and expects the flake to see it
+therefore has to ask:
+
+```lua
+oslo.env.set("GPU_VENDOR", detected)
+oslo.direnv.nix_develop{ impure = true }
+```
+
+`impure = true` is the only way to ask. A *string* argument names the installable — `nix_develop("..#other")` — so `nix_develop("--impure")` would hand nix `--impure` as the thing to
+build, which is the same shape of mistake `use flake --option warn-dirty false` used to make.
+
+**An impure evaluation is not cached.** The cache is keyed on the arguments and the stamps of
+`flake.nix`, `flake.lock`, `shell.nix` and `default.nix` — which cannot see what the flake read out
+of the environment, so a changed value with unchanged files would be served the previous answer.
+The evaluation is paid on every arrival instead, which is the price of a flake that reads its
+surroundings.
+
 ### The functions, which are the other half of a dev shell
 
 `print-dev-env --json` has **two** top-level keys, and `variables` is the smaller one. For an
