@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.1] - 2026-09-17
+
+### <!-- 0 -->⛰️  Features
+
+- Bash's alt-. alt-< alt-> and alt-#
+- Ask once for read-only files, offer sudo
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- A recipe runs in the directory's env
+- Rm in the trash dir deletes, not renames
+- Y and n answer a confirm
+- A stale Ctrl-C no longer answers rm
+- An empty .git is not a workspace
+- Record what runs in /tmp and .git
+
 ## [0.7.0] - 2026-09-12
 
 ### <!-- 0 -->⛰️  Features
