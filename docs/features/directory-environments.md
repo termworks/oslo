@@ -486,7 +486,9 @@ arguments and on `flake.nix`, `flake.lock`, `shell.nix` and `default.nix` as the
   is likely.
 - **Work in a script or `sh -c`.** A non-interactive shell has no directory environment at all: its
   environment comes from whoever ran it, and a file in the working directory quietly changing that
-  would make scripts depend on where they were invoked from.
+  would make scripts depend on where they were invoked from. [`oslo make`](build-recipes.md) is the
+  one exception, and it is not a shell: it evaluates the project's file — allow list and all —
+  before reading `.make.lua`, so a recipe runs in what its own directory declares.
 
 ## Where it lives
 

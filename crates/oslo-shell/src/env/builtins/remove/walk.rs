@@ -49,7 +49,7 @@
 //!   that says what is actually wrong.
 
 mod ask;
-pub use ask::confirm;
+pub use ask::{ask, widget};
 use ask::{ask_at, ask_path};
 
 use nix::dir::Dir;
@@ -57,6 +57,7 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstatat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
+use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -64,6 +65,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 /// How one operand should be taken apart.
+#[derive(Default)]
 pub struct Walk {
     /// Where a diagnostic says it came from — `env.origin()`, so a failure inside a script names
     /// the script and the line rather than the shell.
@@ -76,6 +78,13 @@ pub struct Walk {
     pub recursive: bool,
     /// `-v`: name each entry as it goes.
     pub verbose: bool,
+    /// A person at a terminal, at an interactive prompt: questions are oslo's own widgets, and
+    /// write-protected files are asked about once rather than one at a time.
+    pub prompt: bool,
+    /// The write-protected answer once given, shared by every operand of one `rm`.
+    pub protected: Rc<Cell<Option<bool>>>,
+    /// Set when something could not go because permission was denied — the `sudo` offer's cue.
+    pub denied: Cell<bool>,
 }
 
 /// What became of an operand.
@@ -166,7 +175,11 @@ pub fn remove_tree(root: &Path, shown: &str, walk: &Walk) -> Outcome {
             if !entries.is_empty()
                 && walk.interactive
                 && !walk.force
-                && !confirm(&walk.origin, &format!("descend into directory '{shown}'"))
+                && !ask(
+                    walk.prompt,
+                    &walk.origin,
+                    &format!("descend into directory '{shown}'"),
+                )
             {
                 return done(0, false);
             }
@@ -376,7 +389,11 @@ fn visit(
     if !entries.is_empty()
         && walk.interactive
         && !walk.force
-        && !confirm(&walk.origin, &format!("descend into directory '{shown}'"))
+        && !ask(
+            walk.prompt,
+            &walk.origin,
+            &format!("descend into directory '{shown}'"),
+        )
     {
         return;
     }
@@ -437,6 +454,9 @@ fn report(removed: std::io::Result<()>, shown: &str, directory: bool, walk: &Wal
             0
         }
         Err(e) => {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                walk.denied.set(true);
+            }
             eprintln!(
                 "{}rm: cannot remove {}: {}",
                 walk.origin,
@@ -474,6 +494,9 @@ fn announce(shown: &str, directory: bool, walk: &Walk) {
 }
 
 fn complain(walk: &Walk, shown: &str, e: Errno) {
+    if matches!(e, Errno::EACCES | Errno::EPERM) {
+        walk.denied.set(true);
+    }
     eprintln!(
         "{}rm: cannot remove {}: {}",
         walk.origin,

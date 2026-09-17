@@ -62,6 +62,8 @@ pub mod predict;
 pub mod prompts;
 /// Whether the command now running must leave no trace of itself.
 pub mod quiet;
+/// Whether a directory is a git repository, rather than merely holding a `.git`.
+pub mod repo;
 #[cfg(feature = "secrets")]
 pub mod secrets;
 /// Untrusted text on its way into a diagnostic, with what the terminal would obey spelled out.

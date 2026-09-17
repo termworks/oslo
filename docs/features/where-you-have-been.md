@@ -178,9 +178,10 @@ per-directory cap and the ninety-day rule exist. The scan tier walks that file's
 - **Work anywhere but an interactive session.** A script, `oslo -c` and a subshell never install a
   store, so `jump` finds none and the original diagnostic is the answer. This is structural, not a
   flag someone has to remember to check.
-- **Remember `/tmp` itself, or anything under a `.git` or `node_modules` component.** `/tmp/build-xyz`
-  is ordinary work and is kept; `/tmp` is a lobby. `$HOME` is recorded — what you run there is worth
-  suggesting — but is never a jump target, since bare `cd` already goes there.
+- **Jump to `/tmp` itself, or anything under a `.git` or `node_modules` component.** What runs
+  there is recorded and in the history finder like anywhere else; `cd` just never offers the
+  directory. `/tmp/build-xyz` is ordinary work and is offered. `$HOME` is the same — recorded, but
+  never a jump target, since bare `cd` already goes there.
 - **Cross machines.** Directory rows that arrive by sync are written without their by-name index
   entry, so no `cd <name>` can reach one.
 - **Survive the shell.** The ring is process-global and unpersisted; a new terminal starts with one

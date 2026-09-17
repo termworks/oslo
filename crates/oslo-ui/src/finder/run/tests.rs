@@ -381,10 +381,27 @@ fn delete_with_marks_is_every_marked_row() {
 fn a_worktree() -> (tempfile::TempDir, String, Command) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
+    std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let root = dir.path().to_string_lossy().into_owned();
     let mut inside = command("inside", 2);
     inside.root = Some(root.clone());
     (dir, root, inside)
+}
+
+/// **An empty `.git` is not a workspace.** One left in `$HOME` made Up open on a "workspace"
+/// history anywhere under it, where it should have opened on everything.
+#[test]
+fn an_empty_dot_git_opens_on_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    let here = dir.path().to_string_lossy().into_owned();
+    let mut inside = command("inside", 2);
+    inside.root = Some(here.clone());
+    let commands = [inside, command("outside", 1)];
+    let mut state = State::new(&commands, &here, Fuzzy::Smart, "");
+    state.start_in(None);
+    assert_eq!(state.scope, Scope::Global);
+    assert_eq!(state.matches.len(), 2);
 }
 
 /// **Up inside a repository shows that repository's history**, not everything ever run.

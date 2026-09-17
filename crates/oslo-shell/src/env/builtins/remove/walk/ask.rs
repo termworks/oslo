@@ -32,7 +32,11 @@ pub(super) fn ask_at(
         return true;
     }
     if walk.interactive {
-        return confirm(&walk.origin, &format!("remove {kind} '{shown}'"));
+        return ask(
+            walk.prompt,
+            &walk.origin,
+            &format!("remove {kind} '{shown}'"),
+        );
     }
     if !std::io::stdin().is_terminal() {
         return true;
@@ -44,11 +48,7 @@ pub(super) fn ask_at(
         AtFlags::AT_EACCESS,
     )
     .is_ok();
-    writable
-        || confirm(
-            &walk.origin,
-            &format!("remove write-protected {kind} '{shown}'"),
-        )
+    writable || protected(walk, shown, kind)
 }
 
 /// The same question about the operand, which has a path and no parent descriptor.
@@ -57,15 +57,74 @@ pub(super) fn ask_path(walk: &Walk, shown: &str, kind: &str, path: &Path) -> boo
         return true;
     }
     if walk.interactive {
-        return confirm(&walk.origin, &format!("remove {kind} '{shown}'"));
+        return ask(
+            walk.prompt,
+            &walk.origin,
+            &format!("remove {kind} '{shown}'"),
+        );
     }
     if !std::io::stdin().is_terminal() || nix::unistd::access(path, AccessFlags::W_OK).is_ok() {
         return true;
     }
-    confirm(
-        &walk.origin,
-        &format!("remove write-protected {kind} '{shown}'"),
-    )
+    protected(walk, shown, kind)
+}
+
+/// Ask `question`: oslo's own yes/no at a prompt, the `rm` line on stdin anywhere else.
+pub fn ask(prompt: bool, origin: &str, question: &str) -> bool {
+    if prompt && let Some(yes) = widget(&format!("rm: {question}?"), "Yes", "No") {
+        return yes;
+    }
+    confirm(origin, question)
+}
+
+/// The write-protected question — once per `rm` at a prompt, and the answer holds for the rest.
+///
+/// **One question, not one per file.** A git repository's objects are all read-only, so GNU's
+/// question per file is two hundred questions to remove one checkout. Nobody answers them: they
+/// press Ctrl-C and reach for `sudo`, which is not even what is needed, because removing a
+/// read-only file only needs its directory to be writable.
+fn protected(walk: &Walk, shown: &str, kind: &str) -> bool {
+    let line = || format!("remove write-protected {kind} '{shown}'");
+    if !walk.prompt {
+        return confirm(&walk.origin, &line());
+    }
+    if let Some(answer) = walk.protected.get() {
+        return answer;
+    }
+    // The tail of the path, so the question fits one row: a git object's whole path wrapped, and
+    // the wrapped half was left on the screen when the question closed.
+    let short = match shown.char_indices().rev().nth(29) {
+        Some((at, _)) => format!("…{}", &shown[at..]),
+        None => shown.to_string(),
+    };
+    let question = format!("rm: '{short}' is write-protected. Remove all such files?");
+    match widget(&question, "Remove them", "Skip them") {
+        Some(answer) => {
+            walk.protected.set(Some(answer));
+            answer
+        }
+        None => confirm(&walk.origin, &line()),
+    }
+}
+
+/// oslo's yes/no, or `None` when there is no terminal to draw it on.
+///
+/// Esc and Ctrl-C are a no that also stops the `rm`, as Ctrl-C at the stdin prompt does.
+pub fn widget(question: &str, yes: &str, no: &str) -> Option<bool> {
+    let spec = oslo_ui::ask::Confirm {
+        question: question.to_string(),
+        yes: yes.to_string(),
+        no: no.to_string(),
+        ..Default::default()
+    };
+    match oslo_ui::ask::confirm(&spec) {
+        oslo_ui::ask::Answer::Given(yes) => Some(yes),
+        oslo_ui::ask::Answer::Cancelled => {
+            crate::exec::job::note_interrupt();
+            Some(false)
+        }
+        oslo_ui::ask::Answer::NoTerminal => None,
+    }
 }
 
 /// Anything but a `y` answer means no, as it does in `rm` and in `find -ok`.

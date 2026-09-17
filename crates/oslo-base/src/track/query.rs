@@ -203,9 +203,11 @@ impl Best {
     }
 }
 
-/// A directory row as the ranker wants it, unless it is one of the two that are never offered.
+/// A directory row as the ranker wants it, unless it is never offered: where the shell stands,
+/// `$HOME`, or a directory `redact::is_excluded` keeps out of `cd` — `/tmp`, anything in a `.git`.
 fn candidate(row: DirRow, exclude: &str, home: &str) -> Option<Candidate> {
-    (row.path != exclude && row.path != home).then_some(Candidate {
+    let offered = row.path != exclude && row.path != home && !super::redact::is_excluded(&row.path);
+    offered.then_some(Candidate {
         path: row.path,
         visits: row.visits,
         last_visit: row.last_visit,

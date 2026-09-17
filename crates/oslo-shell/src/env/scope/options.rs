@@ -127,6 +127,11 @@ impl Environment {
         self.option(ShellOption::Interactive)
     }
 
+    /// Whether oslo's own line editor is reading this shell's commands. Set by the REPL alone.
+    pub fn at_prompt(&self) -> bool {
+        self.option(ShellOption::Prompt)
+    }
+
     /// The value of `$-`.
     pub fn option_flags(&self) -> String {
         self.options.flag_string()

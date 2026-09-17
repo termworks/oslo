@@ -126,7 +126,7 @@ fn repository(dir: &str) -> Option<PathBuf> {
     let mut at = start.as_path();
     loop {
         let candidate = at.join(".git");
-        if candidate.is_dir() {
+        if candidate.is_dir() && oslo_base::repo::is_repository(&candidate) {
             return Some(common(candidate));
         }
         // A worktree and a submodule have a `.git` *file* holding `gitdir: <path>`.

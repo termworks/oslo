@@ -106,6 +106,22 @@ pub trait Assist {
         None
     }
 
+    /// The line `back` commands ago — `1` is the previous one — without moving the Up/Down walk.
+    /// What `alt-.` reads.
+    fn history_line(&mut self, _back: usize) -> Option<String> {
+        None
+    }
+
+    /// `alt-<`: the oldest entry, with the walk moved there so Down goes on from it.
+    fn history_oldest(&mut self, _line: &str) -> Option<String> {
+        None
+    }
+
+    /// `alt->`: back to the line being composed, out of the walk.
+    fn history_newest(&mut self) -> Option<String> {
+        None
+    }
+
     /// Ctrl-R. Answers a whole line to put in place, or `None` to leave things alone.
     fn search_history(&mut self, _line: &str) -> Option<String> {
         None

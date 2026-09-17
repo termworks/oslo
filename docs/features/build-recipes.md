@@ -65,6 +65,8 @@ $ make build                 # nothing changed
    ▼
  engine + init.lua + bindings        so oslo.make exists before the file mentions it
    ▼
+ .env.lua, if allowed    the directory environment, so a recipe runs in what it declares
+   ▼
  load .make.lua          declarations only — every body is a function, nothing runs
    ▼
  oslo.make.__main()      parse argv, plan the graph, run it, set the exit status
@@ -100,6 +102,12 @@ simply works.
 
 What that costs is what `make` and `just` already cost — **a recipe cannot `cd` the shell that
 called it, or set a variable in it.** That is the semantics of a recipe, not a limitation of this.
+
+**What it does get is the directory's own environment.** `oslo make` evaluates the project's
+`.env.lua` — allow list and all — after the config and before `.make.lua` is read, so a recipe
+resolves what the directory declares. Without it a recipe ran in whatever the calling shell was
+holding: the interactive session's load from whenever it last entered the project, or nothing at
+all when the command was typed from somewhere else.
 
 ### The `make` builtin gets out of the way
 

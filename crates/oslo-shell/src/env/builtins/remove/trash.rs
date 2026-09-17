@@ -42,10 +42,29 @@ impl Trash {
     /// the caller already knows how to remove a thing, and a trash that also deletes would be two
     /// answers to one question.
     pub fn take(&self, path: &Path, shown: &str, directory: bool) -> Option<io::Result<PathBuf>> {
-        if size_over(path, directory, self.limit) {
+        // Already in the trash: removing it from there means removing it. With the trash at `/tmp`,
+        // `rm x` in `/tmp` renamed `x` to `x.1` beside itself, and every retry added another `.1`.
+        if self.holds(path) || size_over(path, directory, self.limit) {
             return None;
         }
         Some(self.move_aside(path, shown))
+    }
+
+    /// Whether `path` already sits inside the trash directory.
+    ///
+    /// The directory holding it is resolved, never `path` itself: a symlink operand is one entry,
+    /// and resolving it would ask about wherever it points.
+    fn holds(&self, path: &Path) -> bool {
+        let Ok(trash) = self.directory.canonicalize() else {
+            return false;
+        };
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        parent
+            .canonicalize()
+            .is_ok_and(|parent| parent.starts_with(&trash))
     }
 
     fn move_aside(&self, path: &Path, shown: &str) -> io::Result<PathBuf> {
@@ -146,5 +165,42 @@ fn remove_any(path: &Path) -> io::Result<()> {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Trash;
+    use oslo_ui::settings::Rm;
+
+    fn trash_at(dir: &std::path::Path) -> Trash {
+        Trash::new(&Rm {
+            to_tmp: true,
+            max_to_tmp: 100,
+            trash: dir.display().to_string(),
+        })
+    }
+
+    /// **What is already in the trash is not moved again** — it is declined, so the caller
+    /// destroys it. With the trash at `/tmp`, `rm x` in `/tmp` renamed `x` to `x.1` beside itself.
+    #[test]
+    fn what_is_already_in_the_trash_is_not_moved_again() {
+        let bin = tempfile::tempdir().unwrap();
+        let trash = trash_at(bin.path());
+        let inside = bin.path().join("x");
+        std::fs::write(&inside, "x").unwrap();
+        assert!(trash.take(&inside, "x", false).is_none());
+        assert!(inside.exists(), "declined, not moved");
+        assert!(!bin.path().join("x.1").exists(), "and no copy beside it");
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("y");
+        std::fs::write(&outside, "y").unwrap();
+        let moved = trash.take(&outside, "y", false).unwrap().unwrap();
+        assert_eq!(
+            moved,
+            bin.path().join("y"),
+            "anything else still goes to the trash"
+        );
     }
 }

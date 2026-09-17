@@ -19,6 +19,7 @@ pub use assist::{Assist, NoAssist};
 
 mod preview;
 
+mod recall;
 mod shortcuts;
 
 /// The line being edited, and where in history it came from.
@@ -27,6 +28,8 @@ pub struct Session {
     pub buffer: Buffer,
     /// Whether the key before this one was a Tab on an empty line. See [`shortcuts::tab`].
     tab_armed: bool,
+    /// What the last `alt-.` inserted, while the next key could be another. See [`recall`].
+    last_arg: Option<recall::LastArg>,
     /// Vi mode, when `oslo.vi.enabled` asked for it.
     ///
     /// `None` is emacs, and then nothing vi-shaped is consulted at all. With it on, insert mode
@@ -41,8 +44,8 @@ impl Session {
         buffer.set(text, cursor);
         Session {
             buffer,
-            tab_armed: false,
             vi: crate::vi::enabled().then(super::vi::Vi::default),
+            ..Session::default()
         }
     }
 
@@ -73,6 +76,7 @@ impl Session {
             crate::prompt::invalidate();
             return changed(true);
         }
+        let chain = self.last_arg.take();
 
         // **The `key` hook sees the keystroke before anything else, ordinary characters included.**
         //
@@ -110,7 +114,7 @@ impl Session {
         // works. That would make every `oslo.keys["alt-…"]` binding unreachable for most users —
         // an explicit binding has to beat a heuristic about what someone probably meant.
         if let Some(bound) = assist.binding(key) {
-            return self.perform(bound, assist);
+            return self.perform(bound, assist, chain);
         }
 
         // Tab twice on an empty line switches language — the fallback for a terminal that cannot

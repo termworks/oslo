@@ -386,8 +386,8 @@ fn is_user_password(word: &str) -> bool {
 
 /// Directories that are excluded as themselves, not as the top of a subtree.
 ///
-/// `/tmp` is a lobby. Nobody works *in* it, so recording it buys nothing, but plenty of people work
-/// in `/tmp/build-xyz` and excluding those with it would silently delete the feature for them.
+/// `/tmp` is a lobby: nobody wants `cd` to jump to it. Plenty of people work in `/tmp/build-xyz`,
+/// and refusing those with it would silently delete the feature for them.
 const EXCLUDED_DIRS: &[&str] = &["/tmp"];
 
 /// Path components that exclude everything beneath them.
@@ -397,14 +397,14 @@ const EXCLUDED_DIRS: &[&str] = &["/tmp"];
 /// `node_modules` is.
 const EXCLUDED_COMPONENTS: &[&str] = &[".git", "node_modules"];
 
-/// Whether a directory must be kept out of the store entirely — not merely out of `run`.
+/// Whether a directory is never offered as a `cd` destination.
 ///
-/// This is the design's directory exclusion list (`docs/research/smart-cd.md`, Privacy and size,
-/// item 6) minus `$HOME`, which the directory queries refuse as a *jump target* while still
-/// recording what was run there — see `super::query::Track::directories_ranked`. Note which of these
-/// are subtrees and which are not — the design spells out "anything under" for the two components
-/// and names the other as a directory, and the difference is the difference between excluding
-/// `/tmp` and excluding everybody who builds in it.
+/// **Only the jump.** What runs in one is recorded like anywhere else: a command that vanished from
+/// the history finder because of where it ran is a history that cannot be trusted, and `/tmp` is
+/// where a lot of throwaway work happens. This is the design's directory exclusion list
+/// (`docs/research/smart-cd.md`, Privacy and size, item 6), applied the way `$HOME` always was — see
+/// `super::query`. Note which of these are subtrees and which are not: the difference is the
+/// difference between refusing `/tmp` and refusing everybody who builds in it.
 pub fn is_excluded(path: &str) -> bool {
     let path = path.trim_end_matches('/');
     if EXCLUDED_DIRS.contains(&path) {

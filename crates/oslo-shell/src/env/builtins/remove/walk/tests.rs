@@ -12,11 +12,32 @@ use std::path::Path;
 fn quiet(recursive: bool) -> Walk {
     Walk {
         origin: "oslo: ".to_string(),
-        force: false,
-        interactive: false,
         recursive,
-        verbose: false,
+        ..Walk::default()
     }
+}
+
+/// **A read-only directory is a permission failure, and the walk says so** — which is what the
+/// prompt's `sudo` offer is made from.
+#[test]
+fn a_permission_failure_is_noticed() {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("tree");
+    write(&root.join("locked/f"), "x");
+    let locked = root.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).expect("chmod");
+
+    let walk = quiet(true);
+    let outcome = remove_tree(&root, "tree", &walk);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod back");
+
+    assert!(outcome.failed);
+    assert!(walk.denied.get(), "the failure was permission");
+    assert!(!quiet(true).denied.get(), "and a walk starts without one");
 }
 
 fn write(path: &Path, text: &str) {

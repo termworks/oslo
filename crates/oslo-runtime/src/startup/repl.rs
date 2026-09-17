@@ -71,6 +71,8 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     // every `Environment`, so a script that defined `l()` silently got `ls -CF`.
     interactive_env.seed_interactive_aliases();
     interactive_env.set_option(ShellOption::StdinInput, true);
+    // What tells this shell from `sh -i -s < file`, which reports the same `is`: the line editor.
+    interactive_env.set_option(ShellOption::Prompt, true);
     history::register(&mut interactive_env);
     // Before the config, so `init.lua` reads a universal variable as a variable rather than having
     // to know where the store is. The loop below picks up every later change; this is the first.

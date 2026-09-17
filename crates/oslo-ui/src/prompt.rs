@@ -71,12 +71,13 @@ pub fn git_root() -> Option<PathBuf> {
 /// standing in any more: a command is attributed to where it *started*, which a `cd` has already
 /// left by the time the loop comes to write it down.
 ///
-/// `.exists()` rather than `.is_dir()` is what makes this right inside a linked worktree, where
-/// `.git` is a file naming the real one.
+/// A `.git` counts only when it is a repository — see [`oslo_base::repo::is_repository`], which
+/// also accepts the file a linked worktree has. An empty `~/.git` made all of `$HOME` one
+/// workspace, so Up opened on a "workspace" history anywhere under it.
 pub fn git_root_of(dir: &Path) -> Option<PathBuf> {
     let mut dir = dir;
     loop {
-        if dir.join(".git").exists() {
+        if oslo_base::repo::is_repository(&dir.join(".git")) {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;

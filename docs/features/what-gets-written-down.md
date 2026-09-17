@@ -89,7 +89,8 @@ nothing at all, because everything else they would hold is already in the key.
 The `argv` stored is not always the line: a risky one keeps only its head, so `AWS_SECRET=… aws s3
 cp …` is remembered as `aws s3`, the head having dropped the leading assignment and kept the known
 subcommand, while the directory, the count and the timing survive. A directory that is `/tmp`
-exactly, or has `.git` or `node_modules` as a path *component*, records nothing at all.
+exactly, or has `.git` or `node_modules` as a path *component*, is recorded like any other — what
+ran there is in the finder — but is never offered as a `cd` destination.
 Dwell is shell-milliseconds rather than wall-clock — two shells in one directory for an hour record
 two hours — and one command contributes fifteen minutes at most, so a laptop that slept for nine
 hours does not credit nine hours to `~`.

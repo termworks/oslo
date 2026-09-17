@@ -454,8 +454,12 @@ pub fn interrupt_waiting() -> bool {
 /// *next* command reached its first boundary — which then reported it as interrupted and returned
 /// 130 without running anything, leaving the flag clear so the retry worked. A keystroke from
 /// before the command was typed cannot sensibly cancel it, so the REPL forgets it at the prompt.
+///
+/// **The self-pipe is emptied too.** A byte left in it by a Ctrl-C at the prompt woke the next wait
+/// on it at once — `rm`'s write-protected question answered itself "no" before anyone could type.
 pub fn forget_interrupt() {
     let _ = interrupt_pending();
+    drain_interrupt_fd();
 }
 
 /// Ask the evaluator running on *this* thread to unwind at its next command boundary.

@@ -18,6 +18,26 @@ mod arrival;
 pub mod config;
 #[cfg(feature = "direnv")]
 mod environments;
+
+/// Load the directory environment for `dir` in a tool that is not the REPL — `oslo make`, and
+/// anything else that runs a project's own code in a process of its own.
+///
+/// **A recipe runs in the environment its directory declares.** Without this `oslo make` ran in
+/// whatever the calling shell happened to be holding, so a `.make.lua` could not rely on anything
+/// its own `.env.lua` computes — and a value the interactive shell had cached from an earlier,
+/// possibly different, evaluation is what the recipe actually got.
+///
+/// The allow list still governs: an `.env.lua` nobody has approved is reported and not read, on
+/// exactly the same terms as at a prompt.
+#[cfg(feature = "direnv")]
+pub fn load_directory_environment(
+    env: &std::sync::Arc<std::sync::Mutex<oslo_shell::Environment>>,
+    lua: &crate::lua::LuaEngine,
+    dir: &std::path::Path,
+) {
+    environments::start();
+    environments::arrive(env, lua, dir);
+}
 mod follow;
 pub mod history;
 mod integration;
