@@ -802,6 +802,7 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 [[package]]
 name = "rune"
 version = "0.1.4"
+source = "git+https://github.com/onix-os/rune?tag=v0.1.4#59d3d4a957410b635ce0f8aff5af31ca072d4a7e"
 
 [[package]]
 name = "rustc_version"

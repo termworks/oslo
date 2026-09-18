@@ -23,6 +23,7 @@ target/
 /.ruff_cache
 __pycache__/
 *.py[cod]
+/.cargo/config.toml
 compile_commands.json
 .complog
 .quickfix

@@ -121,9 +121,6 @@ members = [
 [workspace.dependencies]
 rune = { git = "https://github.com/onix-os/rune", tag = "v0.1.4" }
 
-[patch."https://github.com/onix-os/rune"]
-rune = { path = "../../onix/rune" }
-
 [[bench]]
 name = "fuzzy"
 path = "bench/fuzzy.rs"
