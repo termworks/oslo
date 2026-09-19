@@ -119,7 +119,7 @@ members = [
 # not a hypothetical — it happened while checking a branch of rune against this tree, and the only
 # symptom was a fix that appeared to do nothing.
 [workspace.dependencies]
-rune = { git = "https://github.com/onix-os/rune", tag = "v0.1.4" }
+rune = { git = "https://github.com/onix-os/rune", tag = "v0.1.5" }
 
 [[bench]]
 name = "fuzzy"
