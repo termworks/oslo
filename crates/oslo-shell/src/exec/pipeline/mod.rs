@@ -126,8 +126,8 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
                 // rest of that line — the whole `if` around the miss, the function it was in —
                 // reports it with status 1, and carries on with the next line. Only the outermost
                 // list catches it; everywhere below, it unwinds like any other error.
-                Err(error @ ShellError::NoMatch(_)) if outermost => {
-                    eprintln!("{}{error}", env.origin());
+                Err(e @ ShellError::NoMatch(_)) if outermost => {
+                    eprintln!("{}{e}", env.origin());
                     abandoned = Some(item.line);
                     env.last_status = 1;
                     1

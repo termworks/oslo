@@ -166,6 +166,17 @@ pub struct Want {
     /// Define the dev shell's shell functions — `runHook`, `buildPhase`, `substituteInPlace` and
     /// the hundred or so others stdenv brings.
     pub functions: bool,
+    /// Evaluate with `--impure`, so the flake may read the environment.
+    ///
+    /// **`builtins.getEnv` answers `""` in a pure evaluation, whatever the variable holds.** That
+    /// is nix's rule and not a mistake here: a flake that reads its surroundings evaluates to
+    /// something different on two machines, so nix asks to be told that is wanted. Without this
+    /// there was no way to ask at all — a string argument is the *installable*, so
+    /// `nix_develop("--impure")` sent nix `--impure` as the thing to build.
+    ///
+    /// The evaluation is **not cached** when this is on: what the flake read is unknowable from
+    /// here, so the cache's input stamps cannot say whether the answer still holds.
+    pub impure: bool,
 }
 
 /// Why `print-dev-env` said nothing, **asked of nix rather than guessed at**.
@@ -232,7 +243,17 @@ fn local_system() -> Option<String> {
 
 /// The same as [`apply`], plus whatever `want` asks for.
 pub fn apply_with(env: &mut Environment, args: &[String], want: Want) -> Result<usize, String> {
-    let json = match cached(args) {
+    // nix's own flag, in nix's own argument list — the caller's words are forwarded verbatim, and
+    // this goes in front of them so an installable stays the first thing that is not a flag.
+    let args = &match want.impure {
+        true => [vec!["--impure".to_string()], args.to_vec()].concat(),
+        false => args.to_vec(),
+    };
+    // **An impure evaluation is never served from the cache, and never written to it.** It read
+    // something this side cannot see — an environment variable, a file outside the flake — so the
+    // input stamps the key is built from cannot say whether the answer still holds. Paying the
+    // evaluation on every arrival is the price of asking a flake to read its surroundings.
+    let json = match cached(args).filter(|_| !want.impure) {
         Some(remembered) => remembered,
         None => {
             let fresh = crate::exec::eval_command_substitution(env, &command(args, &profile()))
@@ -243,7 +264,9 @@ pub fn apply_with(env: &mut Environment, args: &[String], want: Want) -> Result<
             // Written only after it parses, so a truncated or error-shaped answer is not the thing
             // every later arrival is served from.
             exported_from(&fresh)?;
-            remember(args, &fresh);
+            if !want.impure {
+                remember(args, &fresh);
+            }
             fresh
         }
     };
@@ -491,5 +514,16 @@ mod command_tests {
     fn an_installable_and_an_awkward_word_are_quoted() {
         let built = command(&args(&[".#other", "a b"]), "/p");
         assert!(built.ends_with("'.#other' 'a b'"), "{built}");
+    }
+
+    /// **`--impure` goes in front of the installable, not after it.** `asked_for` reads the first
+    /// word that is not a flag as the dev shell's name, and nix resolves it the same way — so a
+    /// flag appended at the end of `nix_develop{ flake = "..#other", impure = true }` would be
+    /// fine, while one put anywhere before it must still not be mistaken for the installable.
+    #[test]
+    fn impure_is_a_flag_and_the_installable_is_still_the_first_word() {
+        let built = command(&args(&["--impure", ".#other"]), "/p");
+        assert!(built.ends_with("'--impure' '.#other'"), "{built}");
+        assert_eq!(super::asked_for(&args(&["--impure", ".#other"])), "other");
     }
 }

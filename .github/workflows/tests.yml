@@ -18,9 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # A dependency or `[patch]` path that climbs out of the repository exists on one machine only.
+      - name: No local paths in the manifest
+        run: |
+          grep -nE 'path *= *"\.\./\.\.' Cargo.toml || exit 0
+          echo "::error::Cargo.toml points outside the repository"
+          exit 1
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt, clippy
+      # A lockfile written under a local `[patch]` records the dependency with no source.
+      - name: Lockfile matches the manifest
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null && exit 0
+          echo "::error::Cargo.lock is stale, or was written under a local [patch]"
+          exit 1
       - uses: actions/cache@v4
         with:
           path: |

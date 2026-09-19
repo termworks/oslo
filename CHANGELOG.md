@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.2] - 2026-09-19
+
+### <!-- 0 -->⛰️  Features
+
+- Nix_develop can evaluate impurely
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Drop the local rune patch
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Cleanup
+
+### Build
+
+- Pin rune v0.1.5
+
+## [0.7.1] - 2026-09-17
+
 ## [0.7.1] - 2026-09-17
 
 ### <!-- 0 -->⛰️  Features
