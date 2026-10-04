@@ -151,6 +151,7 @@
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
+            pkgs.bashInteractive
             pkgs.binutils
             pkgs.git
             pkgs.git-cliff
