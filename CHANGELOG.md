@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.3] - 2026-10-04
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Publish cache only on v tags
+
+### <!-- 6 -->🧪 Testing
+
+- Two cases need bash 5.3
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Publish packages to termworks cache
+
 ## [0.7.2] - 2026-09-19
 
 ### <!-- 0 -->⛰️  Features

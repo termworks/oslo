@@ -1,6 +1,13 @@
 {
   description = "oslo shell and Rust development environment";
 
+  nixConfig = {
+    extra-substituters = [ "https://termworks.cachix.org" ];
+    extra-trusted-public-keys = [
+      "termworks.cachix.org-1:Ty7sSVALfD5ajbcWBIdaNHcaEx3fEmVrOo+rSzy0mvE="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
     flake-utils.url = "github:numtide/flake-utils";
