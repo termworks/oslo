@@ -168,6 +168,10 @@ program everywhere else. There is no `Makefile`: `scripts/build.sh` exists preci
 
 ### Nix binary cache
 
+Only the latest release per package and architecture is protected from cache
+cleanup. Pins use `*-latest-*` with `--keep-revisions 1`; older releases may
+need rebuilding after garbage collection.
+
 The shared Cachix cache is `termworks`. CI publishes only on pushed tags matching
 `v*`. Use a published release tag to download cached packages. The flake advertises
 the cache URL and public key; accept the cache configuration when Nix prompts.
