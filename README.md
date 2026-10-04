@@ -166,6 +166,55 @@ At an oslo prompt in this directory, `make` alone is enough — the builtin hand
 program everywhere else. There is no `Makefile`: `scripts/build.sh` exists precisely because
 `.make.lua` cannot build the shell that reads it.
 
+### Nix binary cache
+
+The shared Cachix cache is `termworks`. Once a revision has been published by CI,
+Nix can download its packages instead of compiling them. The flake advertises the
+cache URL and public key; accept the cache configuration when Nix prompts:
+
+```sh
+nix build github:termworks/oslo
+nix build github:termworks/oslo#oslo-minimal
+```
+
+When consuming Oslo as an input of another flake, configure the cache on the
+consumer machine as well. With the Cachix CLI installed:
+
+```sh
+cachix use termworks
+```
+
+Alternatively, add these settings to `/etc/nix/nix.conf` and restart the Nix
+daemon if your installation uses one:
+
+```ini
+extra-substituters = https://termworks.cachix.org
+extra-trusted-public-keys = termworks.cachix.org-1:Ty7sSVALfD5ajbcWBIdaNHcaEx3fEmVrOo+rSzy0mvE=
+```
+
+The consumer must request the same build inputs as CI. Overriding the package's
+Nixpkgs input or changing features can require a new build. To request the
+development branch explicitly, use `github:termworks/oslo/develop`.
+
+#### Publishing setup
+
+1. In the `termworks` cache settings at [Cachix](https://app.cachix.org), generate
+   a per-cache write token using Cachix-managed signing.
+2. In the GitHub repository's **Settings → Secrets and variables → Actions**,
+   add the token as `CACHIX_AUTH_TOKEN`. An organization Actions secret restricted
+   to selected repositories can be shared by other Termworks projects.
+3. Push the workflow to `main` or `develop`. Once it is on the default branch,
+   it can also be started from **Actions → nix-cache → Run workflow**.
+
+`.github/workflows/nix-cache.yml` builds both variants on native x86_64 and ARM64
+Linux runners. It uploads their runtime closures after the flake's install checks
+pass, then verifies downloads and shell startup on fresh runners with builders
+disabled. Published releases also pin both variants against cache garbage
+collection. Pull requests do not run this publishing workflow.
+
+The write token is a secret: do not commit it or place it in `flake.nix`.
+Other repositories can publish to the same cache with their own Nix build jobs.
+
 ### Optional features
 
 All twelve are off *by default*, and off for the same reason: a shell that is going to be `/bin/sh`
