@@ -57,7 +57,7 @@ jobs:
         run: |
           for package in oslo oslo-minimal; do
             path=$(nix path-info --accept-flake-config --no-update-lock-file ".#$package")
-            cachix pin termworks "$package-latest-$SYSTEM" "$path" --keep-revisions 1
+            cachix pin termworks "$package-$SYSTEM" "$path" --keep-revisions 5
           done
 
   verify-download:
