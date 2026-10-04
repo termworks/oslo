@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nix-cache-${{ github.event_name }}-${{ github.ref }}
+  group: nix-cache
   cancel-in-progress: false
 
 jobs:
@@ -57,7 +57,7 @@ jobs:
         run: |
           for package in oslo oslo-minimal; do
             path=$(nix path-info --accept-flake-config --no-update-lock-file ".#$package")
-            cachix pin termworks "$package-$GITHUB_REF_NAME-$SYSTEM" "$path"
+            cachix pin termworks "$package-latest-$SYSTEM" "$path" --keep-revisions 1
           done
 
   verify-download:
