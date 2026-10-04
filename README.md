@@ -168,13 +168,14 @@ program everywhere else. There is no `Makefile`: `scripts/build.sh` exists preci
 
 ### Nix binary cache
 
-The shared Cachix cache is `termworks`. Once a revision has been published by CI,
-Nix can download its packages instead of compiling them. The flake advertises the
-cache URL and public key; accept the cache configuration when Nix prompts:
+The shared Cachix cache is `termworks`. CI publishes only on pushed tags matching
+`v*`. Use a published release tag to download cached packages. The flake advertises
+the cache URL and public key; accept the cache configuration when Nix prompts.
+Replace `vX.Y.Z` with a tag whose cache workflow has succeeded:
 
 ```sh
-nix build github:termworks/oslo
-nix build github:termworks/oslo#oslo-minimal
+nix build github:termworks/oslo/vX.Y.Z
+nix build github:termworks/oslo/vX.Y.Z#oslo-minimal
 ```
 
 When consuming Oslo as an input of another flake, configure the cache on the
@@ -193,8 +194,8 @@ extra-trusted-public-keys = termworks.cachix.org-1:Ty7sSVALfD5ajbcWBIdaNHcaEx3fE
 ```
 
 The consumer must request the same build inputs as CI. Overriding the package's
-Nixpkgs input or changing features can require a new build. To request the
-development branch explicitly, use `github:termworks/oslo/develop`.
+Nixpkgs input or changing features can require a new build. Branch revisions are
+not published to the cache unless they are also tagged with a matching release tag.
 
 #### Publishing setup
 
@@ -203,13 +204,13 @@ development branch explicitly, use `github:termworks/oslo/develop`.
 2. In the GitHub repository's **Settings → Secrets and variables → Actions**,
    add the token as `CACHIX_AUTH_TOKEN`. An organization Actions secret restricted
    to selected repositories can be shared by other Termworks projects.
-3. Push the workflow to `main` or `develop`. Once it is on the default branch,
-   it can also be started from **Actions → nix-cache → Run workflow**.
+3. Commit the workflow, then push a release tag matching `v*` that includes it.
+   Branch pushes, release events, and manual dispatch do not trigger publishing.
 
 `.github/workflows/nix-cache.yml` builds both variants on native x86_64 and ARM64
 Linux runners. It uploads their runtime closures after the flake's install checks
 pass, then verifies downloads and shell startup on fresh runners with builders
-disabled. Published releases also pin both variants against cache garbage
+disabled. Both variants are pinned by release tag against cache garbage
 collection. Pull requests do not run this publishing workflow.
 
 The write token is a secret: do not commit it or place it in `flake.nix`.
