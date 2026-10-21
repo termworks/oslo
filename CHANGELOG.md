@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.5] - 2026-10-21
+
+### <!-- 5 -->🎨 Styling
+
+- Rustfmt the echo hold
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Refresh Cargo.lock for v0.7.4
+
 ## [0.7.4] - 2026-10-21
 
 ### <!-- 1 -->🐛 Bug Fixes
