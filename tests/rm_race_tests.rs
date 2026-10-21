@@ -47,6 +47,14 @@ fn read_until(stream: &mut impl Read, marker: &str) -> String {
     seen
 }
 
+fn expect_prompt(stream: &mut impl Read, marker: &str) {
+    let seen = read_until(stream, marker);
+    assert!(
+        seen.contains(marker),
+        "expected {marker:?}, received {seen:?}"
+    );
+}
+
 #[test]
 fn a_directory_swapped_for_a_symlink_mid_walk_cannot_redirect_the_removal() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -77,22 +85,20 @@ fn a_directory_swapped_for_a_symlink_mid_walk_cannot_redirect_the_removal() {
 
     // Descend into `tree`, then into `tree/sub`, so the walk is holding `sub` open and is about to
     // deal with the file inside it.
-    read_until(&mut errors, "descend into directory 'tree'?");
+    expect_prompt(&mut errors, "descend into directory 'tree'?");
     writeln!(input, "y").expect("answer");
-    read_until(&mut errors, "descend into directory 'tree/sub'?");
+    expect_prompt(&mut errors, "descend into directory 'tree/sub'?");
     writeln!(input, "y").expect("answer");
 
     // `rm` is now blocked on the prompt for `tree/sub/f`. Swap the directory it is standing in for
     // a symlink pointing at somewhere it was never told to touch.
-    read_until(&mut errors, "remove regular file 'tree/sub/f'?");
+    expect_prompt(&mut errors, "remove regular file 'tree/sub/f'?");
     std::fs::remove_file(sub.join("f")).expect("clear sub");
     std::fs::remove_dir(&sub).expect("remove the real sub");
     std::os::unix::fs::symlink(&precious, &sub).expect("plant the symlink");
 
     // Now let it proceed. A path-based walk resolves `tree/sub/f` through the new link.
-    writeln!(input, "y").expect("answer");
-    writeln!(input, "y").expect("answer");
-    writeln!(input, "y").expect("answer");
+    input.write_all(b"y\ny\ny\n").expect("answer");
     drop(input);
 
     let _ = child.wait().expect("wait");

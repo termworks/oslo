@@ -153,6 +153,15 @@ pub fn open(
                     None => Outcome::Cancelled,
                 });
             }
+            // Insert copies the highlighted entry and stays: the finder is where you found
+            // it, and losing your place to put it on the clipboard would undo the finding.
+            Key::Insert => {
+                if let Some(chosen) = state.matches.get(state.selected) {
+                    let _ =
+                        stdout.write_all(crate::marks::clipboard(&chosen.command.line).as_bytes());
+                    let _ = stdout.flush();
+                }
+            }
             Key::Up => state.up(),
             Key::Down => state.down(),
             Key::PageUp => state.page_up(),

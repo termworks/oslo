@@ -151,6 +151,7 @@ change makes the old index meaningless, whereas a deletion leaves the rows aroun
 | Tab | the next profile |
 | Ctrl-Space | mark this row and step to the next |
 | Delete, Ctrl-D | forget everything marked, or the highlighted row |
+| Insert | copy the highlighted row to the clipboard (OSC 52), staying in the finder |
 | Delete again | while the question is up, answer *yes* |
 | Backspace | one character off the query |
 | Ctrl-U | clear the query |

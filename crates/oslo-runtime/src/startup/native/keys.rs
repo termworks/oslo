@@ -33,6 +33,7 @@ pub(super) fn key_name(key: Key) -> Option<String> {
         Key::End => "end".to_string(),
         Key::PageUp => "pageup".to_string(),
         Key::PageDown => "pagedown".to_string(),
+        Key::Insert => "insert".to_string(),
         Key::Function(number @ 1..=12) => format!("f{number}"),
         // **Space, and only space, out of `Key::Char`.** The line-editor page lists it among the
         // names a config may bind, and it had none here — so `oslo.keys["space"]` was read without
@@ -87,6 +88,7 @@ pub(super) fn hook_key_name(key: Key) -> (String, Option<char>) {
         Key::End => ("end".to_string(), None),
         Key::PageUp => ("pageup".to_string(), None),
         Key::PageDown => ("pagedown".to_string(), None),
+        Key::Insert => ("insert".to_string(), None),
         Key::Function(number @ 1..=12) => (format!("f{number}"), None),
         Key::Function(_) => ("ignored".to_string(), None),
         // Reported, because a hook watching keystrokes may reasonably want to know the window

@@ -217,12 +217,30 @@ impl RunRow {
         self.last_status == Some(0) || self.runs > self.fails
     }
 
-    /// The order the suggestion query takes its one row in: most net successes, then most recent.
+    /// Whether a suggestion may offer this line at all.
+    ///
+    /// Wider than [`worked`](Self::worked): a line that ran and exited non-zero — a `grep`
+    /// that found nothing, a test run that failed — is exactly the line you retype with one
+    /// word changed, and ranking it below every older success answered "what usually works"
+    /// when the question was "what was I just doing". What stays withheld is a line that
+    /// never ran as a command: 126/127 from the last attempt with no success to its name is a
+    /// typo or a missing binary, and offering it back for ever is the defect above.
+    pub fn offerable(&self) -> bool {
+        self.worked() || !matches!(self.last_status, Some(126 | 127))
+    }
+
+    /// The order the suggestion query takes its one row in: most recent first, then most net
+    /// successes.
+    ///
+    /// Recency leads because a ghost suggestion answers "what was I just doing", and the flat
+    /// history walk it falls back to has always answered newest-first. Net successes break ties
+    /// inside the same second, which is also what keeps a much-run line ahead of a one-off typed
+    /// moments later in the same breath.
     ///
     /// A tuple rather than a comparator so that a scan can hold the best it has seen in two `i64`s
     /// and allocate only when something beats it.
     pub fn standing(&self) -> (i64, i64) {
-        (self.runs - self.fails, self.last_at)
+        (self.last_at, self.runs - self.fails)
     }
 
     pub fn encode(&self) -> Vec<u8> {

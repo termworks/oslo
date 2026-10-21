@@ -67,9 +67,15 @@ history hinter.
 Above the flat set sits the tracking store, which keys a line by the directory it ran in. It is
 asked twice: the exact directory first, then the whole worktree, and only then does the flat walk
 run. `cargo run --ex` therefore answers with *this* project's example rather than whichever project
-you last typed it in. The store also only offers a line that worked — a row is a candidate when its
-last status was zero, or when it has run at least once without failing (`runs > fails`) — so a typo
-cannot be suggested back for ever the way the flat walk would suggest it.
+you last typed it in. Within either answer, **the most recently run matching line wins** — the
+same newest-first order the flat walk has always used — and how often a line has worked only
+breaks ties inside the same second, so a habit typed moments ago is not lost to a one-off, but a
+much-run line from last week no longer buries what you ran a minute ago. Recency also outranks
+success: a line that ran and exited non-zero — a `grep` that found nothing, a test run that
+failed — is offered like any other, because retyping it with one word changed is what the ghost
+is for. The one thing still withheld is a line that never ran as a command at all (a 126/127
+last attempt with no success to its name), so a typo cannot be suggested back for ever the way
+the flat walk would suggest it.
 
 The widened worktree query is the expensive half and it is memoised, because a prefix search over
 every directory at once costs milliseconds at the first keystroke. The memo is sound on two facts
@@ -383,7 +389,7 @@ first time and 0.8 ms once the answer had been remembered — 86 µs on the slow
 | `crates/oslo-ui/src/recall/mod.rs` | `recall::suggest`, `remembered`, `seed`, `remember` |
 | `crates/oslo-ui/src/recall/nearby.rs` | `from_store`, `place`, `remembered_answer`, `forget_answers_for` |
 | `crates/oslo-base/src/track/query.rs` | `Track::suggestion_here`, `Track::suggestion_in_workspace` |
-| `crates/oslo-base/src/track/row.rs` | `RunRow::worked`, `RunRow::standing` |
+| `crates/oslo-base/src/track/row.rs` | `RunRow::worked`, `RunRow::offerable`, `RunRow::standing` |
 | `crates/oslo-ui/src/suggest.rs` | the provider registry, the continuation invariant, the budget |
 | `crates/oslo-runtime/src/lua/api/suggest.rs` | `oslo.suggest.provider` — the Lua reader |
 | `crates/oslo-ui/src/pending.rs` | what the editor waits for when an answer is not ready yet |

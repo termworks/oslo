@@ -465,6 +465,14 @@ pub struct History {
     /// Off by default, and that is not an aesthetic choice: dropping a repeat renumbers every
     /// later event, so `!-2` would point one line further back than it says.
     pub ignore_dups: bool,
+    /// Whether a line is counted in the tracking store the moment Enter is pressed.
+    ///
+    /// On by default: the aggregate behind suggestions, the finder and `cd` ranking learns the
+    /// line before it runs, so a long command — or a shell killed underneath one — is still in
+    /// the history those read. Its exit status and duration are folded in when it finishes,
+    /// without counting the run twice. Off restores the older shape, where nothing but the log
+    /// row exists until the command has finished.
+    pub immediate: bool,
     /// Patterns whose matching lines are never remembered. bash's `$HISTIGNORE`.
     ///
     /// Matched against the **whole line** with the shell's own glob rules, so `ls` is only `ls`
@@ -481,6 +489,7 @@ impl Default for History {
             file: None,
             ignore_space: true,
             ignore_dups: false,
+            immediate: true,
             ignore: Vec::new(),
         }
     }

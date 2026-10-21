@@ -26,6 +26,10 @@ pub(super) fn each_prompt(
     settled: &mut String,
     last_status: i32,
 ) {
+    // Startup held echo off so a late query reply was not printed; the editor owns
+    // the terminal from here.
+    oslo_ui::term::query::release_echo();
+
     // **Wherever the shell got here from, the prompt is the moment it has to be true.**
     //
     // The directory environment used to be reconciled in one place only: after a command line

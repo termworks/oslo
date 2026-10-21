@@ -255,6 +255,16 @@ oslo.keys["ctrl-x"] = "none"        -- give the key back
 oslo.keys["alt-e"]  = "edit-line"   -- fish's binding for the same thing
 ```
 
+### Insert — the history entry, on the clipboard
+
+Walk Up or Down onto a history entry (or pick one in the finder) and press **Insert**: that
+entry is put on the system clipboard with OSC 52 — through the terminal, so it works over SSH
+like `copy` — and nothing else changes: the line stays where it was, unrun. Inside the
+[history finder](history-finder.md), Insert copies the highlighted row and stays in the finder.
+On a line being composed, or on a recalled entry you have edited since recalling it, Insert
+does nothing — there is no entry to copy. `insert` is also a bindable key name, so
+`oslo.keys["insert"] = "none"` gives the key back.
+
 ## Configuration
 
 ```lua

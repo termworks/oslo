@@ -21,11 +21,15 @@ Enter
  ├─ Track::append(line, mode) Tree::History, row id N — BEFORE the command runs
  │    │                       session and seq are filled in here, not by the caller
  │    └─ sync::append_local   a 32-byte event id, revision 1, no completion yet
+ ├─ Track::record(Step)      Tree::Run counted on Enter too — oslo.history.immediate,
+ │                            on unless turned off; no status or duration yet
  │
  ├─ ─ ─ ─ ─  the command runs, for as long as it likes  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
  └─ the command boundary, where the status finally exists
       ├─ pre-record rule       as typed / these lines instead / nothing at all
-      ├─ Track::record(Step)   Tree::Dir + Tree::Run: where it ran, dwell, counters
+      ├─ Track::record(Step)   Tree::Dir + Tree::Run: where it ran, dwell, counters —
+      │                        or, for a line counted on Enter, its status and
+      │                        duration folded in without counting it twice
       ├─ record_outcome(N, …)  Tree::Outcome: segment 0 is the line,
       │                                       segments 1.. are the links of a chain
       └─ sync::complete_local  the same event, revision 2, completion attached
@@ -168,7 +172,16 @@ oslo.history.ignore_space = true              -- a leading space means "do not r
 oslo.history.ignore       = { "ls", "cd *" }  -- $HISTIGNORE, whole-line glob patterns
 oslo.history.size         = 10000
 oslo.history.file         = "~/.oslo_history"  -- off unless you set it; an export, never read back
+oslo.history.immediate    = true               -- count a line on Enter, not only when it finishes
 ```
+
+`immediate` governs the aggregate alone — the log row and `$HISTFILE` are written on Enter
+either way. With it on (the default), the `Run` row behind suggestions, the finder and `cd`
+ranking exists while the command is still running, and survives a shell killed underneath it;
+its status and duration are folded in when it finishes, without counting the run twice, and a
+line that turns out not to have run — a parse error, a `pre-record` refusal — has its
+provisional count taken back. With it off, the aggregate learns a line only at its boundary,
+as it did before.
 
 `file` is for other programs — bash, zsh, anything that reads a `$HISTFILE`. oslo's own history is
 the profile database, so leaving it unset costs nothing: the Up arrow, the finder, the `history`

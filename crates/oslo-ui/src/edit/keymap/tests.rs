@@ -85,6 +85,7 @@ fn the_line_is_ended_by_enter_and_abandoned_by_ctrl_c() {
 fn the_arrows_walk_history() {
     assert_eq!(action(Key::Up), Action::HistoryPrev);
     assert_eq!(action(Key::Down), Action::HistoryNext);
+    assert_eq!(action(Key::Insert), Action::CopyHistoryEntry);
 }
 
 /// An unbound chord does nothing, and says so — rather than falling through to inserting a

@@ -20,6 +20,8 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    /// The Insert key: `ESC [ 2 ~`, or kitty's functional code for it.
+    Insert,
     Function(u8),
     Accept,
     Cancel,
@@ -111,6 +113,7 @@ pub fn key(bytes: &[u8]) -> Key {
                 [b'F', ..] => Key::End,
                 [b'Z', ..] => Key::BackTab,
                 [b'1', b'~', ..] | [b'7', b'~', ..] => Key::Home,
+                [b'2', b'~', ..] => Key::Insert,
                 [b'3', b'~', ..] => Key::Delete,
                 [b'4', b'~', ..] | [b'8', b'~', ..] => Key::End,
                 [b'5', b'~', ..] => Key::PageUp,
@@ -513,5 +516,12 @@ mod tests {
     #[test]
     fn a_child_marker_is_serviced() {
         assert_eq!(parse(&[CHILD_MARK]), Parsed::Serviced(1));
+    }
+
+    /// Insert arrives as `ESC [ 2 ~` and is its own key, not an ignored sequence.
+    #[test]
+    fn insert_is_a_key() {
+        assert_eq!(key(b"\x1b[2~"), Key::Insert);
+        assert_eq!(key(b"\x1b[3~"), Key::Delete, "its neighbour is untouched");
     }
 }

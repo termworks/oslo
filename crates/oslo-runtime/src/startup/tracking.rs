@@ -55,6 +55,10 @@ pub(super) struct Tracker {
     /// stands still for long stretches, and the directory a command ran in is nearly always the
     /// one the command before it left behind.
     worktree: Option<(String, Option<String>)>,
+    /// `oslo.history.immediate`: count a line in the store on Enter rather than on finish.
+    immediate: bool,
+    /// The line counted on Enter and not yet settled, when [`Self::immediate`] is on.
+    entered: Option<entered::Entered>,
 }
 
 /// A boundary's answers from the prompt thread, on their way to the thread that writes them.
@@ -130,6 +134,8 @@ impl Tracker {
         let mut tracker = Tracker {
             since: SystemTime::now(),
             worktree: None,
+            immediate: settings.immediate,
+            entered: None,
         };
         if !keeps_a_record(settings) {
             return tracker;
@@ -253,6 +259,13 @@ impl Tracker {
     /// minutes — would be worse than not offering it.
     pub(super) fn forget_boundary(&mut self) {
         self.since = SystemTime::now();
+        if let Some(entered) = self.entered.take() {
+            track::writer::defer(move || {
+                if let Some(track) = track::store() {
+                    track.forget_entered(&entered.dir, &entered.mode, &entered.argv);
+                }
+            });
+        }
     }
 
     /// [`Tracker::boundary`] without the thread: prepare, then commit, right here.
@@ -540,6 +553,9 @@ fn outcome_status(result: &Result<i32, ShellError>) -> Option<i32> {
         Err(err) => Some(err.failure_status()),
     }
 }
+
+#[path = "tracking/entered.rs"]
+mod entered;
 
 #[path = "tracking/finished.rs"]
 mod finished;

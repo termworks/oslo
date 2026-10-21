@@ -170,6 +170,13 @@ fn history_settings_are_read_through() {
     assert!(settings.history.ignore_dups);
     // Untouched.
     assert!(settings.history.ignore_space);
+    assert!(settings.history.immediate, "recorded on Enter by default");
+
+    let (deferred, _) = settings_from("oslo = { history = { immediate = false } }");
+    assert!(
+        !deferred.history.immediate,
+        "a line is then counted only once it has finished"
+    );
 }
 
 /// fish's `fish_greeting`, and the two ways of being quiet.

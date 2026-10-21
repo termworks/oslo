@@ -126,6 +126,7 @@ fn functional(code: u32) -> Option<Key> {
         13 => Key::Accept,
         27 => Key::Cancel,
         127 => Key::Backspace,
+        57348 => Key::Insert,
         57349 => Key::Delete,
         57350 => Key::Left,
         57351 => Key::Right,
@@ -166,6 +167,7 @@ mod tests {
         // key rather than to a second one nothing is bound to.
         assert_eq!(decode(b"\x1b[13;3u"), Key::Submit);
         assert_eq!(decode(b"\x1b[47;5u"), Key::Ctrl('/'));
+        assert_eq!(decode(b"\x1b[57348u"), Key::Insert);
         assert_eq!(decode(b"\x1b[57350u"), Key::Left);
         assert_eq!(decode(b"\x1b[57350;1:1u"), Key::Left);
         assert_eq!(decode(b"\x1b[107;5:2u"), Key::Ignored);

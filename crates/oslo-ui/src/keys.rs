@@ -112,7 +112,8 @@ pub fn canonical(name: &str) -> Option<String> {
     match name.as_str() {
         "tab" => return same(name),
         "shift-tab" | "backtab" | "s-tab" => return Some("shift-tab".to_string()),
-        "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown" | "space" => {
+        "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown" | "space"
+        | "insert" => {
             return same(name);
         }
         // **Ctrl+Space, spelled the way people say it.** The editor produces this name for

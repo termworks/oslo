@@ -45,6 +45,10 @@ impl Tracker {
             .map(|id| (id, outcome_rows(done.result, done.elapsed)));
         let rides_along = rows.is_some() && matches!(decided, Recording::AsTyped);
 
+        // The run counted on Enter, if any. It is settled rather than recorded when the finish
+        // is about the same line, and taken back when it is not — a rule replacing or refusing
+        // the line, or a line that never ran at all.
+        let mut pending = self.entered.take();
         for (first, line) in lines.iter().enumerate().map(|(i, l)| (i == 0, l)) {
             let run = ran(line, done.mode, done.result, done.elapsed);
             // Only the first arrival records the *movement* and the dwell; a second one would
@@ -54,13 +58,53 @@ impl Tracker {
                     .as_ref()
                     .filter(|_| rides_along)
                     .map(|(id, rows)| (*id, rows.clone()));
-                self.boundary(done.before, done.after, run, carried);
+                match pending.take() {
+                    Some(entered)
+                        if rides_along
+                            && entered.dir == done.before
+                            && entered.mode == done.mode
+                            && entered.argv == *line
+                            && run.as_ref().and_then(|run| run.status).is_some() =>
+                    {
+                        let run = run.expect("checked above");
+                        let (status, duration_ms) =
+                            (run.status.expect("checked above"), run.duration_ms);
+                        self.boundary(done.before, done.after, None, carried);
+                        track::writer::defer(move || {
+                            if let Some(track) = track::store() {
+                                track.settle_entered(
+                                    &entered.dir,
+                                    &entered.mode,
+                                    &entered.argv,
+                                    status,
+                                    duration_ms,
+                                );
+                            }
+                        });
+                    }
+                    Some(entered) => {
+                        track::writer::defer(move || {
+                            if let Some(track) = track::store() {
+                                track.forget_entered(&entered.dir, &entered.mode, &entered.argv);
+                            }
+                        });
+                        self.boundary(done.before, done.after, run, carried);
+                    }
+                    None => self.boundary(done.before, done.after, run, carried),
+                }
             } else {
                 self.also_ran(done.before, run);
             }
         }
         if lines.is_empty() {
             self.forget_boundary();
+        }
+        if let Some(entered) = pending.take() {
+            track::writer::defer(move || {
+                if let Some(track) = track::store() {
+                    track.forget_entered(&entered.dir, &entered.mode, &entered.argv);
+                }
+            });
         }
 
         // Behind the boundary in the same queue, so they still see the directory it resolved and
