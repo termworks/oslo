@@ -16,6 +16,9 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-latest
+    # libtest cannot time a deadlocked test out, so without this the job runs to GitHub's six-hour
+    # default. `fuzz.yml` bounds its jobs for the same reason.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # A dependency or `[patch]` path that climbs out of the repository exists on one machine only.
@@ -102,6 +105,7 @@ jobs:
   msrv:
     name: msrv (1.90)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # The installed toolchain is the one this job checks against, and there is nothing in the tree
     # that can override it. A `rust-toolchain.toml` used to sit in the repository root and take
     # precedence over whatever the action installed, so this job needed `RUSTUP_TOOLCHAIN: 1.90.0`
