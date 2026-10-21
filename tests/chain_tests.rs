@@ -12,9 +12,26 @@ use oslo::env::Environment;
 use oslo::exec::eval_command_list;
 use oslo::exec::pipeline::segments::{self, Join};
 use oslo::parser::parse_bash_script;
+use std::sync::{Mutex, MutexGuard};
+
+/// One test at a time.
+///
+/// The recorder is process-global, and evaluating a pipeline forks. libtest runs tests on several
+/// threads and `fork` keeps only the calling one, so a lock another test happened to hold at that
+/// instant stays locked in the child, which never exits and leaves the parent in `waitpid` behind
+/// it. Both stages of `true | true` wedged that way, roughly one run in five, and GitHub then ran
+/// the job to its six-hour limit. The same hazard is written up in `exec::pipeline::interrupt`.
+static RECORDER: Mutex<()> = Mutex::new(());
+
+/// Take the recorder. [`run`] asks for the guard, so a test cannot evaluate a line without it.
+fn armed() -> MutexGuard<'static, ()> {
+    RECORDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Run `line` the way the read loop does, and hand back what the recorder saw.
-fn run(line: &str) -> Vec<segments::Segment> {
+fn run(_armed: &MutexGuard<'static, ()>, line: &str) -> Vec<segments::Segment> {
     let mut env = Environment::new();
     let ast = parse_bash_script(line).expect("parses");
     segments::arm();
@@ -26,7 +43,8 @@ fn run(line: &str) -> Vec<segments::Segment> {
 /// Every link, in order, joined as written.
 #[test]
 fn a_chain_records_one_link_per_pipeline() {
-    let segments = run("true && true && true");
+    let armed = armed();
+    let segments = run(&armed, "true && true && true");
     assert_eq!(segments.len(), 3, "{segments:?}");
     assert_eq!(segments[0].join, Join::First);
     assert_eq!(segments[1].join, Join::And);
@@ -38,7 +56,8 @@ fn a_chain_records_one_link_per_pipeline() {
 /// as running and exiting 0 — and no shell records the difference.
 #[test]
 fn a_short_circuited_link_is_recorded_as_never_run() {
-    let segments = run("true && false && echo never");
+    let armed = armed();
+    let segments = run(&armed, "true && false && echo never");
     assert_eq!(segments.len(), 3, "{segments:?}");
     assert_eq!(segments[0].status, Some(0));
     assert_eq!(segments[1].status, Some(1));
@@ -50,7 +69,8 @@ fn a_short_circuited_link_is_recorded_as_never_run() {
 /// `||` short-circuits the other way, and the recorder must not assume `&&`.
 #[test]
 fn an_or_chain_skips_the_link_after_a_success() {
-    let segments = run("true || echo never");
+    let armed = armed();
+    let segments = run(&armed, "true || echo never");
     assert_eq!(segments.len(), 2, "{segments:?}");
     assert_eq!(segments[0].status, Some(0));
     assert_eq!(segments[1].status, None);
@@ -60,7 +80,8 @@ fn an_or_chain_skips_the_link_after_a_success() {
 /// The resumable line is the failed link and everything after it, operators included.
 #[test]
 fn a_broken_chain_can_be_resumed_from_where_it_stopped() {
-    run("true && false && echo never");
+    let armed = armed();
+    run(&armed, "true && false && echo never");
     assert_eq!(
         segments::resumable().as_deref(),
         Some("false && echo never")
@@ -71,17 +92,19 @@ fn a_broken_chain_can_be_resumed_from_where_it_stopped() {
 /// no *from* in either case.
 #[test]
 fn nothing_to_resume_when_the_chain_finished_or_never_branched() {
-    run("true && true");
+    let armed = armed();
+    run(&armed, "true && true");
     assert_eq!(segments::resumable(), None);
 
-    run("false");
+    run(&armed, "false");
     assert_eq!(segments::resumable(), None, "one command is not a chain");
 }
 
 /// Several statements on one line are one line: `a; b && c` is three links.
 #[test]
 fn sequential_statements_are_links_of_the_same_line() {
-    let segments = run("true; true && true");
+    let armed = armed();
+    let segments = run(&armed, "true; true && true");
     assert_eq!(segments.len(), 3, "{segments:?}");
 }
 
@@ -89,7 +112,8 @@ fn sequential_statements_are_links_of_the_same_line() {
 /// different chains, so `if` bodies, functions and loops record nothing.
 #[test]
 fn a_chain_inside_a_compound_does_not_record() {
-    let segments = run("if true; then false && echo inner; fi");
+    let armed = armed();
+    let segments = run(&armed, "if true; then false && echo inner; fi");
     assert!(
         segments.iter().all(|s| !s.text.contains("echo inner")),
         "the compound's own chain leaked into the line's: {segments:?}"
@@ -99,7 +123,8 @@ fn a_chain_inside_a_compound_does_not_record() {
 /// A pipeline is one link, however many stages it has — `$PIPESTATUS` owns the level below.
 #[test]
 fn a_pipeline_is_a_single_link() {
-    let segments = run("true | true && true");
+    let armed = armed();
+    let segments = run(&armed, "true | true && true");
     assert_eq!(segments.len(), 2, "{segments:?}");
     assert_eq!(segments[0].text, "true | true");
 }
@@ -107,6 +132,8 @@ fn a_pipeline_is_a_single_link() {
 /// Nothing is recorded unless the read loop asked. A script pays nothing and reports nothing.
 #[test]
 fn a_shell_that_was_not_armed_records_nothing() {
+    // Arms the recorder itself rather than through `run`, and so takes the guard itself.
+    let _armed = armed();
     let mut env = Environment::new();
     let ast = parse_bash_script("true && false").expect("parses");
     segments::arm();
@@ -124,7 +151,8 @@ fn a_shell_that_was_not_armed_records_nothing() {
 /// produced each one, which is what makes "which stage failed" answerable without counting.
 #[test]
 fn a_pipeline_records_its_stages_under_its_link() {
-    let segments = run("true | false | true");
+    let armed = armed();
+    let segments = run(&armed, "true | false | true");
     assert_eq!(segments.len(), 1, "one link: {segments:?}");
     let stages = &segments[0].stages;
     assert_eq!(stages.len(), 3, "{stages:?}");
@@ -141,14 +169,16 @@ fn a_pipeline_records_its_stages_under_its_link() {
 /// anyone ever types.
 #[test]
 fn a_link_of_one_command_has_no_stages() {
-    let segments = run("true && true");
+    let armed = armed();
+    let segments = run(&armed, "true && true");
     assert!(segments.iter().all(|s| s.stages.is_empty()), "{segments:?}");
 }
 
 /// Stages belong to the link that produced them, not to whichever link is pushed next.
 #[test]
 fn stages_do_not_bleed_into_the_next_link() {
-    let segments = run("true | true && true");
+    let armed = armed();
+    let segments = run(&armed, "true | true && true");
     assert_eq!(segments.len(), 2);
     assert_eq!(segments[0].stages.len(), 2, "the pipeline's own");
     assert!(
@@ -163,9 +193,10 @@ fn stages_do_not_bleed_into_the_next_link() {
 /// run yet" for every chain there had ever been until the last one was kept separately.
 #[test]
 fn the_last_chain_survives_the_command_that_asks_about_it() {
-    run("true && false && echo never");
+    let armed = armed();
+    run(&armed, "true && false && echo never");
     // Standing in for typing `chain`: one command, its own armed line.
-    run("true");
+    run(&armed, "true");
 
     let kept = segments::last_chain();
     assert_eq!(kept.len(), 3, "the chain, not the command that asked");
@@ -180,11 +211,12 @@ fn the_last_chain_survives_the_command_that_asks_about_it() {
 /// A later chain replaces an earlier one; a plain command does not.
 #[test]
 fn only_a_chain_displaces_the_kept_one() {
-    run("true && true");
-    run("echo alone");
+    let armed = armed();
+    run(&armed, "true && true");
+    run(&armed, "echo alone");
     let kept = segments::last_chain();
     assert_eq!(kept.len(), 2, "a single command must not displace it");
 
-    run("false || true");
+    run(&armed, "false || true");
     assert_eq!(segments::last_chain()[0].text, "false", "a chain does");
 }
