@@ -198,7 +198,7 @@ impl Vi {
                     buf.move_right();
                     redrew(true)
                 }
-                Key::Up | Key::Down => Outcome::Passthrough,
+                Key::Up | Key::Down | Key::Insert => Outcome::Passthrough,
                 Key::Home => {
                     buf.move_home();
                     redrew(true)

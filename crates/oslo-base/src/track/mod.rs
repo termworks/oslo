@@ -32,6 +32,7 @@
 //! lines cannot reach the file because there is no file to reach.
 
 pub mod db;
+pub mod entered;
 pub mod history;
 pub mod log;
 pub mod nested;

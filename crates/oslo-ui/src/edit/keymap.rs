@@ -63,6 +63,8 @@ pub enum Action {
     /// Previous / next history entry.
     HistoryPrev,
     HistoryNext,
+    /// Insert, while the line is a history entry: copy that entry to the clipboard.
+    CopyHistoryEntry,
     /// Ctrl-R: search history.
     SearchHistory,
     /// Ctrl-X: hand the line to `$EDITOR` and take back what it wrote.
@@ -91,6 +93,7 @@ pub fn action(key: Key) -> Action {
         Key::End => Action::End,
         Key::Up => Action::HistoryPrev,
         Key::Down => Action::HistoryNext,
+        Key::Insert => Action::CopyHistoryEntry,
 
         Key::Backspace => Action::Backspace,
         Key::Delete => Action::Delete,

@@ -44,6 +44,8 @@ pub struct Settings {
     pub ignore_space: bool,
     /// `oslo.history.ignore_dups`: a line identical to the one before it is not remembered.
     pub ignore_dups: bool,
+    /// `oslo.history.immediate`: count a line in the tracking store on Enter, before it runs.
+    pub immediate: bool,
 }
 
 /// Read `$HISTFILE` and `$HISTSIZE`, and `oslo.history` where the config set it.
@@ -89,6 +91,7 @@ pub fn settings(env: &Environment) -> Settings {
         max_size,
         ignore_space: configured.ignore_space,
         ignore_dups: configured.ignore_dups,
+        immediate: configured.immediate,
     }
 }
 

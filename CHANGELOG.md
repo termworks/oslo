@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.4] - 2026-10-21
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Hold echo until the first prompt
+
+### <!-- 6 -->🧪 Testing
+
+- Stabilize release validation
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Retain five package revisions
+- Retain only latest binaries
+
 ## [0.7.3] - 2026-10-04
 
 ### <!-- 1 -->🐛 Bug Fixes

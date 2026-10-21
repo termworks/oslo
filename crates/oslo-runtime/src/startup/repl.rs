@@ -325,6 +325,12 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
                 let secret = secret || !answered.record;
                 let logged_as =
                     precmd::write_down(&mut history, &entered, mode, secret, settings.max_size);
+                // Counted in the store on Enter too, unless hidden — so the aggregate behind
+                // suggestions and the finder has the line while it is still running, and keeps
+                // it if the shell dies underneath it. See `Tracker::entered`.
+                if !secret {
+                    tracker.entered(&before, &entered, mode.name());
+                }
                 // The title says what is running while it runs, and goes back to the directory when
                 // the prompt returns. **A hidden line does not reach it either**: the title goes to
                 // the terminal and the multiplexer, the same audience as the mark below.

@@ -127,6 +127,14 @@ pub trait Assist {
         None
     }
 
+    /// The history entry the line currently *is*, if it is one.
+    ///
+    /// Insert copies an entry, not whatever happens to be typed: a line being composed, or a
+    /// recalled entry the user has since edited, is not an entry any more and answers `None`.
+    fn history_entry(&mut self, _line: &str) -> Option<String> {
+        None
+    }
+
     /// A word has been ended: expand an abbreviation if this is one.
     ///
     /// `ending` is what the keystroke would have typed — `Some(' ')` for the space that ends a

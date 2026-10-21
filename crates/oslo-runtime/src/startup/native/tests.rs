@@ -29,6 +29,22 @@ fn the_history_walk_is_not_destructive() {
     assert_eq!(a.history_next(), None, "and then there is nowhere to go");
 }
 
+/// The entry Insert would copy is the one the walk is standing on, for exactly as long as
+/// the line still is that entry.
+#[test]
+fn the_walk_names_the_entry_it_stands_on() {
+    let mut a = assist(&["first", "second"]);
+    assert_eq!(a.history_entry("second"), None, "not walking yet");
+    a.history_prev("draft");
+    assert_eq!(a.history_entry("second").as_deref(), Some("second"));
+    assert_eq!(a.history_entry("second!"), None, "edited since recall");
+    a.history_prev("draft");
+    assert_eq!(a.history_entry("first").as_deref(), Some("first"));
+    a.history_next();
+    a.history_next();
+    assert_eq!(a.history_entry("draft"), None, "back to composing");
+}
+
 /// A new line resets the walk. Without this, Up on the next prompt resumes where the last one
 /// stopped and looks like it skipped entries.
 #[test]

@@ -21,6 +21,7 @@ mod preview;
 
 mod recall;
 mod shortcuts;
+mod start;
 
 /// The line being edited, and where in history it came from.
 #[derive(Debug, Default)]
@@ -39,28 +40,6 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(text: &str, cursor: usize) -> Session {
-        let mut buffer = Buffer::new();
-        buffer.set(text, cursor);
-        Session {
-            buffer,
-            vi: crate::vi::enabled().then(super::vi::Vi::default),
-            ..Session::default()
-        }
-    }
-
-    /// Return the current vi mode stored by this session.
-    pub fn mode(&self) -> Option<super::vi::Mode> {
-        self.vi.as_ref().map(|vi| vi.mode)
-    }
-
-    pub fn paste(&mut self, text: &str) -> Step {
-        self.buffer.insert_str(text);
-        Step::Continue {
-            redraw: !text.is_empty(),
-        }
-    }
-
     /// Apply one key.
     pub fn apply(&mut self, key: Key, assist: &mut dyn Assist) -> Step {
         let changed = |yes: bool| Step::Continue { redraw: yes };
@@ -247,6 +226,14 @@ impl Session {
                 }
                 None => changed(false),
             },
+            // Insert on a history entry copies it; on anything else it does nothing, because
+            // there is no entry to copy and inventing one from the typed line would put words
+            // on the clipboard nobody recalled.
+            Action::CopyHistoryEntry => match assist.history_entry(&self.buffer.text()) {
+                Some(entry) if !entry.is_empty() => Step::CopyHistoryEntry(entry),
+                _ => changed(false),
+            },
+
             // Said rather than done: the program wants the terminal, and the outer loop is what
             // owns it. Same shape as completion and the tab finder.
             Action::EditExternally => Step::EditExternally,
@@ -502,6 +489,13 @@ pub fn read_line(
             }
             Step::ListGlob => {
                 assist.list_glob(&session.buffer.text(), session.buffer.cursor(), &mut keys);
+            }
+            // OSC 52 to the terminal the editor is drawing on, so it works over SSH like the
+            // `copy` builtin. Nothing on screen changes, so the row is not repainted.
+            Step::CopyHistoryEntry(entry) => {
+                let _ = out.write_all(crate::marks::clipboard(&entry).as_bytes());
+                let _ = out.flush();
+                repaint = false;
             }
             // A tab may have owned the terminal in the meantime, so the prompt is rebuilt rather
             // than the row repainted: what is on the screen now was written by something else.

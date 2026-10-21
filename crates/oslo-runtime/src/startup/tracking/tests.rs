@@ -13,6 +13,8 @@ fn tracker() -> Tracker {
     Tracker {
         since: SystemTime::now(),
         worktree: None,
+        immediate: true,
+        entered: None,
     }
 }
 
@@ -81,6 +83,7 @@ fn a_session_that_keeps_no_history_opens_no_store() {
         keeps_a_record(&history::Settings {
             ignore_space: true,
             ignore_dups: false,
+            immediate: true,
             file: file.map(std::path::PathBuf::from),
             no_trace,
             max_size,

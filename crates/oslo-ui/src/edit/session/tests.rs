@@ -168,6 +168,13 @@ impl Assist for Canned {
             }
         }
     }
+    fn history_entry(&mut self, line: &str) -> Option<String> {
+        if self.at == 0 {
+            return None;
+        }
+        let entry = self.history.get(self.at - 1)?;
+        (entry == line).then(|| entry.clone())
+    }
 }
 
 #[test]
@@ -205,6 +212,43 @@ fn coming_back_out_of_history_restores_the_typed_line() {
     assert_eq!(s.buffer.text(), "cargo test");
     s.apply(Key::Down, &mut a);
     assert_eq!(s.buffer.text(), "half-writ", "the composed line came back");
+}
+
+/// Insert on a history entry asks the outer loop to copy that entry, and nothing else:
+/// not the line being composed, and not an entry that has been edited since recall.
+#[test]
+fn insert_copies_the_history_entry_being_shown() {
+    let mut a = Canned {
+        history: vec!["cargo test".into(), "ls -la".into()],
+        ..Canned::default()
+    };
+    let mut s = Session {
+        vi: None,
+        ..Session::new("half-writ", 9)
+    };
+    assert_eq!(
+        s.apply(Key::Insert, &mut a),
+        Step::Continue { redraw: false },
+        "composing a line: there is no entry to copy"
+    );
+    s.apply(Key::Up, &mut a);
+    assert_eq!(
+        s.apply(Key::Insert, &mut a),
+        Step::CopyHistoryEntry("cargo test".to_string())
+    );
+    assert_eq!(s.buffer.text(), "cargo test", "copying changes nothing");
+    s.apply(Key::Up, &mut a);
+    assert_eq!(
+        s.apply(Key::Insert, &mut a),
+        Step::CopyHistoryEntry("ls -la".to_string()),
+        "the entry changes as the walk moves"
+    );
+    s.apply(Key::Char('x'), &mut a);
+    assert_eq!(
+        s.apply(Key::Insert, &mut a),
+        Step::Continue { redraw: false },
+        "edited since recall: not an entry any more"
+    );
 }
 
 /// History that runs out leaves the line alone rather than blanking it.

@@ -148,6 +148,7 @@ pub fn input(spec: &Input) -> Answer<String> {
             // rather than caught by a wildcard so a new key has to be considered here too.
             Key::Up
             | Key::Down
+            | Key::Insert
             | Key::ToggleScope
             | Key::BackTab
             | Key::Submit

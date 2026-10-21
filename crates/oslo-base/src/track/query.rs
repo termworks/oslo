@@ -119,7 +119,7 @@ impl Track {
                     if let Some(argv) = field::argv_of_run(key)
                         && argv != typed
                         && let Some(row) = RunRow::decode(value)
-                        && row.worked()
+                        && row.offerable()
                     {
                         best.offer(&row, &argv);
                     }
@@ -157,7 +157,7 @@ impl Track {
                 if let Some(row) = reader
                     .get(Tree::Run, &key::run(*dir, mode, argv))
                     .and_then(|bytes| RunRow::decode(&bytes))
-                    && row.worked()
+                    && row.offerable()
                 {
                     best.offer(&row, argv);
                 }
@@ -181,9 +181,9 @@ impl Track {
 
 /// The best row a scan has seen, and what it takes to beat it.
 ///
-/// The order is the SQL's: most net successes, then most recent. Strictly *better* wins, so a tie
-/// is settled by key order and the same store answers the same way twice — which the SQL, ordering
-/// by two columns and taking one row, did not guarantee.
+/// The order is [`RunRow::standing`]: most recent first, then most net successes. Strictly
+/// *better* wins, so a tie is settled by key order and the same store answers the same way
+/// twice — which the SQL, ordering by two columns and taking one row, did not guarantee.
 ///
 /// It holds two integers and one string so that a scan over a range allocates once for the winner
 /// rather than once per row it walks past.
@@ -242,6 +242,10 @@ fn dirs_of_root(reader: &Reader<'_, '_>, root: &str) -> Vec<u64> {
         field::trailing_id(key)
     })
 }
+
+#[cfg(test)]
+#[path = "query/tests.rs"]
+mod latest_tests;
 
 #[cfg(test)]
 mod tests {
@@ -352,7 +356,8 @@ mod tests {
         assert_eq!(track.suggestion_here("/w/alpha", SH, ""), None);
     }
 
-    /// A line that has only ever failed is not a suggestion — the defect this fixes in passing.
+    /// A line that never ran as a command is not a suggestion — the defect this fixes in
+    /// passing. 127 is the typo case; an ordinary non-zero exit is offered, above.
     #[test]
     fn a_command_that_never_worked_is_never_offered() {
         let (_dir, track) = store();

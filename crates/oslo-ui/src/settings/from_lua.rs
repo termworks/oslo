@@ -478,6 +478,7 @@ pub fn read_lua_settings(whole: &Value) -> (Settings, Vec<String>) {
         }
         flag(&table, "ignore_space", &mut settings.history.ignore_space);
         flag(&table, "ignore_dups", &mut settings.history.ignore_dups);
+        flag(&table, "immediate", &mut settings.history.immediate);
         if let Value::Table(list) = table.get_str("ignore") {
             for value in list.borrow().sequence() {
                 match value {

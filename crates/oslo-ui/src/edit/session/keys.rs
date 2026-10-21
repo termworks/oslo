@@ -75,6 +75,9 @@ pub enum Step {
     ExpandGlob,
     /// List the glob's matches below the line, through the outer loop's input reader.
     ListGlob,
+    /// Insert on a history entry: put this entry on the clipboard (OSC 52, by the outer loop,
+    /// which owns the terminal) and keep editing.
+    CopyHistoryEntry(String),
 }
 
 /// Carrying out a binding lives here, beside the two enums it maps between, rather than in the
