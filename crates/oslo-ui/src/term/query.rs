@@ -261,9 +261,7 @@ pub fn hold_echo(fd: i32) {
     if set_termios(fd, &quiet).is_err() {
         return;
     }
-    *HELD_ECHO
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some((fd, original));
+    *HELD_ECHO.lock().unwrap_or_else(|error| error.into_inner()) = Some((fd, original));
 }
 
 /// Give echo back, or do nothing when it was never held.
