@@ -25,6 +25,9 @@ pub fn initialize() {
         background = background.or(negotiated.background);
         verified = negotiated.verified;
         oslo_ui::term::query::preserve_startup_input(negotiated.pending);
+        // A reply that misses the budget lands during the rest of startup, where the
+        // line discipline would print it. The first prompt gives echo back.
+        oslo_ui::term::query::hold_echo(tty.fd());
     }
     oslo_ui::term::keyboard::remember_support(verified.kitty_keyboard);
     oslo_ui::term::capability::initialize_with_verified(verified);

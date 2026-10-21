@@ -13,6 +13,7 @@ const MAX_TOTAL: usize = 16384;
 /// and this is the room its replies need to arrive in rather than land in the first prompt.
 const SETTLE_MS: u64 = 20;
 static STARTUP_PENDING: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static HELD_ECHO: Mutex<Option<(i32, nix::sys::termios::Termios)>> = Mutex::new(None);
 
 /// How the bytes collected for one possible reply should be handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +240,41 @@ pub fn background_on(fd: i32, timeout_ms: u64) -> (Option<Background>, Vec<u8>) 
     }
     let (reply, pending) = query_sequence(fd, b"\x1b]11;?\x1b\\", timeout_ms, osc11_match);
     (reply.as_deref().and_then(parse_background_bytes), pending)
+}
+
+/// Stop the line discipline echoing a reply that arrives after the exchange ended.
+///
+/// Held from the end of the startup exchange to the first prompt, where the editor
+/// takes the terminal in raw mode and drops a reply nothing is waiting for.
+pub fn hold_echo(fd: i32) {
+    // Only stdin, whose descriptor outlives the hold; a borrowed /dev/tty is closed before it.
+    if fd != nix::libc::STDIN_FILENO {
+        return;
+    }
+    let Ok(original) = termios(fd) else {
+        return;
+    };
+    let mut quiet = original.clone();
+    quiet
+        .local_flags
+        .remove(nix::sys::termios::LocalFlags::ECHO);
+    if set_termios(fd, &quiet).is_err() {
+        return;
+    }
+    *HELD_ECHO
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some((fd, original));
+}
+
+/// Give echo back, or do nothing when it was never held.
+pub fn release_echo() {
+    let held = HELD_ECHO
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    if let Some((fd, original)) = held {
+        let _ = set_termios(fd, &original);
+    }
 }
 
 /// Preserve input consumed by a startup query until the first editor owns the terminal.
