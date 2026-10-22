@@ -27,6 +27,17 @@ fn owned(fd: OwnedFd) -> fs::File {
     fs::File::from(fd)
 }
 
+/// Where the job's `sh` is to look for `sleep`.
+///
+/// `/usr/bin:/bin` alone is empty on a Nix system, where the job then died of `sleep: command not
+/// found` and every case here failed for a reason that was not the one under test.
+fn utilities() -> String {
+    match std::env::var("PATH") {
+        Ok(ambient) if !ambient.is_empty() => format!("/usr/bin:/bin:{ambient}"),
+        _ => "/usr/bin:/bin".to_string(),
+    }
+}
+
 struct Shell {
     input: fs::File,
     seen: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
@@ -55,7 +66,7 @@ impl Shell {
             .env("HOME", home.path())
             .env("XDG_DATA_HOME", home.path())
             .env("XDG_CONFIG_HOME", home.path().join("config"))
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", utilities())
             .env("TERM", "dumb")
             .current_dir(home.path())
             .stdin(Stdio::from(slave.try_clone().expect("clone")))
