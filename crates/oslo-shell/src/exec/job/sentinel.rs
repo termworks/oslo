@@ -340,10 +340,25 @@ extern "C" fn on_interrupt(_: libc::c_int) {
         }
         return;
     }
+    let signal = ACTION.load(Ordering::SeqCst);
+    // **Reported before it is done.** `waitpid` wakes on the stop and drains this pipe without
+    // blocking, so a report written afterwards is one the shell can already have missed — and the
+    // next drain is a whole command away, since only an external command drains it. The job then
+    // stopped with nothing said about it and `on-job-escalated` never fired. Six runs in six with
+    // 50 ms of deschedule between the signal and a report written after it.
+    let fd = EVENT_FD.load(Ordering::SeqCst);
+    if fd >= 0 {
+        let mut event = [0u8; 12];
+        event[0..4].copy_from_slice(&pgid.to_ne_bytes());
+        event[4..8].copy_from_slice(&signal.to_ne_bytes());
+        event[8..12].copy_from_slice(&(seen as i32).to_ne_bytes());
+        unsafe {
+            libc::write(fd, event.as_ptr() as *const libc::c_void, event.len());
+        }
+    }
     // **Leave the group before signalling it.** The sentinel is *in* the group it is about to
     // signal, and `kill(-pgid, …)` does not spare the sender — a `SIGSTOP` would stop the sentinel
     // along with the job, and it would never read another order.
-    let signal = ACTION.load(Ordering::SeqCst);
     unsafe {
         libc::setpgid(0, 0);
         // **The whole group**, because a job is its process group — signalling the leader alone
@@ -354,18 +369,6 @@ extern "C" fn on_interrupt(_: libc::c_int) {
         // the interrupt — and `waitpid` already reports it, so the shell's own Ctrl-Z path takes
         // over. A config can ask for `kill`, `hup` or `quit` instead.
         libc::kill(-pgid, signal);
-    }
-    // Tell the shell, so it can say *why* the job stopped rather than leaving it looking like a
-    // Ctrl-Z somebody typed. Twelve bytes, one `write`, no allocation — see `take_events`.
-    let fd = EVENT_FD.load(Ordering::SeqCst);
-    if fd >= 0 {
-        let mut event = [0u8; 12];
-        event[0..4].copy_from_slice(&pgid.to_ne_bytes());
-        event[4..8].copy_from_slice(&signal.to_ne_bytes());
-        event[8..12].copy_from_slice(&(seen as i32).to_ne_bytes());
-        unsafe {
-            libc::write(fd, event.as_ptr() as *const libc::c_void, event.len());
-        }
     }
     // And stop watching: the shell is about to send a fresh order for the next job, and until it
     // does there is nothing here worth acting on.

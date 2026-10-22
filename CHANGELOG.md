@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.6] - 2026-10-22
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Report an escalation before signalling
+- Serialise the chain recorder tests
+
+### <!-- 6 -->🧪 Testing
+
+- Find sleep outside /usr/bin and /bin
+
 ## [0.7.5] - 2026-10-21
 
 ### <!-- 5 -->🎨 Styling
