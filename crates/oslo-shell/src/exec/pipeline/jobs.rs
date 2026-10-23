@@ -27,7 +27,7 @@ pub(super) fn spawn_background(env: &mut Environment, and_or: &AndOrList) -> Res
     // where allocation is still legal.
     let label = describe::describe_and_or(and_or);
     unsafe {
-        match fork() {
+        match oslo_base::forksafe::quiesced(|| fork()) {
             Ok(ForkResult::Child) => {
                 // R7.1: its own process group, so a Ctrl-C aimed at the foreground job cannot
                 // reach it and so `kill %1` has one group to signal. Done before the signal reset

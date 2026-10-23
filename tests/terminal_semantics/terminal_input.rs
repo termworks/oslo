@@ -6,11 +6,44 @@ fn pasted_newlines_wait_for_an_explicit_enter() {
     shell.wait_for_marks(2);
     shell.send(b"\x1b[200~echo first\necho second\x1b[201~");
     shell.drain_for(Duration::from_millis(100));
-    assert_eq!(kinds(&marks(&shell.transcript)), "AB");
+    assert_eq!(kinds(&blocks(&shell.transcript)), "AB");
 
     shell.send(b"\n");
     let complete = shell.wait_for_marks(6);
     assert_eq!(kinds(&complete[..6]), "ABCDAB");
+}
+
+/// Typing re-stamps the prompt's marks, because typing erases the rows they were on.
+///
+/// Each keystroke redraws the block from its first row, and a row the redraw recreates has lost
+/// the mark it wore. So each frame carries the pair again, and the block still reads as one.
+#[test]
+fn the_prompt_marks_survive_typing() {
+    let mut shell = PtyShell::spawn("xterm-256color");
+    shell.wait_for_marks(2);
+    let before = marks(&shell.transcript).len();
+
+    // One key at a time: each is a repaint, and each repaint has to put the marks back.
+    for byte in b"echo hi" {
+        shell.send(&[*byte]);
+    }
+    shell.drain_for(Duration::from_millis(200));
+
+    let after = marks(&shell.transcript);
+    assert!(
+        after.len() > before,
+        "typing drew no marks at all: {} then {}, {:?}",
+        before,
+        after.len(),
+        visible(&shell.transcript)
+    );
+    // Still one block, however many times it was drawn.
+    assert_eq!(
+        kinds(&blocks(&shell.transcript)),
+        "AB",
+        "{:?}",
+        visible(&shell.transcript)
+    );
 }
 
 #[test]
@@ -273,7 +306,7 @@ fn vscode_selects_one_rich_lifecycle() {
     shell.wait_for_text_count("\x1b]633;B\x1b\\", 2);
     shell.drain_for(Duration::from_millis(50));
 
-    assert_eq!(vscode_kinds(&shell.transcript), "ABECDAB");
+    assert_eq!(vscode_blocks(&shell.transcript), "ABECDAB");
     assert!(marks(&shell.transcript).is_empty());
 }
 

@@ -159,9 +159,10 @@ pub(super) fn read_command(
             // redrawn by the generation counter instead, which re-renders once, when it happens.
         }
 
-        // Written before the prompt rather than inside it, for the same reason the right prompt is
-        // not concatenated: the line editor measures the prompt string to know where the line
-        // starts, and an OSC in there is counted as visible width.
+        // Announcing the prompt moves the lifecycle on; the marks themselves are drawn with the
+        // block, which is the only place that knows which rows they are on — see
+        // `oslo_ui::marks::block_marks`. What is left here is what belongs to the session rather
+        // than to a row.
         // The title goes back to the directory now that nothing is running, and the working
         // directory is (re)announced — the first prompt of a session is the only chance to tell
         // the terminal where it started.

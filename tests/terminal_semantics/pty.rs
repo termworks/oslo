@@ -182,10 +182,11 @@ impl PtyShell {
         self.input.flush().expect("flush pty input");
     }
 
+    /// Wait for `count` marks, counted per block rather than per frame — see [`blocks`].
     pub(crate) fn wait_for_marks(&mut self, count: usize) -> Vec<Mark> {
         let deadline = Instant::now() + TIMEOUT;
         loop {
-            let marks = marks(&self.transcript);
+            let marks = blocks(&self.transcript);
             if marks.len() >= count {
                 return marks;
             }
@@ -197,7 +198,17 @@ impl PtyShell {
             );
             match self.output.recv_timeout(remaining) {
                 Ok(bytes) => self.transcript.extend(bytes),
-                Err(error) => panic!("pty ended before {count} marks: {error:?}"),
+                // What arrived, not just that too little did: a count on its own cannot say
+                // whether a mark is missing or merely a different one than expected.
+                Err(error) => panic!(
+                    "pty ended before {count} marks: {error:?}, saw {} [{}]",
+                    kinds(&marks),
+                    crate::pty::marks(&self.transcript)
+                        .iter()
+                        .map(|mark| mark.body.clone())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
             }
         }
     }
@@ -367,6 +378,48 @@ pub(crate) fn visible(bytes: &[u8]) -> String {
 
 pub(crate) fn kinds(marks: &[Mark]) -> String {
     marks.iter().map(|mark| mark.kind as char).collect()
+}
+
+/// The marks, one `A`/`B` pair per block however many frames the block was drawn in.
+///
+/// A repaint repeats the pair byte for byte, which is what identifies it; a continuation prompt's
+/// `A` carries `k=` and so survives. See `docs/features/terminal-integration.md`.
+pub(crate) fn blocks(bytes: &[u8]) -> Vec<Mark> {
+    let mut kept: Vec<Mark> = Vec::new();
+    let mut repeating = false;
+    for mark in marks(bytes) {
+        let opens_repeat = mark.kind == b'A'
+            && kept.len() >= 2
+            && kept[kept.len() - 1].kind == b'B'
+            && kept[kept.len() - 2].kind == b'A'
+            && kept[kept.len() - 2].body == mark.body;
+        if opens_repeat {
+            repeating = true;
+            continue;
+        }
+        let closes_repeat = repeating
+            && mark.kind == b'B'
+            && kept.last().is_some_and(|last| last.body == mark.body);
+        if closes_repeat {
+            repeating = false;
+            continue;
+        }
+        repeating = false;
+        kept.push(mark);
+    }
+    kept
+}
+
+/// Squeeze repeated prompt pairs out of a vscode kind string, as [`blocks`] does for `OSC 133`.
+///
+/// A plain pair squeeze is enough here: vscode's protocol has no secondary prompt mark, so a
+/// repeated `AB` can only be a repaint.
+pub(crate) fn vscode_blocks(bytes: &[u8]) -> String {
+    let mut kinds = vscode_kinds(bytes);
+    while let Some(at) = kinds.find("ABAB") {
+        kinds.replace_range(at..at + 2, "");
+    }
+    kinds
 }
 
 pub(crate) fn vscode_kinds(bytes: &[u8]) -> String {

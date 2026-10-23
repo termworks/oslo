@@ -384,7 +384,8 @@ pub fn read_line(
         // prompt is displayed" has to mean.
         if !drawn {
             drawn = true;
-            let _ = out.write_all(crate::marks::input_start().as_bytes());
+            // Advances the lifecycle to `Input`; the mark is drawn with the frame.
+            let _ = crate::marks::input_start();
             // The cursor is shown again here, not on entry. A language switch hides it while the
             // other language's prompt is being built — otherwise it sits at column one in plain
             // sight for however long that takes — and this is the first moment there is something

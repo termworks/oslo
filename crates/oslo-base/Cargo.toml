@@ -104,3 +104,4 @@ crypt = ["secrets", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:hkdf"]
 
 [dev-dependencies]
 tempfile = "3.17"
+libc = "0.2"

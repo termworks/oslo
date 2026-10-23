@@ -62,10 +62,10 @@ the machine does not accept produces no bytes at all.
    │   InteractionStart              nothing — the shell only starts counting
  Interaction
    │   PromptStart(Primary)          ESC ] 133 ; A ; aid=<pid>-<started> ST
- Prompt
-   │   InputStart                    ESC ] 133 ; B ; aid=… ST   ← written by the editor,
- Input                                                            once the prompt is on
-   │   PromptStart(Continuation)     ESC ] 133 ; A ; k=s ; aid=… ST   the screen
+ Prompt                                                       ← A and B are drawn with the
+   │   InputStart                    ESC ] 133 ; B ; aid=… ST   block, not at the transition
+ Input
+   │   PromptStart(Continuation)     ESC ] 133 ; A ; k=s ; aid=… ST
    │      └── back to Prompt, same interaction (opt-in; see below)
    │   CommandStart                  ESC ] 133 ; C ; aid=… ST
  Output
@@ -74,6 +74,19 @@ the machine does not accept produces no bytes at all.
 
  Interaction | Prompt | Input ──InteractionAbort──► ESC ] 133 ; D ; aid=… ST  (no status)
 ```
+
+## A and B are drawn with the block, so they repeat
+
+`A` and `B` name rows. The line editor replaces its block by erasing from the block's first row to
+the end of the screen and writing the rows again, and a row it recreates has lost the mark it wore
+— so both marks are part of the frame. Every repaint puts them back, and a line typed one key at a
+time carries one `A`/`B` pair per frame. The transcript row that replaces a finished block carries
+them too: that row is the command that was typed.
+
+`C` and `D` are written once, at the transition, since nothing redraws over them.
+
+For anything reading the stream: a repeated pair is a redraw, and a redrawn continuation prompt is
+byte-identical to a second one. Count blocks, not pairs.
 
 A blank line, a `Ctrl-C`, and EOF all take the abort arm, which closes the interaction with a `D`
 that carries **no** status and no preceding `C`. Inventing a status there would tell the terminal a

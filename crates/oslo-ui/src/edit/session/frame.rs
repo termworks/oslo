@@ -118,6 +118,7 @@ pub(super) fn draw(
     } else {
         String::new()
     };
+    let marks = crate::marks::block_marks();
     layout::place(&layout::Row {
         prompt,
         text: &painted,
@@ -129,6 +130,8 @@ pub(super) fn draw(
         // next keystroke without a `SIGWINCH` handler to get wrong.
         cols: terminal_cols(),
         lead: crate::transcript::lead(),
+        prompt_mark: &marks.prompt,
+        input_mark: &marks.input,
     })
 }
 

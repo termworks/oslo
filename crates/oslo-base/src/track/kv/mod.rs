@@ -146,19 +146,23 @@ impl Store {
     /// The transaction is opened, `work` is run against it and it is dropped. A read transaction is
     /// never committed because it changes nothing.
     pub fn read<T>(&self, work: impl FnOnce(&Reader<'_, '_>) -> Option<T>) -> Option<T> {
-        let tx = self.db.tx(false).ok()?;
-        work(&Reader { tx: &tx })
+        crate::forksafe::guarded(|| {
+            let tx = self.db.tx(false).ok()?;
+            work(&Reader { tx: &tx })
+        })
     }
 
     pub fn read_checked<T>(
         &self,
         work: impl FnOnce(&Reader<'_, '_>) -> Result<T, String>,
     ) -> Result<T, String> {
-        let tx = self
-            .db
-            .tx(false)
-            .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        work(&Reader { tx: &tx })
+        crate::forksafe::guarded(|| {
+            let tx = self
+                .db
+                .tx(false)
+                .map_err(|error| format!("{}: {error}", self.path.display()))?;
+            work(&Reader { tx: &tx })
+        })
     }
 
     /// Write to the store, committing when `work` answers `Some` and discarding when it answers
@@ -171,23 +175,27 @@ impl Store {
     ///
     /// Dropping an uncommitted transaction rolls it back.
     pub fn write<T>(&self, work: impl FnOnce(&Writer<'_, '_>) -> Option<T>) -> Option<T> {
-        let tx = self.db.tx(true).ok()?;
-        let value = work(&Writer(Reader { tx: &tx }))?;
-        tx.commit().ok().map(|()| value)
+        crate::forksafe::guarded(|| {
+            let tx = self.db.tx(true).ok()?;
+            let value = work(&Writer(Reader { tx: &tx }))?;
+            tx.commit().ok().map(|()| value)
+        })
     }
 
     pub fn write_checked<T>(
         &self,
         work: impl FnOnce(&Writer<'_, '_>) -> Result<T, String>,
     ) -> Result<T, String> {
-        let tx = self
-            .db
-            .tx(true)
-            .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        let value = work(&Writer(Reader { tx: &tx }))?;
-        tx.commit()
-            .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        Ok(value)
+        crate::forksafe::guarded(|| {
+            let tx = self
+                .db
+                .tx(true)
+                .map_err(|error| format!("{}: {error}", self.path.display()))?;
+            let value = work(&Writer(Reader { tx: &tx }))?;
+            tx.commit()
+                .map_err(|error| format!("{}: {error}", self.path.display()))?;
+            Ok(value)
+        })
     }
 
     pub fn merge_sync_from(

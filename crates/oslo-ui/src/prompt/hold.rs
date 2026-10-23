@@ -86,6 +86,7 @@ pub fn pump(cols: usize) -> bool {
     let Some((left, right)) = render() else {
         return false;
     };
+    let marks = crate::marks::block_marks();
     let placed = crate::edit::layout::place(&crate::edit::layout::Row {
         prompt: &left,
         text: "",
@@ -95,6 +96,8 @@ pub fn pump(cols: usize) -> bool {
         right: &right,
         cols,
         lead: crate::transcript::lead(),
+        prompt_mark: &marks.prompt,
+        input_mark: &marks.input,
     });
     let frame = crate::edit::screen::redraw(
         AT_ROW.with(|at| at.get()),

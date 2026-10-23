@@ -172,20 +172,23 @@ pub fn file_url(path: &str) -> String {
     format!("file://{host}{}", percent_encode(path))
 }
 
-/// `OSC 133 ; A` — a new primary prompt and interaction begin here.
+/// A new primary prompt and interaction begin here.
+///
+/// Returns only what belongs outside the block — vscode's one-time rich-detection property, which
+/// names the session rather than a row. The `A` mark is drawn with the block by [`block_marks`].
 pub fn prompt_start() -> String {
-    let mut mark = String::new();
+    let mut outside = String::new();
     if capabilities().semantic == crate::term::capability::SemanticProtocol::Vscode633
         && !VSCODE_RICH_SENT.swap(true, Ordering::Relaxed)
     {
-        mark.push_str(
+        outside.push_str(
             &crate::term::vscode::property("HasRichCommandDetection", "True").unwrap_or_default(),
         );
     }
-    mark.push_str(&semantic(
-        crate::term::semantic::SemanticEvent::PromptStart(PromptKind::Primary),
+    let _ = semantic(crate::term::semantic::SemanticEvent::PromptStart(
+        PromptKind::Primary,
     ));
-    mark
+    outside
 }
 
 #[must_use]
@@ -224,16 +227,39 @@ impl Drop for Interaction {
     }
 }
 
-/// `OSC 133 ; A ; k=s` — a continuation prompt within the current interaction.
+/// A continuation prompt within the current interaction.
+///
+/// Advances the lifecycle; the `A ; k=s` mark is drawn with the block, as [`prompt_start`]'s is.
 pub fn continuation_prompt_start() -> String {
-    semantic(crate::term::semantic::SemanticEvent::PromptStart(
+    let _ = semantic(crate::term::semantic::SemanticEvent::PromptStart(
         PromptKind::Continuation,
-    ))
+    ));
+    String::new()
 }
 
-/// `OSC 133 ; B` — the prompt ends here and what you type begins.
+/// The prompt ends here and what you type begins.
+///
+/// Advances the lifecycle; the `B` mark is drawn with the block, as [`prompt_start`]'s is.
 pub fn input_start() -> String {
-    semantic(crate::term::semantic::SemanticEvent::InputStart)
+    let _ = semantic(crate::term::semantic::SemanticEvent::InputStart);
+    String::new()
+}
+
+/// The `A` and `B` marks for the block being edited, to be drawn with it.
+///
+/// A mark belongs to the row it was written on, and a block is redrawn by erasing its rows and
+/// writing them again — so the frame carries these and every repaint puts them back. Reads the
+/// lifecycle without advancing it. See `docs/features/terminal-integration.md`.
+pub fn block_marks() -> crate::term::semantic::BlockMarks {
+    if !enabled() {
+        return crate::term::semantic::BlockMarks::default();
+    }
+    SEMANTIC
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(crate::term::semantic::SemanticSession::block_marks)
+        .unwrap_or_default()
 }
 
 /// `OSC 133 ; C` — everything after this is the command's output.
@@ -326,18 +352,21 @@ mod tests {
         test_on(crate::term::capability::Capabilities::portable());
 
         let mut interaction = Interaction::begin();
-        let a = prompt_start();
-        let b = input_start();
+        prompt_start();
+        // `A` and `B` are drawn with the block, so they are read there rather than returned.
+        let block = block_marks();
+        input_start();
         let c = output_start(None);
         let d = interaction.finish(3);
         let id = aid();
-        assert_eq!(a, format!("\x1b]133;A;aid={id}\x1b\\"));
-        assert_eq!(b, format!("\x1b]133;B;aid={id}\x1b\\"));
+        assert_eq!(block.prompt, format!("\x1b]133;A;aid={id}\x1b\\"));
+        assert_eq!(block.input, format!("\x1b]133;B;aid={id}\x1b\\"));
         assert_eq!(c, format!("\x1b]133;C;aid={id}\x1b\\"));
         assert_eq!(d, format!("\x1b]133;D;3;aid={id}\x1b\\"));
 
         let mut next_interaction = Interaction::begin();
-        let next = prompt_start();
+        prompt_start();
+        let next = block_marks().prompt;
         assert!(next.contains(&format!("aid={id}")), "{next:?}");
         let _ = next_interaction.abort();
 
@@ -357,10 +386,13 @@ mod tests {
         );
 
         let mut interaction = Interaction::begin();
-        assert!(!prompt_start().is_empty());
-        assert!(!input_start().is_empty());
-        assert!(continuation_prompt_start().contains(";A;k=s;"));
-        assert!(!input_start().is_empty());
+        prompt_start();
+        assert!(!block_marks().prompt.is_empty());
+        input_start();
+        assert!(!block_marks().input.is_empty());
+        continuation_prompt_start();
+        assert!(block_marks().prompt.contains(";A;k=s;"));
+        input_start();
         assert!(!output_start(None).is_empty());
         assert!(!interaction.finish(0).is_empty());
         test_off();
@@ -372,8 +404,10 @@ mod tests {
         test_on(crate::term::capability::Capabilities::portable());
 
         let mut interaction = Interaction::begin();
-        assert!(!prompt_start().is_empty());
-        assert!(!input_start().is_empty());
+        prompt_start();
+        assert!(!block_marks().prompt.is_empty());
+        input_start();
+        assert!(!block_marks().input.is_empty());
         let closed = interaction.abort();
         assert!(closed.contains(";D;aid="), "{closed:?}");
         assert!(!closed.contains(";C;"), "{closed:?}");
@@ -381,18 +415,31 @@ mod tests {
         test_off();
     }
 
+    /// An illegal transition changes nothing — the interaction that follows is still well formed.
+    ///
+    /// Asserted through what the lifecycle produces rather than through the call's return value:
+    /// `A` and `B` are drawn with the block now, so a refused `PromptStart` and an accepted one
+    /// both hand back an empty string. `SemanticSession::try_emit` is where the refusal itself is
+    /// checked — see `duplicates_and_out_of_order_events_are_silent` in `term::semantic`.
     #[test]
     fn illegal_duplicate_transitions_emit_nothing() {
         let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         test_on(crate::term::capability::Capabilities::portable());
 
         let mut interaction = Interaction::begin();
-        assert_eq!(input_start(), "");
+        // Out of order, before any prompt: no block to mark and no output to open.
+        assert_eq!(block_marks().prompt, "");
         assert_eq!(output_start(None), "");
-        assert!(!prompt_start().is_empty());
-        assert_eq!(prompt_start(), "");
-        assert!(!input_start().is_empty());
-        assert_eq!(input_start(), "");
+
+        prompt_start();
+        prompt_start();
+        assert!(block_marks().prompt.contains(";A;"), "{:?}", block_marks());
+
+        input_start();
+        input_start();
+        assert!(block_marks().input.contains(";B;"), "{:?}", block_marks());
+
+        // Still in `Input` despite the duplicates, so the interaction closes without a command.
         assert!(!interaction.abort().is_empty());
         test_off();
     }
@@ -486,9 +533,12 @@ mod tests {
         let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         test_on(crate::term::capability::Capabilities::portable());
         let mut interaction = Interaction::begin();
+        prompt_start();
+        let block = block_marks();
+        input_start();
         let marks = [
-            prompt_start(),
-            input_start(),
+            block.prompt,
+            block.input,
             output_start(None),
             interaction.finish(0),
         ];

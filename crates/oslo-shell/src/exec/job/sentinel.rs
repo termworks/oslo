@@ -184,7 +184,7 @@ fn start() -> Option<std::fs::File> {
     let (events_read, events_write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).ok()?;
     // SAFETY: the child calls only syscalls — no allocation, no locks, no Rust destructors that
     // could be waiting on a mutex another thread held at the moment of the fork.
-    match unsafe { fork() } {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
         Ok(ForkResult::Child) => {
             drop(orders_write);
             drop(events_read);

@@ -378,7 +378,7 @@ fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
 
     for (idx, cmd) in pipeline.commands.iter().enumerate() {
         unsafe {
-            match fork() {
+            match oslo_base::forksafe::quiesced(|| fork()) {
                 Ok(ForkResult::Child) => {
                     // Before the signal reset, and before any of this stage's own work: the
                     // parent is about to hand the terminal to this group, and a stage that had

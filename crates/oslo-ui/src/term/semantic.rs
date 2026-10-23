@@ -47,10 +47,21 @@ enum Phase {
     Output,
 }
 
+/// The marks a block on screen is wearing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockMarks {
+    /// Belongs at the block's first row.
+    pub prompt: String,
+    /// Belongs where the prompt ends and the input begins.
+    pub input: String,
+}
+
 pub struct SemanticSession {
     aid: String,
     capabilities: Capabilities,
     phase: Phase,
+    /// Which prompt the block being edited is, kept past the move to `Input`.
+    block: PromptKind,
 }
 
 impl SemanticSession {
@@ -59,11 +70,25 @@ impl SemanticSession {
             aid: aid.into(),
             capabilities,
             phase: Phase::Idle,
+            block: PromptKind::Primary,
         }
     }
 
     pub fn capabilities(&self) -> Capabilities {
         self.capabilities
+    }
+
+    /// The marks for the block being edited, without advancing the lifecycle.
+    ///
+    /// Empty once the command is running: the rows drawn then are output's, not a block's.
+    pub fn block_marks(&self) -> BlockMarks {
+        match self.phase {
+            Phase::Prompt(_) | Phase::Input => BlockMarks {
+                prompt: self.prompt_start(self.block),
+                input: self.input_start(self.block),
+            },
+            _ => BlockMarks::default(),
+        }
     }
 
     pub fn emit(&mut self, event: SemanticEvent<'_>) -> String {
@@ -78,10 +103,12 @@ impl SemanticSession {
             }
             SemanticEvent::PromptStart(PromptKind::Primary) if self.phase == Phase::Interaction => {
                 self.phase = Phase::Prompt(PromptKind::Primary);
+                self.block = PromptKind::Primary;
                 self.prompt_start(PromptKind::Primary)
             }
             SemanticEvent::PromptStart(PromptKind::Continuation) if self.phase == Phase::Input => {
                 self.phase = Phase::Prompt(PromptKind::Continuation);
+                self.block = PromptKind::Continuation;
                 self.prompt_start(PromptKind::Continuation)
             }
             SemanticEvent::PromptStart(PromptKind::Right) => String::new(),

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.7] - 2026-10-23
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Draw prompt marks with the block
+- Never inherit a lock held at fork time
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Refresh Cargo.lock for v0.7.6
+
 ## [0.7.6] - 2026-10-22
 
 ### <!-- 1 -->🐛 Bug Fixes

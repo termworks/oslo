@@ -335,7 +335,7 @@ pub(crate) fn eval_compound_command(
             // Anything this shell has buffered would be duplicated by the fork and printed twice.
             flush_stdout();
             unsafe {
-                match fork() {
+                match oslo_base::forksafe::quiesced(|| fork()) {
                     Ok(ForkResult::Child) => {
                         // R4.7: a subshell is a process that runs commands, so it starts from the
                         // signal state a program is entitled to — in particular SIGPIPE at

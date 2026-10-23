@@ -142,7 +142,7 @@ fn capture_run(
 
     // Safety: between `fork` and `exit`/`exec` the child touches only `close`, `dup2` and the
     // shell state it already owns a copy of — the same discipline every other fork here follows.
-    match unsafe { fork() } {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
         Ok(ForkResult::Child) => {
             crate::exec::job::reset_signals_for_child();
             // **Its own process group, but only when there is a deadline to enforce.**
@@ -236,7 +236,7 @@ pub fn spawn_reading_streams(
 
     // Safety: as elsewhere in this file — the child rearranges its own descriptors and then runs
     // the command, never returning here.
-    match unsafe { fork() } {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
         Ok(ForkResult::Child) => {
             crate::exec::job::reset_signals_for_child();
             let _ = close(reader.into_raw_fd());
@@ -333,7 +333,7 @@ fn spawn_pipeline(
 
         // Safety: as in `capture_run` — the child only rearranges descriptors it owns before
         // running the command, and never returns to this loop.
-        match unsafe { fork() } {
+        match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
             Ok(ForkResult::Child) => {
                 crate::exec::job::reset_signals_for_child();
                 if let Some(reader) = upstream {
