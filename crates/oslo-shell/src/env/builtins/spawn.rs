@@ -120,9 +120,10 @@ pub fn run_external(program: &Path, argv: &[String], display_name: &str) -> Resu
         .collect();
 
     // SAFETY: the child touches only async-signal-safe calls (`sigaction`, `sigprocmask`,
-    // `execv`, `write` via `eprintln`, `_exit`) before it replaces itself. oslo is single
-    // threaded, so no other thread's lock can be inherited half-held.
-    match unsafe { fork() } {
+    // `execv`, `write` via `eprintln`, `_exit`) before it replaces itself. oslo is not single
+    // threaded — the `$PATH` scan, the prediction model and the daily prune each run on one — so
+    // the fork goes through `forksafe::quiesced`.
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
         Ok(ForkResult::Child) => {
             crate::exec::job::reset_signals_for_child();
             exec_or_interpret(&c_path, &c_args, None);

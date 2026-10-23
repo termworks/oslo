@@ -146,7 +146,7 @@ fn start() -> io::Result<()> {
     dir::open_checked()?;
     // SAFETY: the child only serves and exits; it touches no allocator state a parent thread could
     // be holding. The same rule the keeper's fork obeys, for the same reason.
-    match unsafe { nix::unistd::fork() }.map_err(errno)? {
+    match oslo_base::forksafe::quiesced(|| unsafe { nix::unistd::fork() }).map_err(errno)? {
         nix::unistd::ForkResult::Parent { .. } => Ok(()),
         nix::unistd::ForkResult::Child => {
             let _ = nix::unistd::setsid();

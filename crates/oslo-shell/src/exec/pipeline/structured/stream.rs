@@ -268,7 +268,7 @@ pub(super) fn run(
 
     // **The upstream runs in a child, through the ordinary byte path.** Same expansion, same
     // `$PATH` walk, same redirections, same everything — because it is the same function.
-    let child = match unsafe { nix::unistd::fork() } {
+    let child = match oslo_base::forksafe::quiesced(|| unsafe { nix::unistd::fork() }) {
         Ok(nix::unistd::ForkResult::Child) => {
             let _ = nix::unistd::dup2(writer.as_raw_fd(), std::io::stdout().as_raw_fd());
             drop(reader);

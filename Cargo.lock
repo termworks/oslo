@@ -584,6 +584,7 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.4.3",
  "hkdf",
+ "libc",
  "nix",
  "regex",
  "sha2",
@@ -644,6 +645,7 @@ dependencies = [
 name = "oslo-ui"
 version = "0.7.6"
 dependencies = [
+ "libc",
  "nix",
  "nucleo-matcher",
  "oslo-base",

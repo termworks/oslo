@@ -48,7 +48,7 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
     flush_stdout();
 
     unsafe {
-        match fork() {
+        match oslo_base::forksafe::quiesced(|| fork()) {
             Ok(ForkResult::Child) => {
                 // R4.7: the substitution body is a subshell like any other and must not inherit
                 // the shell's own signal policy.

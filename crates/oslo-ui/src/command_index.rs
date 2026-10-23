@@ -100,15 +100,20 @@ impl CommandIndex {
     /// entirely, and the caller got names that were not on its `$PATH` or none at all.
     fn both(path: &str) -> (Arc<HashSet<String>>, Arc<Vec<String>>) {
         let generation = GENERATION.load(Ordering::Relaxed);
-        let mut guard = cache().lock().unwrap_or_else(|held| held.into_inner());
 
-        if let Some(entry) = guard.as_ref() {
+        // Three short turns under the lock rather than one long one. `stamps` stats every `$PATH`
+        // directory and `scan` reads all of them, and the lock used to be held across both — on
+        // the detached warming thread, where a fork leaves the child's copy locked for good. Each
+        // returned pair still comes from a single turn, which is what keeps the two views in step.
+        if let Some(hit) = oslo_base::forksafe::guarded(|| {
+            let guard = cache().lock().unwrap_or_else(|held| held.into_inner());
+            let entry = guard.as_ref()?;
             let fresh = entry.key.generation == generation
                 && entry.key.path == path
                 && entry.checked_at.elapsed() < REVALIDATE_AFTER;
-            if fresh {
-                return (Arc::clone(&entry.names), Arc::clone(&entry.sorted));
-            }
+            fresh.then(|| (Arc::clone(&entry.names), Arc::clone(&entry.sorted)))
+        }) {
+            return hit;
         }
 
         let key = Key {
@@ -117,23 +122,30 @@ impl CommandIndex {
             stamps: stamps(path),
         };
 
-        if let Some(entry) = guard.as_mut()
-            && entry.key == key
-        {
+        if let Some(hit) = oslo_base::forksafe::guarded(|| {
+            let mut guard = cache().lock().unwrap_or_else(|held| held.into_inner());
+            let entry = guard.as_mut()?;
             // Nothing moved; renew the lease rather than re-reading the directories.
-            entry.checked_at = Instant::now();
-            return (Arc::clone(&entry.names), Arc::clone(&entry.sorted));
+            (entry.key == key).then(|| {
+                entry.checked_at = Instant::now();
+                (Arc::clone(&entry.names), Arc::clone(&entry.sorted))
+            })
+        }) {
+            return hit;
         }
 
         let names = Arc::new(scan(path));
         let mut ordered: Vec<String> = names.iter().cloned().collect();
         ordered.sort_unstable();
         let sorted = Arc::new(ordered);
-        *guard = Some(Entry {
-            key,
-            names: Arc::clone(&names),
-            sorted: Arc::clone(&sorted),
-            checked_at: Instant::now(),
+        oslo_base::forksafe::guarded(|| {
+            let mut guard = cache().lock().unwrap_or_else(|held| held.into_inner());
+            *guard = Some(Entry {
+                key,
+                names: Arc::clone(&names),
+                sorted: Arc::clone(&sorted),
+                checked_at: Instant::now(),
+            });
         });
         (names, sorted)
     }

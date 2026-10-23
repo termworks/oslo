@@ -90,7 +90,7 @@ pub(crate) fn run_external(
         .collect();
 
     unsafe {
-        match fork() {
+        match oslo_base::forksafe::quiesced(|| fork()) {
             Ok(ForkResult::Child) => {
                 // R7.1: a foreground command is a job of its own, so it leads its own process
                 // group. Done first: the parent is about to hand the terminal to that group, and

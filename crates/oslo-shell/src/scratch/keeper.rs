@@ -70,7 +70,7 @@ pub fn spawn(name: &str, cap: u64) -> io::Result<Role> {
     // SAFETY: the child either execs (through `run`) or exits. It touches no allocator state that a
     // parent thread could be holding, which is the rule this has to obey and the reason the fork is
     // taken before any of oslo's warm threads start.
-    match unsafe { fork() }.map_err(errno)? {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }).map_err(errno)? {
         ForkResult::Parent { child } => Ok(Role::Caller(child)),
         ForkResult::Child => match keep(name, cap) {
             // The grandchild: the caller of `spawn` continues here as the shell.
@@ -109,7 +109,7 @@ fn keep(name: &str, cap: u64) -> io::Result<Role> {
     let paths = store::Paths::new(name);
 
     // SAFETY: as above — the child execs or exits.
-    match unsafe { fork() }.map_err(errno)? {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }).map_err(errno)? {
         ForkResult::Child => {
             drop(pty.master);
             become_the_shell(pty.slave);

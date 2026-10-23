@@ -262,13 +262,17 @@ pub fn warm(path: std::path::PathBuf) {
         let Some(model) = Model::load_from(&path) else {
             return;
         };
-        if let Ok(mut slot) = shared().write() {
-            // Only if nothing has been learned in the meantime. A command run while the snapshot
-            // was still being read is worth more than the snapshot's view of the world.
-            if slot.is_none() {
-                *slot = Some(model);
+        // Guarded, not because it is slow but because it is a process-wide lock held on a detached
+        // thread: a fork while it is held leaves the child's copy locked for good.
+        crate::forksafe::guarded(|| {
+            if let Ok(mut slot) = shared().write() {
+                // Only if nothing has been learned in the meantime. A command run while the
+                // snapshot was still being read is worth more than the snapshot's view.
+                if slot.is_none() {
+                    *slot = Some(model);
+                }
             }
-        }
+        });
     });
 }
 

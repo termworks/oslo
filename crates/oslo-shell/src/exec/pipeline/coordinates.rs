@@ -172,7 +172,7 @@ fn run_in_child(
     let stdin_fd = stdin.map(|file| file.as_raw_fd());
 
     // Safety: the child only rearranges descriptors it owns and never returns to this function.
-    match unsafe { fork() } {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
         Ok(ForkResult::Child) => {
             crate::exec::job::reset_signals_for_child();
             if let Some(fd) = stdin_fd {

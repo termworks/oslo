@@ -298,10 +298,13 @@ make.recipe{ name = "check-loc", desc = "fail if any source file exceeds 600 lin
 make.recipe{ name = "check-readme", desc = "fail if the readme names a file that does not exist",
              run = function() sh.sh("./scripts/check-readme.sh") end }
 
+make.recipe{ name = "check-fork", desc = "fail if any fork bypasses the forksafe gate",
+             run = function() sh.sh("./scripts/check-fork.sh") end }
+
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check-loc", "check-readme", "check", "test", "clippy", "rustdoc" },
+  deps = { "fmt-check", "check-loc", "check-readme", "check-fork", "check", "test", "clippy", "rustdoc" },
 }
 
 ---------------------------------------------------------------------------- installing

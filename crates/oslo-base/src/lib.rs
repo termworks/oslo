@@ -48,6 +48,8 @@ pub mod error;
 pub mod exe;
 /// Parts of the shell a config can turn off and on again while it runs.
 pub mod feature;
+/// Forking from a process that has threads: the gate that keeps a child from inheriting a held lock.
+pub mod forksafe;
 /// Shell pattern matching — `*`, `?`, `[…]` — shared by expansion, `case`, and the prompt.
 pub mod glob;
 pub mod hooks;

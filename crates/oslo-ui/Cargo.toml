@@ -52,6 +52,7 @@ oslo-base = { path = "../oslo-base" }
 # Only the tests need an engine: a theme and a settings block are read from a `Value`, and the
 # shortest way to build a realistic one is to run the config snippet that produces it.
 oslo-luavm = { path = "../oslo-luavm" }
+libc = "0.2"
 
 [features]
 # Exposes `theme::held_at`, the guard that serialises tests asserting on colour escapes. The depth

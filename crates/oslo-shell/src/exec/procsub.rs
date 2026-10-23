@@ -75,7 +75,7 @@ pub fn open(
 
     // Anything buffered belongs to this shell, not to the child.
     flush_stdout();
-    match unsafe { fork() } {
+    match oslo_base::forksafe::quiesced(|| unsafe { fork() }) {
         Ok(ForkResult::Child) => {
             crate::exec::job::reset_signals_for_child();
             // The child must not keep the end the *caller* was named by: while it holds the
