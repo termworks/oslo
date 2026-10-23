@@ -46,6 +46,13 @@ pub struct Row<'a> {
     /// bound with `erase` ran a line. Rows the editor draws are rows the editor can take back, and
     /// that stays true whether this is one or five.
     pub lead: usize,
+    /// `OSC 133;A`, drawn on the block's first row. Empty when the terminal takes no marks.
+    ///
+    /// Part of the frame for the same reason `lead` is: rows the editor draws are rows it takes
+    /// back, and a mark belongs to the row it was written on.
+    pub prompt_mark: &'a str,
+    /// `OSC 133;B`, drawn where the prompt ends and the text begins.
+    pub input_mark: &'a str,
 }
 
 /// Where the row's cells landed.
@@ -101,7 +108,11 @@ pub fn place(row: &Row) -> Placed {
     for _ in 0..row.lead {
         out.push_str("\r\n");
     }
+    // After the lead, so the mark lands on the row the prompt is actually on. Neither mark
+    // measures: both are escapes, and the cell counts above come from the text, not from `out`.
+    out.push_str(row.prompt_mark);
     out.push_str(row.prompt);
+    out.push_str(row.input_mark);
     out.push_str(row.text);
     out.push_str(row.hint);
 

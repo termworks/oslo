@@ -15,7 +15,7 @@ mod veto;
 #[path = "terminal_semantics/pty.rs"]
 mod pty;
 
-use pty::{PtyShell, kinds, marks, visible, vscode_kinds};
+use pty::{PtyShell, blocks, kinds, marks, visible, vscode_blocks};
 // `terminal_input` reads this through `use super::*`.
 use std::process::Command;
 
@@ -45,7 +45,7 @@ fn blank_partial_interrupt_and_eof_close_without_command_start() {
     shell.wait_for_marks(11);
     shell.send(b"\x04");
     shell.wait_for_exit();
-    let marks = marks(&shell.transcript);
+    let marks = blocks(&shell.transcript);
 
     assert_eq!(kinds(&marks), "ABDABDABDABD");
     assert!(
@@ -57,6 +57,10 @@ fn blank_partial_interrupt_and_eof_close_without_command_start() {
     assert!(!marks.iter().any(|mark| mark.kind == b'C'));
 }
 
+/// A continuation prompt is its own block, and the whole multi-line line is one interaction.
+///
+/// Counted per block rather than per prompt: a redrawn continuation prompt re-states
+/// `A;k=s;aid=…` byte for byte, so the wire cannot tell it from a second one. See [`blocks`].
 #[test]
 fn multiline_input_has_secondary_prompt_marks_in_one_interaction() {
     let mut shell = PtyShell::configured("xterm-256color", true, "oslo.autopair.enabled = false\n");
@@ -66,15 +70,19 @@ fn multiline_input_has_secondary_prompt_marks_in_one_interaction() {
     assert_eq!(kinds(&continued[..4]), "ABAB");
     assert!(continued[2].body.contains("k=s"), "{:?}", continued[2]);
     shell.send(b"middle\n");
-    let continued = shell.wait_for_marks(6);
-    assert_eq!(kinds(&continued[..6]), "ABABAB");
-    assert!(continued[4].body.contains("k=s"), "{:?}", continued[4]);
     shell.send(b"right\"\n");
-    let complete = shell.wait_for_marks(10);
+    let complete = shell.wait_for_marks(8);
 
-    assert_eq!(kinds(&complete[..10]), "ABABABCDAB");
+    assert_eq!(kinds(&complete[..8]), "ABABCDAB");
+    // One command ran, however many prompts it was typed at.
+    assert_eq!(
+        complete.iter().filter(|mark| mark.kind == b'C').count(),
+        1,
+        "{:?}",
+        kinds(&complete)
+    );
     let aid = complete[0].aid().expect("session aid");
-    assert!(complete[..10].iter().all(|mark| mark.aid() == Some(aid)));
+    assert!(complete[..8].iter().all(|mark| mark.aid() == Some(aid)));
 }
 
 #[test]
@@ -86,19 +94,20 @@ oslo.env.set("OSLO_DEFAULT_MODE", "lua")
     let mut shell = PtyShell::configured("xterm-256color", true, config);
     shell.wait_for_marks(2);
     shell.send(b"if true then\n");
-    shell.wait_for_marks(4);
+    let continued = shell.wait_for_marks(4);
+    assert!(continued[2].body.contains("k=s"), "{:?}", continued[2]);
     shell.send(b"if true then\n");
-    shell.wait_for_marks(6);
     // **`end` does not run it; an empty line does.** A Lua block that has asked for more keeps
     // asking until a blank line, which is Python's rule and there for Python's reason: after
     // `local function f()` the parser is satisfied again at `end`, so running the moment it parses
     // would mean no line after `end` could ever be typed. So this is one more continuation prompt,
     // not the command — see `docs/features/two-languages-one-prompt.md`.
     shell.send(b"end end\n");
-    shell.wait_for_marks(8);
     shell.send(b"\n");
-    let complete = shell.wait_for_marks(12);
-    assert_eq!(kinds(&complete[..12]), "ABABABABCDAB");
+    // One primary block, one secondary, one command — see the note on the test above for why the
+    // secondary prompts are not counted individually.
+    let complete = shell.wait_for_marks(8);
+    assert_eq!(kinds(&complete[..8]), "ABABCDAB");
 }
 
 #[test]
@@ -115,13 +124,13 @@ oslo.prompt.transient = function() return "SHORT> " end
     shell.wait_for_text("RIGHT");
     shell.send(b"\x1b[Z");
     shell.drain_for(Duration::from_millis(50));
-    assert_eq!(kinds(&marks(&shell.transcript)), "AB");
+    assert_eq!(kinds(&blocks(&shell.transcript)), "AB");
     shell.send(b"\x1b[Z");
     shell.drain_for(Duration::from_millis(50));
-    assert_eq!(kinds(&marks(&shell.transcript)), "AB");
+    assert_eq!(kinds(&blocks(&shell.transcript)), "AB");
     shell.send(b"\x1b");
     shell.drain_for(Duration::from_millis(50));
-    assert_eq!(kinds(&marks(&shell.transcript)), "AB");
+    assert_eq!(kinds(&blocks(&shell.transcript)), "AB");
 
     shell.send(b"itrue\n");
     let complete = shell.wait_for_marks(6);

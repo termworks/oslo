@@ -55,8 +55,8 @@ fn the_erase_never_starts_at_the_screen_origin() {
     // screen starts at row 0 with no lead, which is exactly the case this dodge exists for.
     let endings = [
         redraw(0, "$ ls", at(1, 0, 4)),
-        transcript(0, 0, &["ls".into()], "-", 20, ""),
-        given(0, 0, &["ls".into()], 20, Some(&"ls")),
+        transcript(0, 0, &["ls".into()], "-", 20, "", Marks::default()),
+        given(0, 0, &["ls".into()], 20, Some(&"ls"), Marks::default()),
     ];
     for out in endings {
         let erase = out.find("\x1b[J").expect("erases");
@@ -167,7 +167,7 @@ fn parking_returns_to_the_top_without_clearing() {
 /// time that holds still.
 #[test]
 fn a_transcript_puts_the_command_at_the_left_edge() {
-    let out = transcript(0, 0, &["ls".into()], "-", 60, "");
+    let out = transcript(0, 0, &["ls".into()], "-", 60, "", Marks::default());
     assert!(
         out.contains("\r---[ ls ]---"),
         "the command leads the rule: {out:?}"
@@ -195,7 +195,7 @@ fn a_transcript_puts_the_command_at_the_left_edge() {
     // the block, so erasing the block erases them — and an ending that started at the rule moved
     // the whole transcript up onto the row its own gap was meant to be. One above and one below is
     // what a frame between two commands' output has to have; before this it had only the one below.
-    let led = transcript(1, 1, &["ls".into()], "-", 60, "");
+    let led = transcript(1, 1, &["ls".into()], "-", 60, "", Marks::default());
     assert!(
         led.starts_with("\x1b[1A\r\x1b[K\x1b[C\x1b[J\r\r\n---[ ls ]"),
         "up to the top of the block, erase, then the blank row it opened with: {led:?}"
@@ -204,12 +204,13 @@ fn a_transcript_puts_the_command_at_the_left_edge() {
     // On a screen the last command blanked there is no lead and no gap above — the top of a cleared
     // screen is not something that needs separating from what is not there.
     assert!(
-        !transcript(0, 0, &["ls".into()], "-", 60, "").starts_with("\r\x1b[K\x1b[C\x1b[J\r\r\n")
+        !transcript(0, 0, &["ls".into()], "-", 60, "", Marks::default())
+            .starts_with("\r\x1b[K\x1b[C\x1b[J\r\r\n")
     );
 
     // The rule and the brackets are styled; the command between them is not — it is either what
     // was typed or what another program drew, and neither wants a second opinion.
-    let painted = transcript(0, 0, &["ls".into()], "-", 60, "\x1b[2m");
+    let painted = transcript(0, 0, &["ls".into()], "-", 60, "\x1b[2m", Marks::default());
     assert!(
         painted.contains("\x1b[2m---[ \x1b[0mls\x1b[2m ]"),
         "{painted:?}"
@@ -221,7 +222,7 @@ fn a_transcript_puts_the_command_at_the_left_edge() {
 #[test]
 fn a_long_command_loses_the_rule_and_not_itself() {
     let long = "cargo test --all-targets --no-run";
-    let out = transcript(0, 0, &[long.to_string()], "-", 10, "");
+    let out = transcript(0, 0, &[long.to_string()], "-", 10, "", Marks::default());
     assert!(out.contains(long), "the command is never cut: {out:?}");
     assert!(!out.contains("--------"), "no room to trail it: {out:?}");
 }

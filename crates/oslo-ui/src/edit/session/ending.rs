@@ -70,10 +70,16 @@ pub(super) fn ending(
         })
         .collect();
 
+    // The replacement stands in for the block it erases, so it carries that block's marks.
+    let stamped = crate::marks::block_marks();
+    let marks = screen::Marks {
+        prompt: &stamped.prompt,
+        input: &stamped.input,
+    };
     let block = match drawn {
         // Placed as it came, but for the indent that lines a continuation row up under the first —
         // which is oslo's because only oslo knows where the first row's rule stopped.
-        Some(rendered) => screen::given(cursor_row, lead, &rendered, cols, lines.first()),
+        Some(rendered) => screen::given(cursor_row, lead, &rendered, cols, lines.first(), marks),
         // Nothing installed, or a row it declined: oslo draws them all itself.
         None => {
             let painted = crate::theme::Color::parse(&settings.transcript.style)
@@ -90,6 +96,7 @@ pub(super) fn ending(
                 &rule,
                 cols,
                 &painted.open(crate::theme::depth()),
+                marks,
             )
         }
     };

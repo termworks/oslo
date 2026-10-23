@@ -23,6 +23,18 @@
 //! into the pending wrap: on a row filled to the last column the cursor is still *in* that column,
 //! and the erase would take back the character just written.
 
+/// The semantic marks a drawn block wears.
+///
+/// Carried rather than looked up, so this module stays pure. Empty strings when the terminal takes
+/// no marks. Every path here reopens the block and writes new rows, so each one stamps them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Marks<'a> {
+    /// `OSC 133;A`, for the block's first row.
+    pub prompt: &'a str,
+    /// `OSC 133;B`, for the row the command itself is on.
+    pub input: &'a str,
+}
+
 /// Where the frame wants the cursor, and how tall it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct At {
@@ -161,11 +173,19 @@ pub fn transcript(
     unit: &str,
     cols: usize,
     style: &str,
+    marks: Marks<'_>,
 ) -> String {
     // Everything from the top of the block down was the prompt's and is being replaced.
     let mut out = reopen(cursor_row, lead);
-    for row in framed(rows, unit, cols, style, &crate::transcript::stamp()) {
-        out.push_str(&row);
+    out.push_str(marks.prompt);
+    for (at, row) in framed(rows, unit, cols, style, &crate::transcript::stamp())
+        .iter()
+        .enumerate()
+    {
+        if at == 0 {
+            out.push_str(marks.input);
+        }
+        out.push_str(row);
         out.push_str("\r\n");
     }
     out.push_str(BREATH);
@@ -287,13 +307,17 @@ pub fn given(
     rows: &[String],
     cols: usize,
     first_command: Option<&&str>,
+    marks: Marks<'_>,
 ) -> String {
     let indent = first_command.map_or(0, |text| {
         cols.saturating_sub(crate::prompt::printed_width(text) + 4 + TAIL)
     });
     let mut out = reopen(cursor_row, lead);
+    out.push_str(marks.prompt);
     for (at, row) in rows.iter().enumerate() {
-        if at > 0 {
+        if at == 0 {
+            out.push_str(marks.input);
+        } else {
             out.push_str(&" ".repeat(indent));
         }
         out.push_str(row.trim_end_matches(['\r', '\n']));

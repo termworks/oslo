@@ -12,6 +12,7 @@ fn row<'a>(prompt: &'a str, plain: &'a str, cursor: usize, cols: usize) -> Row<'
         right: "",
         cols,
         lead: 0,
+        ..Default::default()
     }
 }
 
@@ -187,10 +188,40 @@ fn colour_in_the_line_is_drawn_but_not_measured() {
         hint: "",
         right: "",
         cols: 80,
+        ..Default::default()
     };
     let p = place(&r);
     assert_eq!(p.cursor_col, 6, "2 prompt + 4 characters");
     assert!(p.text.contains("\x1b[32m"), "the colour is still drawn");
+}
+
+/// The marks ride along with the block, which is what makes them survive a repaint: the editor
+/// replaces the block by erasing from its first row down, so a mark written once beside the frame
+/// is erased by the next keystroke along with the row it named.
+///
+/// Position matters as much as presence. `A` goes after the lead, on the row the prompt is really
+/// on, and `B` goes between the prompt and the text, at the column the input starts in.
+#[test]
+fn the_marks_are_drawn_with_the_block() {
+    let r = Row {
+        prompt: "$ ",
+        text: "echo hi",
+        plain: "echo hi",
+        cursor: 7,
+        hint: "",
+        right: "",
+        cols: 80,
+        lead: 1,
+        prompt_mark: "<A>",
+        input_mark: "<B>",
+    };
+    let p = place(&r);
+    assert_eq!(p.text, "\r\n<A>$ <B>echo hi");
+    assert_eq!(
+        p.cursor_col, 9,
+        "2 prompt + 7 characters; a mark is no cells"
+    );
+    assert_eq!(p.rows, 2, "one lead row and the prompt's");
 }
 
 #[test]
