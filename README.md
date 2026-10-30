@@ -169,14 +169,15 @@ program everywhere else. There is no `Makefile`: `scripts/build.sh` exists preci
 ### Nix binary cache
 
 Each package and architecture uses one stable pin, such as
-`oslo-x86_64-linux`, with `--keep-revisions 5`. The five newest pin revisions
-are protected from cache cleanup; each binary retains its actual package version.
-Older revisions become eligible for garbage collection and may need rebuilding.
+`oslo-x86_64-linux`, listed at <https://cache.bresilla.com/-/pins>. The pinned
+build is protected from cache cleanup; each binary retains its actual package
+version. Builds that are no longer pinned are removed and may need rebuilding.
 
-The shared Cachix cache is `termworks`. CI publishes only on pushed tags matching
-`v*`. Use a published release tag to download cached packages. The flake advertises
-the cache URL and public key; accept the cache configuration when Nix prompts.
-Replace `vX.Y.Z` with a tag whose cache workflow has succeeded:
+The binary cache is `https://cache.bresilla.com/bresilla`, a self-hosted Attic
+cache. CI publishes only on pushed tags matching `v*`. Use a published release tag
+to download cached packages. The flake advertises the cache URL and public key;
+accept the cache configuration when Nix prompts. Replace `vX.Y.Z` with a tag whose
+cache workflow has succeeded:
 
 ```sh
 nix build github:termworks/oslo/vX.Y.Z
@@ -184,18 +185,12 @@ nix build github:termworks/oslo/vX.Y.Z#oslo-minimal
 ```
 
 When consuming Oslo as an input of another flake, configure the cache on the
-consumer machine as well. With the Cachix CLI installed:
-
-```sh
-cachix use termworks
-```
-
-Alternatively, add these settings to `/etc/nix/nix.conf` and restart the Nix
-daemon if your installation uses one:
+consumer machine as well: add these settings to `/etc/nix/nix.conf` and restart
+the Nix daemon if your installation uses one:
 
 ```ini
-extra-substituters = https://termworks.cachix.org
-extra-trusted-public-keys = termworks.cachix.org-1:Ty7sSVALfD5ajbcWBIdaNHcaEx3fEmVrOo+rSzy0mvE=
+extra-substituters = https://cache.bresilla.com/bresilla
+extra-trusted-public-keys = bresilla:zsecaZYIrjCJQS4AuGPmEVU5PRkiMmB/Mds3KaCzTvE=
 ```
 
 The consumer must request the same build inputs as CI. Overriding the package's
@@ -204,22 +199,20 @@ not published to the cache unless they are also tagged with a matching release t
 
 #### Publishing setup
 
-1. In the `termworks` cache settings at [Cachix](https://app.cachix.org), generate
-   a per-cache write token using Cachix-managed signing.
-2. In the GitHub repository's **Settings → Secrets and variables → Actions**,
-   add the token as `CACHIX_AUTH_TOKEN`. An organization Actions secret restricted
-   to selected repositories can be shared by other Termworks projects.
-3. Commit the workflow, then push a release tag matching `v*` that includes it.
+1. Add the organization Actions secrets `ATTIC_TOKEN` (an Attic token that may
+   push to the `bresilla` cache) and `PIN_TOKEN` (the cache's pins API token);
+   `NETBIRD_SETUP_KEY` is only needed for uploads over 95 MB.
+2. Commit the workflow, then push a release tag matching `v*` that includes it.
    Branch pushes, release events, and manual dispatch do not trigger publishing.
 
 `.github/workflows/nix-cache.yml` builds both variants on native x86_64 and ARM64
-Linux runners. It uploads their runtime closures after the flake's install checks
-pass, then verifies downloads and shell startup on fresh runners with builders
-disabled. Both variants are pinned by release tag against cache garbage
-collection. Pull requests do not run this publishing workflow.
+Linux runners. After the flake's install checks pass, the shared
+[`attic-push`](https://github.com/bresilla/nixos/tree/main/.github/actions/attic-push)
+action uploads only the paths cache.nixos.org does not have and sets both pins;
+fresh runners then verify downloads and shell startup with builders disabled.
+Pull requests do not run this publishing workflow.
 
-The write token is a secret: do not commit it or place it in `flake.nix`.
-Other repositories can publish to the same cache with their own Nix build jobs.
+The tokens are secrets: do not commit them or place them in `flake.nix`.
 
 ### Optional features
 
