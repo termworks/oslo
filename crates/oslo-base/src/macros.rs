@@ -1,9 +1,14 @@
-//! The small named things you accumulate: aliases, abbreviations, functions and scripts.
+//! The small named things you accumulate: aliases, abbreviations, functions, variables and scripts.
 //!
 //! ```text
-//! ~/.local/share/oslo/macros/macros.db         the four kinds, keyed `<kind>/<name>`
+//! ~/.local/share/oslo/macros/macros.db         aliases, abbreviations, functions, variables
 //! ~/.local/share/oslo/macros/macros.snapshot   what a starting shell actually reads
+//! ~/.local/sbin/                               the scripts, one file each — see [`scripts`]
 //! ```
+//!
+//! A script is the one kind that is not a database row. Every function here that takes a
+//! [`Kind`] answers [`Kind::Script`] from the directory instead, so a caller sees five kinds
+//! behind one interface.
 //!
 //! # One store, not one per profile
 //!
@@ -34,12 +39,12 @@
 //! # Only two kinds are in the snapshot
 //!
 //! An alias must be in hand before the first line is parsed, and an abbreviation before the first
-//! keystroke. A function or a script is looked up **after** the `$PATH` search has already failed —
-//! the rule `exec::simple::autoload` states — so it costs a database open only on a line that was
-//! going to fail anyway, and nothing at startup.
+//! keystroke. A function is looked up **after** the `$PATH` search has already failed — the rule
+//! `exec::simple::autoload` states — so it costs a database open only on a line that was going to
+//! fail anyway, and nothing at startup. A script is a file on `$PATH` and costs nothing here.
 
-pub mod bin;
 pub mod live;
+pub mod scripts;
 pub mod snapshot;
 pub mod sourced;
 pub mod sync;
@@ -70,7 +75,7 @@ pub enum Kind {
     Abbrev,
     /// A shell or Lua function, found after `$PATH`.
     Func,
-    /// A whole program with a shebang, run from memory. See `oslo_shell::exec::stored`.
+    /// A whole program with a shebang: an executable file in [`scripts::directory`].
     Script,
     /// An environment variable whose body is a *recipe* rather than a value.
     ///
@@ -322,6 +327,9 @@ pub fn put(store: &Store, entry: &Entry) -> Result<(), String> {
     if !valid_name(&entry.name) {
         return Err(format!("{:?} is not a name this can store", entry.name));
     }
+    if entry.kind == Kind::Script {
+        return scripts::write(entry);
+    }
     let before = stored(store, entry.kind, &entry.name);
     let created = before
         .as_ref()
@@ -344,11 +352,16 @@ pub fn put(store: &Store, entry: &Entry) -> Result<(), String> {
 
 /// Read one back, or `None` when there is none — including when what is there is a tombstone.
 pub fn get(store: &Store, kind: Kind, name: &str) -> Option<Entry> {
+    if kind == Kind::Script {
+        return scripts::get(name);
+    }
     stored(store, kind, name).filter(|entry| !entry.stamp.deleted)
 }
 
 /// The record as it really is, tombstones and all. For sync, which is the one thing that must see
 /// a deletion rather than be told there is nothing there.
+///
+/// Database records only: a script is read with [`scripts::get`].
 pub fn stored(store: &Store, kind: Kind, name: &str) -> Option<Entry> {
     let stored = crate::store::get(store, &key(kind, name))?;
     Some(decode(kind, name, &String::from_utf8_lossy(&stored)))
@@ -453,6 +466,9 @@ fn decode(kind: Kind, name: &str, stored: &str) -> Entry {
 
 /// Turn one on or off, and answer what it now is. `None` if there is no such macro.
 pub fn set_active(store: &Store, kind: Kind, name: &str, active: bool) -> Option<bool> {
+    if kind == Kind::Script {
+        return scripts::set_active(name, active);
+    }
     let entry = get(store, kind, name)?;
     put(store, &Entry { active, ..entry }).ok()?;
     Some(active)
@@ -483,7 +499,13 @@ pub fn kinds_of(store: &Store, name: &str) -> Vec<Kind> {
 /// **A tombstone, not an erasure.** The record stays with its stamp buried, because a row that
 /// simply vanished would be indistinguishable from one this machine never had — and the other end
 /// of a sync, seeing a macro we lack, would hand it straight back. See [`crate::track::stamp`].
+///
+/// A script is a file, and is deleted; [`scripts::ledger`] turns the missing file into a tombstone
+/// when the next sync runs.
 pub fn remove(store: &Store, kind: Kind, name: &str) -> bool {
+    if kind == Kind::Script {
+        return scripts::remove(name);
+    }
     let Some(entry) = get(store, kind, name) else {
         return false;
     };
@@ -495,10 +517,21 @@ pub fn remove(store: &Store, kind: Kind, name: &str) -> bool {
     crate::store::set(store, &key(kind, name), encode(&buried).as_bytes()).is_ok()
 }
 
-/// Everything stored, sorted by kind then name.
+/// Everything stored, the scripts included, sorted by kind then name.
 pub fn all(store: &Store) -> Vec<Entry> {
+    let mut found = database_entries(store);
+    found.extend(scripts::all());
+    found.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    found
+}
+
+/// Everything in the database: every kind but the scripts.
+pub fn database_entries(store: &Store) -> Vec<Entry> {
     let mut found = Vec::new();
     for kind in Kind::every().iter().copied() {
+        if kind == Kind::Script {
+            continue;
+        }
         let prefix = format!("{}/", kind.word());
         for full in crate::store::keys(store, &prefix) {
             let Some(name) = full.strip_prefix(&prefix) else {
@@ -531,20 +564,15 @@ pub fn remove_and_publish(store: &Store, kind: Kind, name: &str) -> Result<bool,
 
 /// Rewrite everything derived from what the database now says.
 ///
-/// Two files, one rule: the database is the only thing anybody edits, and every copy of it is
-/// rewritten by whatever changed it. [`mod@snapshot`] is what a starting shell reads, [`bin`] is what
-/// everything that is not oslo *runs*, and [`sourced`] is what another shell *sources* to have the
-/// aliases — the half a `$PATH` directory cannot carry, because an alias is not a program.
+/// [`mod@snapshot`] is what a starting shell reads, and [`sourced`] is what another shell
+/// *sources* to have the aliases. Scripts are files already and have nothing derived from them.
 pub fn publish(store: &Store) -> Result<(), String> {
-    let entries = all(store);
+    let entries = database_entries(store);
     snapshot::write(&entries)?;
     // **A failure here is reported, not fatal.** What is written out is a convenience for other
     // programs; a `$HOME` that cannot be written to is a reason to say so and still have stored the
     // macro, which is what the database already did.
-    for problem in [bin::publish(&entries), sourced::publish(&entries)]
-        .into_iter()
-        .filter_map(Result::err)
-    {
+    if let Err(problem) = sourced::publish(&entries) {
         // **Said out loud as well as recorded.** `messages::say` writes into the buffer `oslo
         // messages` reads, and a one-shot `oslo macros add` prints that buffer to nobody — so a
         // publish that refused to overwrite somebody's file, or a `$HOME` that could not be

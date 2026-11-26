@@ -182,16 +182,9 @@ fn row_of(item: &Item, look: &Look, now: i64, name_width: usize, known: &[String
         .map(|tag| colour_of(tag, known).open(theme::depth()) + "#" + tag)
         .collect::<Vec<_>>()
         .join(" ");
-    // The state marker sits where the checkbox does in a multi-select list, because it is the same
-    // question — is this one in or out — asked of a different thing.
-    let lead = match (item.active, item.session_off) {
-        (false, _) => "✗".to_string(),
-        (true, true) => "·".to_string(),
-        (true, false) => " ".to_string(),
-    };
     Row {
         meta: vec![ago(now, item.created), item.kind.clone()],
-        lead,
+        lead: lead_of(item).to_string(),
         trail: tags,
         // Muted while it is off: a list where a disabled row looks exactly like a live one answers
         // the wrong question.
@@ -201,6 +194,17 @@ fn row_of(item: &Item, look: &Look, now: i64, name_width: usize, known: &[String
             truncated(&item.name, name_width),
             detail(item)
         ))
+    }
+}
+
+/// The state marker, where the checkbox sits in a multi-select list: off everywhere, off in this
+/// session, sharing its name with another kind, or nothing.
+fn lead_of(item: &Item) -> &'static str {
+    match (item.active, item.session_off, item.clash) {
+        (false, _, _) => "✗",
+        (true, true, _) => "·",
+        (true, false, true) => "!",
+        (true, false, false) => " ",
     }
 }
 
@@ -313,6 +317,7 @@ mod tests {
             active: true,
             session_off: false,
             stored: true,
+            clash: false,
         }
     }
 
@@ -339,6 +344,22 @@ mod tests {
             "[[[ bash ]]]".chars().count(),
             "the escapes take no width, so the column still lines up"
         );
+    }
+
+    /// A clash is marked on a live row; off says off, whatever else is true.
+    #[test]
+    fn a_clashing_row_is_marked_unless_it_is_off() {
+        let clashing = Item {
+            clash: true,
+            ..item("script", "bash")
+        };
+        assert_eq!(lead_of(&clashing), "!");
+        assert_eq!(lead_of(&item("script", "bash")), " ");
+        let off = Item {
+            active: false,
+            ..clashing
+        };
+        assert_eq!(lead_of(&off), "✗");
     }
 
     /// A name longer than the column is cut, not allowed to push every body off the screen.

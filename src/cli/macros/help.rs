@@ -12,8 +12,9 @@ pub(crate) const MENU: Menu = Menu {
     heading: HEADING,
     subs: SUBCOMMANDS,
     notes: &[
-        "Aliases and abbreviations reach a shell when it starts; a function or a script",
-        "is found when you call it, after $PATH has already failed.",
+        "Aliases and abbreviations reach a shell when it starts; a function is found when",
+        "you call it, after $PATH has already failed. A script is a file in ~/.local/sbin",
+        "(or $OSLO_MACROS_BIN): any file there with a #! line is listed, and runs from $PATH.",
     ],
     nested: &[],
 };
@@ -32,7 +33,7 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
             ("--func", "a function: opens your editor, shell or Lua"),
             (
                 "--script",
-                "a script: opens your editor, any language, with a shebang",
+                "a script: a file in ~/.local/sbin, opened in your editor",
             ),
             (
                 "--var",
@@ -54,7 +55,7 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
                the shell that first reads the name — which is what makes \
                `--var GITHUB_TOKEN='$(oslo secret get gh-token)'` cost nothing until something \
                needs the token. It may be written that way, as one word with an `=`, or as a name \
-               and a body.",
+               and a body. A script's tags are its `# tags: a, b` line; `--tag` rewrites it.",
     },
     Sub {
         name: "remove",
@@ -77,11 +78,11 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
         args: "NAME",
         about: "open one in your editor",
         flags: &[("--alias", "when the name is more than one kind at once")],
-        note: "The kind is only needed when the name is more than one thing. **A function or a \
-               script that also exists as a file on `$PATH` is shadowed by that file** — the shell \
-               finds a stored one only after the `$PATH` search has failed — so this says which \
-               file is running before it opens the editor. Editing the stored copy of something \
-               `$PATH` answers first changes nothing about what runs.",
+        note: "The kind is only needed when the name is more than one thing. A script opens as \
+               the file itself. **A function that also exists as a file on `$PATH` is shadowed by \
+               that file** — the shell finds a stored one only after the `$PATH` search has failed \
+               — and so is a script with a namesake earlier on `$PATH`; this says which file is \
+               running before it opens the editor.",
     },
     Sub {
         name: "show",
@@ -108,7 +109,8 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
                so each is flattened to one row: when it was made, its kind, its name, its first \
                line and its tags. With a NAME it prints that one in full instead. Piped, or with \
                --plain, there is no widget and no colour — a manager only a person can read would \
-               be one you cannot script.",
+               be one you cannot script. A name more than one kind holds is marked `!`, and \
+               reported on stderr.",
     },
     Sub {
         name: "off",
@@ -120,9 +122,10 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
         ],
         note: "What Space and Space ×3 do in `show`, spelled out for something that is not a \
                person. Without `--session` it is off in every shell, now and next time — running \
-               shells notice before their next prompt. An alias you turned off uncovers the one \
-               your configuration defines, if there is one, because off means *this one does not \
-               apply* rather than *this name does nothing*.",
+               shells notice before their next prompt; a script moves into `.off/` beside the \
+               others, so bash and everything else stop finding it too. An alias you turned off \
+               uncovers the one your configuration defines, if there is one, because off means \
+               *this one does not apply* rather than *this name does nothing*.",
     },
     Sub {
         name: "on",
@@ -139,22 +142,20 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
         about: "run a stored macro from something that is not oslo",
         flags: &[],
         note: "Everything after NAME belongs to the macro, including words that look like options. \
-               oslo itself needs none of this — it finds a stored macro by name — but bash, tmux, a \
-               systemd unit and a `.desktop` file cannot read the database, and this is their way \
-               in. So is the copy `publish` writes; this is the one that needs no `$PATH` entry.",
+               oslo itself needs none of this — it finds a stored function by name — but bash, \
+               tmux, a systemd unit and a `.desktop` file cannot read the database, and this is \
+               their way in. A script is a file and needs no door; this runs it too, from \
+               wherever `$PATH` is.",
     },
     Sub {
         name: "publish",
         args: "",
         about: "write the derived copies again",
         flags: &[],
-        note: "Every stored script is also written as a file in `~/.local/sbin` (or \
-               `$OSLO_MACROS_BIN`), so that everything which is not oslo can run it by name. Those \
-               files are rewritten by every change and are never edited — the database is the only \
-               copy anybody touches. **oslo does not read them**: that directory is left out of its \
-               own `$PATH` search, so a stored macro is answered from the database and somebody who \
-               only uses oslo can delete the directory and lose nothing. Ask for this when the \
-               directory was deleted, or when a database was filled before it existed.",
+        note: "Every change writes the snapshot a starting shell reads and the aliases another \
+               shell sources; this writes them again. Ask for it when one of those files was \
+               deleted, or when a database was filled before they existed. Scripts are files \
+               already and have nothing to publish.",
     },
     Sub {
         name: "export",
@@ -174,7 +175,8 @@ pub(super) const SUBCOMMANDS: &[Sub] = &[
         flags: &[("--replace", "forget everything stored first")],
         note: "The format `export` writes. Without `--replace` an entry with a name already \
                stored overwrites that one and the rest are left alone, so importing twice is the \
-               same as importing once.",
+               same as importing once. A script is written as its file; `--replace` deletes every \
+               script file first.",
     },
 ];
 

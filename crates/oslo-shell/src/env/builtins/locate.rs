@@ -4,7 +4,7 @@
 //!
 //! `which` is a program that reads `$PATH`, and everything interesting about a name in oslo is
 //! invisible to a program: an alias lives in this shell's memory, a builtin has no file at all, and
-//! a stored macro is a row in a database that dispatch reaches *after* `$PATH`. So the honest
+//! a stored function is a row in a database that dispatch reaches *after* `$PATH`. So the honest
 //! answer to `which ll` is one only the shell can give, and `/usr/bin/which` answers "nothing" —
 //! not because nothing runs, but because it was asked by something that cannot see.
 //!
@@ -15,7 +15,7 @@
 //! ls        → /usr/bin/ls
 //! ll        → ll: aliased to ls -alF
 //! cd        → cd: shell built-in command
-//! me        → me: stored script
+//! mkcd      → mkcd: stored function
 //! if        → if: shell reserved word
 //! ```
 //!

@@ -48,6 +48,7 @@ pub(super) fn show(args: &[String]) -> i32 {
         println!("nothing stored yet — `oslo macros add --alias NAME BODY`");
         return 0;
     }
+    warn_about_clashes(&entries);
 
     let paint = Paint::detect();
     let configured = configured_names();
@@ -88,6 +89,21 @@ pub(super) fn show(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// One line on stderr for every name more than one kind holds.
+fn warn_about_clashes(entries: &[Entry]) {
+    for name in oslo_runtime::macros::clashes(entries) {
+        let kinds: Vec<&str> = entries
+            .iter()
+            .filter(|entry| entry.name == name)
+            .map(|entry| entry.kind.word())
+            .collect();
+        eprintln!(
+            "oslo macros: {name} is more than one kind: {}",
+            kinds.join(", ")
+        );
+    }
 }
 
 /// The manager, opened on the screen.

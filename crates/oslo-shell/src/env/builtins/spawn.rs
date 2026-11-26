@@ -85,20 +85,10 @@ pub fn resolve_program(name: &str) -> Option<PathBuf> {
     if oslo_base::command::hidden(name) {
         return None;
     }
-    // **oslo does not see its own copies.** `macros::bin` writes every stored script into a
-    // directory on `$PATH` so that bash, tmux and a `.desktop` file can run one; oslo has the
-    // database and needs no copy, so its own files are passed over and the macro is answered from
-    // the database instead — after the rest of `$PATH`, which is where a stored macro belongs.
-    //
-    // **Passed over, not stopped at.** Rejecting the one path `which` came back with was the first
-    // attempt and it is wrong in a way that matters: it ends the search, so a stored `date` with a
-    // copy early on `$PATH` beat `/usr/bin/date` — exactly the shadowing this whole design promises
-    // cannot happen. Every candidate is walked in `$PATH` order and the first that is not ours is
-    // the answer, which is also what makes a file somebody put in that directory by hand behave
-    // like a file anywhere else.
+    // A script this session turned off is passed over, and the search goes on down `$PATH`.
     which::which_all(name)
         .ok()?
-        .find(|path| !oslo_base::macros::bin::is_ours(path))
+        .find(|path| !oslo_base::macros::scripts::is_session_off(path))
 }
 
 /// The status a shell reports when a command word could not be run at all.

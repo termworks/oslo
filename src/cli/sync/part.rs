@@ -4,8 +4,9 @@
 //!
 //! Every part does the same four steps: ask the far end for a snapshot, merge it against ours,
 //! report what moved, hand the merged copy back. What differs is only what a snapshot *is* — a
-//! database file for history and macros, a tar-less bundle of sealed files for secrets — and that
-//! difference is confined to [`snapshot_of`] and [`absorb`].
+//! database file for history and macros (the scripts carried in it as records), a tar-less bundle
+//! of sealed files for secrets — and that difference is confined to [`snapshot_of`] and
+//! [`absorb`].
 
 use super::ssh::{agree, over_ssh};
 use oslo::track::{Track, sync_files};
@@ -180,15 +181,20 @@ fn merge_into(
             let other = oslo::macros::Store::open(&theirs.join("macros.db"))
                 .ok_or_else(|| "the macros that arrived cannot be opened".to_string())?;
             let report = oslo::macros::sync::merge(&mine, &other, dry)?;
-            // **Everything derived, not just the snapshot.** A macro that arrives has three copies
-            // to rewrite: the flat file a starting shell reads, the files in `~/.local/sbin` that
-            // let anything which is not oslo run a stored script by name, and the aliases another
-            // shell sources. Writing one of the three leaves a synced script that works at an oslo
-            // prompt and is missing from `$PATH` everywhere else.
+            // Everything derived: the flat file a starting shell reads, and the aliases another
+            // shell sources.
             if !dry && !report.quiet() {
                 oslo::macros::publish(&mine)?;
             }
-            Ok(Moved::from_macros(&report))
+            // The scripts, through a scratch store: they are files here and records on the wire.
+            let held = tempfile::Builder::new()
+                .prefix("oslo-scripts-")
+                .tempdir()
+                .map_err(|e| format!("no temporary directory: {e}"))?;
+            let scratch = oslo::macros::Store::open(&held.path().join("scripts.db"))
+                .ok_or_else(|| "cannot make a store to merge the scripts in".to_string())?;
+            let scripts = oslo::macros::sync::merge_scripts(&scratch, &other, dry)?;
+            Ok(Moved::from_macros(&report.plus(scripts)))
         }
         #[cfg(feature = "secrets")]
         Part::Secrets => {
@@ -292,13 +298,22 @@ fn mine(part: Part, profile: &str) -> Result<Vec<u8>, String> {
         }
         Part::Macros => {
             let path = oslo::macros::database().ok_or("nowhere to read macros from")?;
-            let Some(held) = scratch(&path)? else {
-                return Ok(Vec::new());
-            };
-            oslo::macros::Store::open(&path)
-                .ok_or_else(|| format!("{}: cannot be opened", path.display()))?
-                .backup_to(&held.path())?;
-            read_back(held.path())
+            let held = tempfile::Builder::new()
+                .prefix("oslo-send-")
+                .tempdir()
+                .map_err(|e| format!("no temporary directory: {e}"))?;
+            let copy = held.path().join("copy.db");
+            if path.exists() {
+                oslo::macros::Store::open(&path)
+                    .ok_or_else(|| format!("{}: cannot be opened", path.display()))?
+                    .backup_to(&copy)?;
+            }
+            // The scripts travel as records beside the database's own.
+            let store = oslo::macros::Store::open(&copy)
+                .ok_or_else(|| format!("{}: cannot be opened", copy.display()))?;
+            oslo::macros::scripts::ledger::stamp_into(&store)?;
+            drop(store);
+            read_back(copy)
         }
         #[cfg(feature = "secrets")]
         Part::Secrets => bundle::pack(&oslo::secrets::Store::selected(None)?.directory),

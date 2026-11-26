@@ -1,15 +1,17 @@
 # Macros
 
-Five kinds of small named thing — an alias, an abbreviation, a function, a script, a variable — kept
-in one database and managed with one subcommand, so that saving one does not mean editing a file and
-re-sourcing it.
+Five kinds of small named thing — an alias, an abbreviation, a function, a script, a variable —
+managed with one subcommand, so that saving one does not mean editing a file and re-sourcing it.
+Four of them live in one database. **A script is a file**: every file in `~/.local/sbin` with a
+`#!` line is one, whoever put it there.
 
 ```sh
 oslo macros add --alias  gs 'git status --short' --tag git
 oslo macros add --abbrev gco 'git checkout'      # expanded into your line as you type
 oslo macros add --func   mkcd                    # opens your editor
-oslo macros add --script deploy                  # opens your editor, any language
+oslo macros add --script deploy                  # writes ~/.local/sbin/deploy, opens it
 oslo macros add --var    'GITHUB_TOKEN=$(oslo secret get gh-token)'
+oslo macros edit deploy                          # $EDITOR ~/.local/sbin/deploy
 oslo macros show                                 # the manager, on the whole screen
 ```
 
@@ -32,7 +34,7 @@ They are not variations on one idea; they differ in *when* they act and in *what
 | `alias` | before the line is parsed | the replacement, invisibly | at shell start |
 | `abbrev` | as you type the space after it | what is in your buffer, visibly | at shell start |
 | `func` | when you call the name | shell code, **in this shell** | after `$PATH` fails |
-| `script` | when you call the name | its own program, in a child | after `$PATH` fails |
+| `script` | when you call the name | its own program, in a child | on `$PATH`, a file |
 | `var` | when something reads the name | its body, once, in this shell | at shell start |
 
 The pair that looks redundant is `alias` and `abbrev`, and the difference is the whole reason
@@ -42,7 +44,9 @@ the line*, so what runs is what you can read and what the history keeps.
 
 The pair that looks like one thing is `func` and `script`. A function runs in the shell that called
 it — it can `cd`, set a variable, change the shell it was called from. A script cannot: it is its own
-program with its own shebang, and Python is as good an answer as `sh`.
+program with its own shebang, and Python is as good an answer as `sh`. That is also why one is a
+row and the other a file: a function is shell code this shell reads, a script is a program any
+shell, tmux pane or `.desktop` entry may run.
 
 ### A variable holds a recipe, not a value
 
@@ -79,68 +83,69 @@ Two consequences worth knowing:
   `gh …` after anything that expands it. A `secret run NAME -- cmd` that puts one value in one
   child's environment is the better answer and is not built yet.
 
-## Running a script that has no file
-
-A script needs a path for the kernel to `exec`, and a row in a database is not one. The obvious
-answer is a temporary file, and it is the wrong one: a write per run, rubbish to clean up, and your
-script sitting in a world-readable directory where it can be read or raced between the write and the
-exec.
-
-`memfd_create(2)` makes a file that exists only in memory, and `/proc/self/fd/N` is a path the kernel
-will honour — shebang and all. Measured on Linux before any of this was written:
+## A script is a file
 
 ```
-#!/bin/sh              from a memfd   → ran
-#!/usr/bin/env python3 from a memfd   → ran
-readable by another user?             → no. `/memfd:oslo:NAME (deleted)`, reachable only
-                                        through this process's own /proc/PID/fd
+~/.local/sbin/deploy        a script that is on        ($OSLO_MACROS_BIN moves the directory)
+~/.local/sbin/.off/deploy   a script that is off
 ```
 
-So a stored script runs like this, and never touches the disk:
+Every file in that directory whose first line is a `#!` shebang is a script, and `oslo macros`
+lists it — one you wrote with `add --script`, one you copied in by hand, one that arrived from
+another machine. There is no registering step and no second copy: the file is the script, and
+editing it with any editor at any time is editing the script.
+
+```bash
+#!/usr/bin/env bash
+# tags: desktop, net
+
+set -euo pipefail
+```
+
+What the database would hold for any other kind, the file holds for itself:
+
+| | |
+|---|---|
+| name | the file's name |
+| body | its contents |
+| tags | the `# tags: a, b` line in the comment block at the top, commas or spaces between |
+| on or off | which of the two directories it is in |
+| created | the file's birth time |
+
+`# @tag` would read better and cannot be used: argc refuses an `@` tag it does not know, so every
+argc script would stop parsing its own arguments.
+
+A script runs the way any program does: the shell finds the file on `$PATH`. bash, tmux and a
+`.desktop` entry find it the same way, so the script that runs at an oslo prompt is the one that
+runs everywhere else.
+
+## Where a name resolves
+
+A stored **function** is found **after** `$PATH`, exactly as `functions/*.sh` is, and for the
+reason [autoloading](your-own-tools.md) states: a shell that promises a script sees POSIX behaviour
+cannot have a database row quietly redefining `test`. Storing a `deploy` when the system already has
+one gets you the system's. The database costs nothing on the ordinary path: it is opened only once a
+command has already failed to resolve, and the first question asked is whether the file exists at
+all.
+
+A **script** is wherever its directory is on `$PATH`. An interactive shell puts the directory at the
+front when `$PATH` does not hold it and leaves it alone when it does, so where you put it in your own
+`$PATH` is the order you get.
 
 ```
 deploy alpha
    │
-   ├─ $PATH search                                    → nothing
-   ├─ a directory to cd into?                         → no
-   ├─ functions/deploy.sh                             → no
+   ├─ alias, function, builtin                       → no
+   ├─ $PATH search          ~/.local/sbin/deploy     → run it, like any program
+   │                        (skipped when this session turned `deploy` off)
    ▼
 exec::stored::try_call
-   │
-   ├─ does macros.db exist at all?      no ──────────► "command not found"
-   ├─ func deploy?                       yes ─────────► run it in THIS shell
-   ▼  script deploy
-memory_file("deploy", body)          memfd_create(2), no MFD_CLOEXEC
-   │                                 ── the child must inherit the fd; /proc/self/fd/N is
-   │                                    how it reads the script
-   ▼
-"#!/bin/sh"  ──► sh -c '. /proc/self/fd/3 "$@"' deploy alpha
-"#!…python3" ──► /proc/self/fd/3 alpha            $OSLO_SCRIPT=deploy
+   ├─ does macros.db exist at all?    no ──► "command not found"
+   └─ func deploy?                    yes ─► run it in THIS shell
 ```
 
-### What `$0` is
-
-The kernel rewrites `argv` for a shebang, so a script started this way would see `$0` as
-`/proc/self/fd/3` rather than its own name. For a **shell** interpreter that is repairable, because
-`sh -c` takes the name as its next argument:
-
-```
-sh -c '. /proc/self/fd/3 "$@"' deploy alpha beta   →  $0 is deploy, "$@" is alpha beta
-```
-
-For any other interpreter the name goes in `$OSLO_SCRIPT` and `$0` stays the fd path. That is honest;
-writing a file named after the script to make one variable prettier is not.
-
-## No shadowing
-
-A stored function or script is found **after** `$PATH`, exactly as `functions/*.sh` is, and for the
-reason [autoloading](your-own-tools.md) states: a shell that promises a script sees POSIX behaviour
-cannot have a database row quietly redefining `test`. Storing a `deploy` when the system already has
-one gets you the system's. This is the opposite of what a dotfiles `bin/` directory does, and
-deliberately.
-
-It also means the database costs nothing on the ordinary path: it is opened only once a command has
-already failed to resolve, and the first question asked is whether the file exists at all.
+`type`, `command -v`, `which` and `whereis` print a script's path, as for any file, and call a stored
+function a *stored function*.
 
 ## When an alias loads — measured, and settled
 
@@ -236,8 +241,9 @@ with nothing to negotiate.
 ```
    3d   alias   gs        git status --short                    #git #system
    3d   abbrev  gco       git checkout                          #git
-  12d   script  deploy    #!/usr/bin/env python3                #work
- ✗ 1h   func    mkcd      mkdir -p "$1" && cd "$1"
+  12d   script  deploy    [[[ python3 ]]]                       #work
+ ! 2d   script  gs        [[[ bash ]]]
+ ✗ 1h   func    mkcd      [[[ sh ]]]
 
   ⬝⬝⬝⬝⬝⬝  >>  de▏                        [stored] @ [#work] || 1/4
 ```
@@ -257,13 +263,19 @@ prompt because a past command is something to run again, while a macro is someth
 what you want from it is to change it. On an `[elsewhere]` row it does nothing at all: that row has
 no record behind it, and an Enter that quietly wrote a *new* macro shadowing the one you were looking
 at would not be the key it looks like. To keep a version of your own, add it — the name is on the
-screen in front of you.
+screen in front of you. On a script, Enter opens the file itself.
+
+**A `!` marks a name two kinds hold** — a script file dropped in beside a stored alias or function
+of the same name. `add` refuses to make one, but nothing can refuse a file, so the list says so
+instead, and `show --plain` repeats it on stderr. What runs follows the ordinary rules: an alias is
+applied before anything is looked up, and a script on `$PATH` is found before a stored function.
 
 **Off is not gone.** A macro turned off keeps its body, its tags and the day it was made; what
-changes is that it stops applying. Turning off an alias that shadows a configured one uncovers the
-configured one, because off means *this one does not apply* rather than *this name does nothing*. A
-row that is off is drawn muted with a marker, because a list where a disabled row looks exactly like
-a live one answers the wrong question.
+changes is that it stops applying. A script turned off everywhere moves into `.off/` beside the
+others, so bash and everything else stop finding it too. Turning off an alias that shadows a
+configured one uncovers the configured one, because off means *this one does not apply* rather than
+*this name does nothing*. A row that is off is drawn muted with a marker, because a list where a
+disabled row looks exactly like a live one answers the wrong question.
 
 Both switches have a spelling for something that is not a person:
 
@@ -283,9 +295,11 @@ would be written down for a session nobody is running.
 `--func` and `--script` always open an editor, because neither fits on a command line and pretending
 otherwise invites a function written as one. The editor is `$VISUAL`, then `$EDITOR`, then `nvim`,
 then `vi` — the two variables first because they are what you have already told every other program
-on the machine. The temporary file is named for the language it holds (`.sh`, `.lua`, `.py`, or
-whatever the shebang says), because syntax highlighting is most of the reason to want a real editor.
-Quitting without saving stores nothing and says `unchanged`.
+on the machine. A script opens as the file itself, under its own name; `add --script` writes the
+starter there first and deletes it again if the editor saved nothing. Every other kind goes through
+a temporary file named for the language it holds (`.sh`, `.lua`, `.py`), because syntax
+highlighting is most of the reason to want a real editor. Quitting without saving stores nothing and
+says `unchanged`.
 
 The screen closes while the editor runs and comes back with the query it had. Keeping it open around
 a child that also drives the terminal is how two programs end up fighting over the same termios.
@@ -305,7 +319,8 @@ func mkcd off
 ```
 
 The header carries the kind, the name, `off` if it is turned off, and `#tag` for each tag; the body
-follows, indented by one tab.
+follows, indented by one tab. A script is exported from its file and imported back into one, its
+tags written into its `# tags:` line.
 
 ## Tags, where a profile would be
 
@@ -317,6 +332,9 @@ the thing a profile could never be.
 ```sh
 oslo macros add --alias gs 'git status --short' --tag git --tag system
 ```
+
+A script's tags are the `# tags:` line in its own header, so changing them is editing the file;
+`add --script NAME --tag x` rewrites the line for you.
 
 **A tag is asked for by typing it**, `#git`, in the search bar with everything else — in any order,
 `#ai tool` or `tool #ai` or `#ai` alone, and scoped to the kind you are looking at. The tags are
@@ -339,10 +357,22 @@ that `oslo macros remove gs` on one machine removes it on the other and the mach
 not hand it back on the next sync. That is a different switch from `off`, which is a setting *of* a
 macro that still exists.
 
-What arrives is **published**, not just stored: the flat snapshot a starting shell reads, the files
-in `~/.local/sbin` that let anything which is not oslo run a stored script by name, and the aliases
-another shell sources. Writing only the database left a synced script that worked at an oslo prompt
-and was missing from `$PATH` everywhere else.
+What arrives is **published**, not just stored: the flat snapshot a starting shell reads, and the
+aliases another shell sources.
+
+**Scripts travel as records and land as files.** Each side turns its directory into records
+stamped against `scripts.ledger`, which remembers what the last sync saw; the records merge by the
+same rule, and the winners are written back into `~/.local/sbin` or `.off/`.
+
+| a file, against the ledger | its stamp |
+|---|---|
+| unchanged | the ledger's |
+| changed, or never synced | revision `max(ledger + 1, mtime)`, tie-breaker from its contents |
+| gone | the ledger's revision + 1, buried |
+
+A revision is a modification time, so of two edits the newer wins, and an edit since the last sync
+beats a deletion of the version before it. Deleting the file is all a removal takes: the next sync
+sees it missing and carries the tombstone.
 
 The record format carries three extra fields for this — a revision, a tombstone flag and a
 tie-breaker — after the ones a person might read:
@@ -360,27 +390,33 @@ synced, so revision one is the truth about it.
 | | |
 |---|---|
 | `crates/oslo-base/src/macros.rs` | the store, the five kinds, the record, `is_a_value` |
+| `crates/oslo-base/src/macros/scripts.rs` | the scripts directory: listing, tags, on and off |
+| `crates/oslo-base/src/macros/scripts/ledger.rs` | the scripts' stamps, for sync |
 | `crates/oslo-base/src/macros/sync.rs` | merging two machines' macros, name by name |
 | `crates/oslo-base/src/macros/live.rs` | the two sources, the rebuild, the session list |
-| `crates/oslo-runtime/src/startup/stored.rs` | applying it to a shell, at startup and per prompt |
-| `crates/oslo-shell/src/exec/stored.rs` | running a function or a script, and the memfd |
+| `crates/oslo-runtime/src/startup/stored.rs` | applying it to a shell, and the scripts on `$PATH` |
+| `crates/oslo-shell/src/exec/stored.rs` | running a stored function |
 | `crates/oslo-ui/src/manager.rs` | the screen: rows, keys, and what it asks the caller to do |
 | `crates/oslo-runtime/src/macros.rs` | the screen over the real database, for the key and the CLI |
 | `crates/oslo-runtime/src/editor.rs` | handing text to `$EDITOR` and taking it back |
 | `src/cli/macros.rs` | `add`, `remove`, `show`, `off`, `on`, `export`, `import` |
-| `~/.local/share/oslo/macros/` | `macros.db`, `macros.snapshot`, `elsewhere.snapshot`, `session/` |
+| `~/.local/share/oslo/macros/` | `macros.db`, `macros.snapshot`, `elsewhere.snapshot`, `scripts.ledger`, `session/` |
+| `~/.local/sbin/` | the scripts, and `.off/` for the ones that are off |
 
 ## What it cannot do
 
-- **`[elsewhere]` cannot show a function or a script.** There is nothing to enumerate: one is a file
-  on disk, the other a name in a Lua table.
+- **`[elsewhere]` cannot show a function.** There is nothing to enumerate: one is a file on disk or
+  a name in a Lua table.
 - **No aliases or abbreviations in a non-interactive shell.** `oslo -c` and a script never read
   `init.lua` either. Functions and scripts are found when you call them, so those work anywhere.
 - **A configured alias cannot be edited in place** — only copied into the database and edited there.
   The file it came from is yours, and writing to it would be this deciding how your config is
   formatted.
-- **No tag editing after the fact.** `--tag` on `add` sets them; changing them means adding again.
+- **No tag editing after the fact, except for a script.** `--tag` on `add` sets them; changing them
+  means adding again. A script's tags are a line in its file.
 - **No new list widget, and no editor of its own.** The screen is the finder's look; the editor is
   `$VISUAL`/`$EDITOR`, with `nvim` only as a fallback.
-- **No temporary file to run a script.** That is what the memfd is for.
-- **No shadowing of anything on `$PATH`.**
+- **A stored function never shadows anything on `$PATH`.** A script is on `$PATH`, so its place
+  there decides, as for any program.
+- **A script off for one session is still highlighted as a command at that prompt.** The highlighter
+  knows `$PATH`, not the session list.

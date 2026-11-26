@@ -267,7 +267,7 @@ fn command_token(name: &str, ctx: &Context<'_>) -> TokenType {
     // about what a name is, in the one place that shows.
     if let Some(kind) = oslo_base::vocab::kind_of(name) {
         return match kind {
-            "function" | "macro" | "script" => TokenType::Function,
+            "function" | "macro" => TokenType::Function,
             _ => TokenType::Builtin,
         };
     }

@@ -45,7 +45,7 @@ fn a_shell_function_becomes_a_function() {
 }
 
 /// **Not everything belongs in a file bash reads.** An abbreviation is expanded by the line editor
-/// as you type, so there is nothing to tell bash; a script is a file in `macros::bin` already; a
+/// as you type, so there is nothing to tell bash; a script is a file in `macros::scripts` already; a
 /// Lua function is not shell.
 #[test]
 fn what_bash_cannot_use_is_left_out() {

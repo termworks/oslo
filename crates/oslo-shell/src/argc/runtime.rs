@@ -14,9 +14,8 @@
 //! Upstream runs those by exec'ing `bash script.sh ___internal___ _default_dir …` and reading its
 //! stdout. oslo is a shell: it has the script's source, a parser and an evaluator, so it runs the
 //! function **in a subshell of this process** and captures the output the way `$(…)` does. That is
-//! faster, needs no bash on the machine, and works for a script that has no file at all — which the
-//! macro store is full of, since a stored script is executed from memory and its `$0` is its name
-//! rather than a path.
+//! faster, needs no bash on the machine, and works for code that has no file at all — a stored
+//! function, whose `$0` is its name rather than a path.
 //!
 //! # Everything else is what the shell already knows
 //!
@@ -190,25 +189,24 @@ impl argc::Runtime for Shell {
 
     /// The script's text.
     ///
-    /// **A stored macro is looked up before the filesystem**, because a script kept in the macro
-    /// database has no path: it runs from memory and knows only its own name. Without this, every
-    /// `# @option` in a stored script would be invisible to the parser that is meant to read it.
+    /// **A stored function is looked up before the filesystem**, because it has no path: it runs
+    /// from the database and knows only its own name. Without this, every `# @option` in one would
+    /// be invisible to the parser that is meant to read it.
     fn read_to_string(&self, path: &str) -> Option<String> {
-        if let Some(body) = stored_script(path) {
+        if let Some(body) = stored_function(path) {
             return Some(body);
         }
         std::fs::read_to_string(path).ok()
     }
 }
 
-/// The body of a macro-stored script called `name`, if there is one.
-fn stored_script(name: &str) -> Option<String> {
+/// The body of the stored function called `name`, if there is one.
+fn stored_function(name: &str) -> Option<String> {
     if name.contains('/') || !oslo_base::macros::valid_name(name) {
         return None;
     }
     let store = oslo_base::macros::open().ok()?;
-    oslo_base::macros::get(&store, oslo_base::macros::Kind::Script, name)
-        .or_else(|| oslo_base::macros::get(&store, oslo_base::macros::Kind::Func, name))
+    oslo_base::macros::get(&store, oslo_base::macros::Kind::Func, name)
         .filter(|entry| entry.active)
         .map(|entry| entry.body)
 }

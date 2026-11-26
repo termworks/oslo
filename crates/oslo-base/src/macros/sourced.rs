@@ -7,7 +7,7 @@
 //!
 //! # The half that a `$PATH` directory cannot carry
 //!
-//! [`super::bin`] answers "how does bash *run* a stored script" — a file on `$PATH`. It cannot
+//! [`super::scripts`] answers "how does bash *run* a stored script" — a file on `$PATH`. It cannot
 //! answer the same question for an alias, because an alias is not a program: it has to be *defined
 //! inside* the shell that will use it, which means a file that shell sources. That is exactly what
 //! `~/.config/profile/aliases.sh` was before any of this, so this is the same file with the database
@@ -21,7 +21,7 @@
 //! into the line as you type it, by the line editor, and there is nothing for bash to be told. **Not
 //! a function written in Lua**, for the same reason in a different direction: bash has no Lua.
 //!
-//! And not scripts, which are files in [`super::bin`] and would be a second copy here.
+//! And not scripts, which are files in [`super::scripts`] and would be a second copy here.
 
 use super::{Entry, Kind};
 

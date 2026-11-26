@@ -133,7 +133,7 @@ scripts/demo/embed.sh                            # put the players back in the d
 | [Completion and matching](completion-and-matching.md) | The dropdown, and matching as a transform rather than a prefix test |
 | [Globbing](globbing.md) | bash's patterns exactly, byte-safe names, and qualifiers at the prompt |
 | [Abbreviations](abbreviations.md) | `gco ` becomes `git checkout ` in the buffer, where you can see it |
-| [Macros](macros.md) | `oslo macros` — aliases, abbreviations, functions, scripts and variables, in a database with a manager |
+| [Macros](macros.md) | `oslo macros` — aliases, abbreviations, functions and variables in a database, scripts as files in `~/.local/sbin`, one manager |
 | [Arguments in comments](argc.md) | A script declares its options in comments and the shell parses them |
 | [A calculator that knows units](math.md) | `math '3 km in miles'` — dimensions, so `3 km + 2 s` is a refusal |
 

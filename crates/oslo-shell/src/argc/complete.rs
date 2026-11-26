@@ -4,9 +4,9 @@
 //! deploy --<Tab>        →  --dry-run  --tries  --help
 //! ```
 //!
-//! for any script on `$PATH` whose comments say so, and for any script in the macro database — with
-//! no completion file to generate, install or keep in step. argc ships generated completions for
-//! nine shells to reach this; oslo calls the function.
+//! for any script on `$PATH` whose comments say so, and for any function in the macro database —
+//! with no completion file to generate, install or keep in step. argc ships generated completions
+//! for nine shells to reach this; oslo calls the function.
 //!
 //! # Two cheap questions before the expensive one
 //!
@@ -114,7 +114,7 @@ fn one(line: &str) -> Option<Offer> {
 /// The text of the script `name` runs — **resolved the way running it would resolve it**.
 ///
 /// `$PATH` first, then the macro store, because that is the order `exec::stored` uses: a stored
-/// script is found only after the `$PATH` search has failed, so nothing on disk can be shadowed.
+/// function is found only after the `$PATH` search has failed, so nothing on disk is shadowed.
 /// Reading them the other way round is not a cosmetic difference — with a `deploy` on `$PATH` *and*
 /// a `deploy` in the database, completion described one script and Tab ran the other, which is how
 /// a bare `deploy <Tab>` came to offer nothing at all: the stored one had no declarations in it.

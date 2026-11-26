@@ -107,7 +107,7 @@ and requires zero structured edges. → [posix-fidelity.md](docs/features/posix-
 | [rm, and the things that can bite](docs/features/rm-and-safety.md) | recoverable at the prompt, POSIX in a script |
 | [Scratches](docs/features/scratch.md) · [plugins](docs/features/plugins.md) · [secrets](docs/features/secrets.md) | sessions that outlive a terminal; somebody else's Lua; values kept encrypted |
 | [Colours](docs/features/theme.md) · [drawing](docs/features/drawing.md) · [nav](docs/features/nav.md) | every role settable; the output widgets; the filesystem navigator |
-| [Abbreviations](docs/features/abbreviations.md) · [macros](docs/features/macros.md) · [argc](docs/features/argc.md) | `gco ` becomes `git checkout `; one store for all of it; options declared in comments |
+| [Abbreviations](docs/features/abbreviations.md) · [macros](docs/features/macros.md) · [argc](docs/features/argc.md) | `gco ` becomes `git checkout `; one manager for all of it; options declared in comments |
 | [Interrupt escape](docs/features/interrupt-escape.md) · [runtime features](docs/features/runtime-features.md) | the job that will not take a Ctrl-C; turning things off at runtime |
 | [The control socket](docs/features/control-socket.md) | another program asking this shell a question — or moving it — in Lua, bound only when asked |
 

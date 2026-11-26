@@ -29,6 +29,7 @@ use oslo_base::macros::live::{Applied, Stamps};
 use oslo_base::macros::{Entry, Kind};
 use oslo_shell::env::Environment;
 use oslo_shell::env::announce::{Change, Scope, Source, announce};
+use oslo_shell::env::lists;
 use std::sync::{Arc, Mutex};
 
 /// What this shell was last given, so the next rebuild knows what is its to take away.
@@ -44,6 +45,7 @@ pub(super) fn install(env: &Arc<Mutex<Environment>>) -> Held {
     publish_what_the_config_defined(env);
     // A session file outlives the shell that wrote it; a starting shell is where they get tidied.
     oslo_base::macros::live::session::sweep();
+    scripts_on_path(env);
 
     let wanted = oslo_base::macros::live::want();
     let applied = Applied::of(&wanted);
@@ -52,6 +54,21 @@ pub(super) fn install(env: &Arc<Mutex<Environment>>) -> Held {
     Held {
         applied,
         stamps: Stamps::now(),
+    }
+}
+
+/// Put the scripts directory at the front of `$PATH` when it exists and `$PATH` does not hold it.
+fn scripts_on_path(env: &Arc<Mutex<Environment>>) {
+    let Some(dir) = oslo_base::macros::scripts::directory().filter(|dir| dir.is_dir()) else {
+        return;
+    };
+    let dir = dir.to_string_lossy().into_owned();
+    let Ok(mut guard) = env.lock() else {
+        return;
+    };
+    let base = std::path::Path::new("/");
+    if !lists::contains(&guard, "PATH", &dir, base) {
+        lists::prepend(&mut guard, "PATH", &[dir], base);
     }
 }
 
