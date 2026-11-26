@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.8] - 2026-11-26
+
+### <!-- 0 -->⛰️  Features
+
+- Keep scripts as files in sbin
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Publish to cache.bresilla.com
+
 ## [0.7.7] - 2026-10-23
 
 ### <!-- 1 -->🐛 Bug Fixes
