@@ -193,11 +193,11 @@ What the key answers is *identity* — whose data is this.
 
 ## What arrives is published, not just stored
 
-A stored script is also a file in `~/.local/sbin` so that everything which is not oslo can run it by
-name, and aliases are also a flat snapshot a starting shell reads and a file another shell sources.
-A merge rewrites all three. Writing only the database left a synced script that worked at an oslo
-prompt and was missing from `$PATH` everywhere else — which is the bug this paragraph exists to
-record.
+Aliases are also a flat snapshot a starting shell reads and a file another shell sources, and a
+merge rewrites both. Scripts are files in `~/.local/sbin`: they cross the wire as records beside the
+database's own, stamped against `scripts.ledger`, and the winners are written back as files — so an
+edit made to a file by hand travels, and so does deleting one. See
+[Macros](macros.md#between-machines).
 
 ## What it cannot do
 

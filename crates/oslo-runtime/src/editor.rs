@@ -73,11 +73,27 @@ pub fn edit(body: &str, extension: &str) -> Result<Option<String>, String> {
             .map_err(|e| format!("{}: {}", path.display(), oslo_base::error::reason(&e)))?;
     }
 
+    open_in_editor(&path)?;
+    let after = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{}: {}", path.display(), oslo_base::error::reason(&e)))?;
+    Ok((after != body).then_some(after))
+}
+
+/// Open the file at `path` itself in the editor, and answer whether its contents changed.
+///
+/// For something that already is a file: the editor works on the real thing, under its real name.
+pub fn edit_file(path: &Path) -> Result<bool, String> {
+    let before = std::fs::read(path).ok();
+    open_in_editor(path)?;
+    Ok(std::fs::read(path).ok() != before)
+}
+
+fn open_in_editor(path: &Path) -> Result<(), String> {
     let editor = chosen();
     let (program, arguments) = editor.split_first().expect("chosen never answers empty");
     let status = std::process::Command::new(program)
         .args(arguments)
-        .arg(&path)
+        .arg(path)
         .status()
         .map_err(|e| format!("{program}: {}", oslo_base::error::reason(&e)))?;
     if !status.success() {
@@ -88,10 +104,7 @@ pub fn edit(body: &str, extension: &str) -> Result<Option<String>, String> {
             status.code().unwrap_or(1)
         ));
     }
-
-    let after = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {}", path.display(), oslo_base::error::reason(&e)))?;
-    Ok((after != body).then_some(after))
+    Ok(())
 }
 
 #[cfg(test)]

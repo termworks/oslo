@@ -59,6 +59,8 @@ pub struct Item {
     pub session_off: bool,
     /// From the database, as against from the configuration.
     pub stored: bool,
+    /// Another stored kind has the same name: a script file beside an alias or a function.
+    pub clash: bool,
 }
 
 impl Item {

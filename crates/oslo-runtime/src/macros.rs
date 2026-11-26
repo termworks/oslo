@@ -41,10 +41,12 @@ pub fn screen() -> Option<Result<(), String>> {
     }
 }
 
-/// Everything the screen shows: the database, then what the configuration defined.
+/// Everything the screen shows: the database and the scripts, then what the configuration defined.
 fn items(store: &macros::Store) -> Vec<Item> {
     let session = oslo_base::track::session::id();
-    let stored = macros::all(store).into_iter().map(|entry| (entry, true));
+    let all = macros::all(store);
+    let clashing = clashes(&all);
+    let stored = all.into_iter().map(|entry| (entry, true));
     let elsewhere = macros::live::from_elsewhere()
         .into_iter()
         .map(|entry| (entry, false));
@@ -55,12 +57,26 @@ fn items(store: &macros::Store) -> Vec<Item> {
             first: summary(&entry),
             session_off: macros::live::session::is_off(&session, &entry.name),
             stored: from_database,
+            clash: from_database && clashing.contains(&entry.name),
             name: entry.name,
             tags: entry.tags,
             created: entry.created,
             active: entry.active,
         })
         .collect()
+}
+
+/// The names more than one kind holds, sorted.
+pub fn clashes(entries: &[Entry]) -> Vec<String> {
+    let mut names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+    names.sort_unstable();
+    let mut found: Vec<String> = names
+        .windows(2)
+        .filter(|pair| pair[0] == pair[1])
+        .map(|pair| pair[0].to_string())
+        .collect();
+    found.dedup();
+    found
 }
 
 /// What a row says about a macro, beside its name.
@@ -93,6 +109,12 @@ fn edit_one(store: &macros::Store, item: &Item) -> Result<(), String> {
     let Some(kind) = Kind::named(&item.kind) else {
         return Ok(());
     };
+    if kind == Kind::Script {
+        return match macros::scripts::path_of(&item.name) {
+            Some(path) => editor::edit_file(&path).map(|_| ()),
+            None => Ok(()),
+        };
+    }
     // **A configured alias is copied in before it is edited.** It came from a file this does not own
     // and cannot write back to; copying it makes it yours, which is also the only way to get one
     // that can be turned off.

@@ -20,9 +20,9 @@
 //! ```
 //!
 //! What that buys, beyond the fork: errors are reported the way every other builtin reports them,
-//! and it works for a script that has **no file**. A macro-stored script runs from memory with `$0`
-//! set to its own name, so `--argc-eval "$0"` has no path to read — the idiom bash needs cannot work
-//! there, and this needs no path at all.
+//! and it works for code that has **no file**. A stored function runs with `$0` set to its own
+//! name, so `--argc-eval "$0"` has no path to read — the idiom bash needs cannot work there, and
+//! this needs no path at all.
 //!
 //! `oslo --argc-eval` exists too, for bash scripts; see `src/cli.rs`. Both are the same parse.
 
@@ -43,13 +43,13 @@ pub fn builtin_argc(env: &mut Environment, args: &[String]) -> oslo_base::error:
     // **`eval "$(argc --argc-eval "$0" "$@")"` reaches here too**, and has to be answered rather
     // than parsed as arguments. It is what every bash script written against `argc` says, and oslo
     // is what runs one whenever `#!/usr/bin/env bash` finds an oslo named `bash` on `$PATH` — or
-    // whenever a stored script is run at all. Parsed as arguments it produced `unexpected argument
+    // whenever a stored function uses it. Parsed as arguments it produced `unexpected argument
     // `--argc-eval``, on a script that works in every other shell.
     if args.get(1).is_some_and(|word| word == "--argc-eval") {
         return Ok(eval_text(env, args.get(2..).unwrap_or_default()));
     }
-    // `$0` is the script's name, which is what a stored macro has instead of a path and what a file
-    // on disk has as well as one. The runtime tries the macro store first and the filesystem after.
+    // `$0` is the script's name, which is what a stored function has instead of a path and what a
+    // file on disk has as well as one. The runtime tries the macro store first, the filesystem after.
     let name = env.shell_name.clone();
     let source = match source_of(env, &name) {
         Some(source) => source,

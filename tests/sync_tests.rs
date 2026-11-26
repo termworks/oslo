@@ -3,7 +3,7 @@
 //! Driven through the real binary against two data directories with a stand-in for `ssh`, because
 //! what is under test is two *machines*. An in-process test would exercise each merge and miss
 //! every one of the things that actually broke: an empty snapshot from a machine that has none of
-//! something, and the derived copies a merge has to rewrite afterwards.
+//! something, and the files a merge has to write afterwards.
 
 mod common;
 
@@ -274,12 +274,10 @@ fn all_five_kinds_of_macro_travel() {
     }
 }
 
-/// **The derived copies are rewritten on the machine that received them.** A stored script is also
-/// a file in `~/.local/sbin`, so that everything which is not oslo can run it by name; a sync that
-/// wrote only the database left a script that worked at an oslo prompt and was missing from `$PATH`
-/// everywhere else.
+/// An arriving script is a file in `~/.local/sbin` on the machine that received it, and the
+/// startup kinds reach the snapshot a starting shell reads.
 #[test]
-fn an_arriving_script_is_published_where_other_programs_find_it() {
+fn an_arriving_script_is_a_file_where_other_programs_find_it() {
     let (here, there) = (Machine::new(), Machine::new());
     pair(&here, &there);
     here.remember(&["cargo build"]);
@@ -289,15 +287,49 @@ fn an_arriving_script_is_published_where_other_programs_find_it() {
     let (_, err, status) = syncing(&here, &there, &["--only", "macros"]);
     assert_eq!(status, 0, "{err}");
 
-    let published = there.path().join(".local/sbin/deploy");
-    assert!(published.exists(), "the script was not published");
+    let arrived = std::fs::read_to_string(there.path().join(".local/sbin/deploy"))
+        .expect("the script did not arrive as a file");
+    assert_eq!(arrived, "#!/bin/sh\necho deploying\n");
 
-    // And the flat file a starting shell reads has the startup kinds in it.
     let snapshot =
         std::fs::read_to_string(there.path().join("oslo/macros/macros.snapshot")).expect("read");
     for wanted in ["gs", "gco", "GREETING"] {
         assert!(snapshot.contains(wanted), "{wanted} is not in the snapshot");
     }
+}
+
+/// A script deleted on one machine is deleted on the other, and an edit made by hand to the file
+/// reaches the far end.
+#[test]
+fn a_script_deletion_and_an_edit_travel() {
+    let (here, there) = (Machine::new(), Machine::new());
+    pair(&here, &there);
+    here.remember(&["cargo build"]);
+    there.remember(&["kubectl get pods"]);
+    here.seed_macros(
+        "script keep\n\t#!/bin/sh\n\techo one\n\
+         script drop\n\t#!/bin/sh\n\techo gone\n",
+    );
+    let (_, err, status) = syncing(&here, &there, &["--only", "macros"]);
+    assert_eq!(status, 0, "{err}");
+    let theirs = there.path().join(".local/sbin");
+    assert!(
+        theirs.join("drop").exists(),
+        "the first sync carried nothing"
+    );
+
+    let mine = here.path().join(".local/sbin");
+    std::fs::remove_file(mine.join("drop")).expect("rm");
+    std::fs::write(mine.join("keep"), "#!/bin/sh\necho two\n").expect("edit");
+    let (_, err, status) = syncing(&here, &there, &["--only", "macros"]);
+    assert_eq!(status, 0, "{err}");
+
+    assert!(!theirs.join("drop").exists(), "the deletion did not travel");
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("keep")).expect("read"),
+        "#!/bin/sh\necho two\n"
+    );
+    assert!(!mine.join("drop").exists(), "the deletion came back");
 }
 
 /// Deleting on one machine removes it on the other, in all three — and the machine that lost it

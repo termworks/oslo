@@ -35,8 +35,8 @@ pub enum Kind {
     Function(Command),
     Builtin,
     File(PathBuf),
-    /// A row in the macro database — looked up only once `$PATH` has failed, as dispatch does.
-    Stored(oslo_base::macros::Kind),
+    /// A function in the macro database — looked up only once `$PATH` has failed, as dispatch does.
+    Stored,
     /// A name the shell runs that no file on `$PATH` accounts for: a structured verb, a registered
     /// tool, a function still sitting in the autoload directory. `kind` is vocab's own word for it.
     ///
@@ -64,8 +64,7 @@ impl Kind {
             Kind::Function(_) => "shell function",
             Kind::Builtin => "shell built-in command",
             Kind::File(_) => "",
-            Kind::Stored(oslo_base::macros::Kind::Func) => "stored function",
-            Kind::Stored(_) => "stored script",
+            Kind::Stored => "stored function",
             Kind::Vocabulary(kind) => kind,
         }
     }
@@ -80,9 +79,8 @@ impl Kind {
 
     /// The word `type -t` prints.
     ///
-    /// A stored macro answers with the word for how it *behaves*, because that is what the scripts
-    /// reading `type -t` are testing: a stored function runs in this shell like any other function,
-    /// a stored script runs as a program like any other file.
+    /// A stored function answers with the word for how it *behaves*, because that is what the
+    /// scripts reading `type -t` are testing: it runs in this shell like any other function.
     fn terse(&self) -> &'static str {
         match self {
             Kind::Alias(_) => "alias",
@@ -90,12 +88,10 @@ impl Kind {
             Kind::Function(_) => "function",
             Kind::Builtin => "builtin",
             Kind::File(_) => "file",
-            Kind::Stored(oslo_base::macros::Kind::Func) => "function",
-            Kind::Stored(_) => "file",
+            Kind::Stored => "function",
             // The word for how it *behaves*, the rule the stored kinds already follow: an
             // autoloadable runs like a function, a verb or a tool like a builtin.
             Kind::Vocabulary("function" | "macro") => "function",
-            Kind::Vocabulary("script") => "file",
             Kind::Vocabulary(_) => "builtin",
         }
     }
@@ -109,8 +105,7 @@ impl Kind {
             }
             Kind::Builtin => format!("{name} is a shell builtin"),
             Kind::File(path) => format!("{name} is {}", path.display()),
-            Kind::Stored(oslo_base::macros::Kind::Func) => format!("{name} is a stored function"),
-            Kind::Stored(_) => format!("{name} is a stored script"),
+            Kind::Stored => format!("{name} is a stored function"),
             Kind::Vocabulary(kind) => format!("{name} is a shell {kind}"),
         }
     }
@@ -172,9 +167,7 @@ fn parse_options(args: &[String]) -> std::result::Result<(Options, &[String]), i
 /// `which_all` rather than `which` because `type -a` has to show the shadowed ones too — that is
 /// most of the reason anyone runs it.
 ///
-/// The copies `oslo macros` writes for other shells are left out, because dispatch leaves them out:
-/// oslo runs the database row, and reporting a path it would never execute is the disagreement this
-/// module exists to prevent.
+/// A script this session turned off is left out, as dispatch leaves it out.
 fn path_matches(name: &str, all: bool) -> Vec<PathBuf> {
     // `type` and `command -v` answer what would run, so a hidden name has to answer nothing here
     // too. A `type` that names a path the shell would then refuse to execute is worse than either
@@ -182,17 +175,14 @@ fn path_matches(name: &str, all: bool) -> Vec<PathBuf> {
     if oslo_base::command::hidden(name) {
         return Vec::new();
     }
-    let found: Vec<PathBuf> = if all {
-        which::which_all(name)
-            .map(|found| found.collect())
-            .unwrap_or_default()
-    } else {
-        which::which(name).into_iter().collect()
-    };
-    found
+    let found = which::which_all(name)
         .into_iter()
-        .filter(|path| !oslo_base::macros::bin::is_ours(path))
-        .collect()
+        .flatten()
+        .filter(|path| !oslo_base::macros::scripts::is_session_off(path));
+    match all {
+        true => found.collect(),
+        false => found.take(1).collect(),
+    }
 }
 
 fn resolve(env: &Environment, name: &str, opts: &Options) -> Vec<Kind> {
@@ -222,19 +212,15 @@ fn resolve(env: &Environment, name: &str, opts: &Options) -> Vec<Kind> {
         kinds.extend(path_matches(name, opts.all).into_iter().map(Kind::File));
     }
     // Last, because that is where dispatch looks: a database row never shadows a program.
-    if (opts.all || kinds.is_empty())
-        && let Some(kind) = crate::exec::stored::kind_of(name)
-    {
-        kinds.push(Kind::Stored(kind));
+    if (opts.all || kinds.is_empty()) && crate::exec::stored::is_function(name) {
+        kinds.push(Kind::Stored);
     }
     // And the names `$PATH` cannot account for. Vocab first because it is a lookup in a map the
     // prompt already keeps; the autoload directory is asked directly afterwards because a `-c`
     // shell never calls `names::refresh` and so has an empty vocab while still running the file.
     //
-    // **Not for a macro already reported above.** `names::stored_into` copies every stored macro
-    // into vocab, so a stored script is in both and `-a` printed it twice — `whereis con` read
-    // `con: stored script script`, one thing named as two.
-    let stored_already = kinds.iter().any(|kind| matches!(kind, Kind::Stored(_)));
+    // Not for a stored function already reported above: `names::stored_into` puts it in vocab too.
+    let stored_already = kinds.iter().any(|kind| matches!(kind, Kind::Stored));
     if (opts.all || kinds.is_empty()) && !stored_already {
         if let Some(kind) = oslo_base::vocab::kind_of(name) {
             kinds.push(Kind::Vocabulary(kind));

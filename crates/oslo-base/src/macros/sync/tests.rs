@@ -134,18 +134,24 @@ fn a_dry_run_changes_neither_store() {
     assert_eq!(body_of(&there, "gs"), None, "a dry run wrote something");
 }
 
-/// Every kind syncs, not only the two a starting shell reads.
+/// Every database kind syncs, not only the two a starting shell reads. Scripts are files and travel
+/// through [`merge_scripts`] — see `scripts::ledger`'s tests.
 #[test]
 fn every_kind_travels() {
     let dir = tempfile::tempdir().expect("dir");
     let here = store(dir.path(), "here");
     let there = store(dir.path(), "there");
-    for kind in Kind::every().iter().copied() {
+    let kinds: Vec<Kind> = Kind::every()
+        .iter()
+        .copied()
+        .filter(|kind| *kind != Kind::Script)
+        .collect();
+    for kind in kinds.iter().copied() {
         put(&here, &Entry::new(kind, "thing", "the body")).expect("put");
     }
 
     merge(&here, &there, false).expect("merge");
-    for kind in Kind::every().iter().copied() {
+    for kind in kinds.iter().copied() {
         assert!(
             get(&there, kind, "thing").is_some(),
             "{} did not travel",

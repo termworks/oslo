@@ -210,10 +210,14 @@ fn add(args: &[String]) -> i32 {
         ));
     }
 
-    // **Before the editor opens, the same as `edit`.** A function or a script is reached only once
-    // `$PATH` has failed, so one that `$PATH` already answers is being written for nothing — and
-    // hearing that after a writing session is hearing it too late.
+    // **Before the editor opens, the same as `edit`.** A function is reached only once `$PATH` has
+    // failed, and a script only where nothing earlier on `$PATH` has its name, so one that is
+    // already answered is being written for nothing — and hearing that after a writing session is
+    // hearing it too late.
     warn_if_shadowed(kind, &name);
+    if kind == Kind::Script {
+        return add_script(&name, &asked.tags);
+    }
 
     let body = if editor_only || asked.edit || inline.is_empty() {
         let starting = if inline.is_empty() {
@@ -262,10 +266,52 @@ fn starter(kind: Kind, name: &str) -> String {
         Kind::Func => {
             format!("# {name} — a shell function. The body runs with \"$@\" as its arguments.\n\n")
         }
-        Kind::Script => {
-            format!("#!/bin/sh\n# {name} — a script. Change the shebang for another language.\n\n")
-        }
+        Kind::Script => format!(
+            "#!/usr/bin/env bash\n# tags:\n# {name} — a script. Change the shebang for another \
+             language.\n\n"
+        ),
         _ => String::new(),
+    }
+}
+
+/// `add --script NAME`: the file itself, opened in the editor where it lives.
+///
+/// A new script starts as the starter and is removed again when the editor saves nothing. `--tag`
+/// rewrites the `# tags:` line before the editor opens.
+fn add_script(name: &str, tags: &[String]) -> i32 {
+    let existing = macros::scripts::get(name);
+    if existing.is_none() || !tags.is_empty() {
+        let entry = match &existing {
+            Some(entry) => entry.clone().tagged(tags),
+            None => Entry::new(Kind::Script, name, &starter(Kind::Script, name)).tagged(tags),
+        };
+        if let Err(problem) = macros::scripts::write(&entry) {
+            return fail(&problem);
+        }
+    }
+    let Some(path) = macros::scripts::path_of(name) else {
+        return fail(&format!("{name}: the script could not be written"));
+    };
+    match oslo_runtime::editor::edit_file(&path) {
+        Ok(false) if existing.is_none() => {
+            macros::scripts::remove(name);
+            println!("unchanged");
+            0
+        }
+        Ok(false) if tags.is_empty() => {
+            println!("unchanged");
+            0
+        }
+        Ok(_) => {
+            println!("script {name}");
+            0
+        }
+        Err(problem) => {
+            if existing.is_none() {
+                macros::scripts::remove(name);
+            }
+            fail(&problem)
+        }
     }
 }
 
@@ -330,8 +376,8 @@ fn remove(args: &[String]) -> i32 {
 
 /// `publish` — write the derived copies again.
 ///
-/// Every mutation does this already, so the only reason to ask is a directory that was deleted, a
-/// `$PATH` that moved, or a database that was filled before the copies existed at all.
+/// Every mutation does this already, so the only reason to ask is a file that was deleted, or a
+/// database that was filled before the copies existed at all. Scripts are files and need no copy.
 fn publish(_args: &[String]) -> i32 {
     let store = match macros::open() {
         Ok(store) => store,
@@ -340,17 +386,10 @@ fn publish(_args: &[String]) -> i32 {
     if let Err(problem) = macros::publish(&store) {
         return fail(&problem);
     }
-    let scripts = macros::all(&store)
-        .iter()
-        .filter(|entry| entry.kind == Kind::Script && entry.active)
-        .count();
-    let aliases = macros::all(&store)
+    let aliases = macros::database_entries(&store)
         .iter()
         .filter(|entry| entry.kind == Kind::Alias && entry.active)
         .count();
-    if let Some(dir) = macros::bin::directory() {
-        println!("{scripts} scripts  → {}", dir.display());
-    }
     if let Some(path) = macros::sourced::path() {
         println!("{aliases} aliases  → {}", path.display());
         println!();
@@ -418,11 +457,28 @@ fn edit(args: &[String]) -> i32 {
         return fail(&format!("no {} called {name}", kind.word()));
     };
 
-    // **Said before the editor opens, not after it closes.** A function or a script is found only
-    // once `$PATH` has failed, so a file of the same name on `$PATH` is what actually runs — and
-    // editing the stored one would be editing something the shell never reaches. Whoever asked for
-    // this should know that while they still have the choice of editing the other file instead.
+    // **Said before the editor opens, not after it closes.** A file of the same name earlier on
+    // `$PATH` is what actually runs, and editing the stored one would be editing something the
+    // shell never reaches. Whoever asked for this should know that while they still have the
+    // choice of editing the other file instead.
     warn_if_shadowed(kind, name);
+
+    if kind == Kind::Script {
+        let Some(path) = macros::scripts::path_of(name) else {
+            return fail(&format!("no script called {name}"));
+        };
+        return match oslo_runtime::editor::edit_file(&path) {
+            Ok(true) => {
+                println!("script {name}");
+                0
+            }
+            Ok(false) => {
+                println!("unchanged");
+                0
+            }
+            Err(problem) => fail(&problem),
+        };
+    }
 
     match oslo_runtime::editor::edit(&entry.body, kind.extension(&entry.body)) {
         Ok(None) => {
@@ -459,12 +515,18 @@ fn warn_if_shadowed(kind: Kind, name: &str) {
 /// The file on `$PATH` that would answer to `name` before a stored macro does.
 ///
 /// Only for the kinds that are *found by name* when a command runs. An alias and an abbreviation
-/// are applied before the search happens, so nothing on `$PATH` can shadow one.
+/// are applied before the search happens, so nothing on `$PATH` can shadow one. A script is
+/// shadowed by any file `$PATH` finds first that is not the script itself.
 fn shadowing_file(kind: Kind, name: &str) -> Option<String> {
     if !matches!(kind, Kind::Func | Kind::Script) {
         return None;
     }
-    oslo::env::builtins::hash_lookup(name).map(|path| path.to_string_lossy().into_owned())
+    let found = oslo::env::builtins::hash_lookup(name)?;
+    let own = macros::scripts::directory().map(|dir| dir.join(name));
+    if kind == Kind::Script && own.as_deref() == Some(found.as_path()) {
+        return None;
+    }
+    Some(found.to_string_lossy().into_owned())
 }
 
 /// `off` and `on` — the screen's Space and Space ×3, for something that is not a person.

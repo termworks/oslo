@@ -1,9 +1,11 @@
 use super::*;
 
-fn store() -> (tempfile::TempDir, Store) {
+/// A store of its own, and a scripts directory of its own, for one test.
+fn store() -> ((scripts::testdir::Own, tempfile::TempDir), Store) {
+    let scripts = scripts::testdir::own();
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::open(&dir.path().join("macros.db")).expect("open");
-    (dir, store)
+    ((scripts, dir), store)
 }
 
 fn entry(kind: Kind, name: &str, body: &str) -> Entry {
@@ -85,15 +87,15 @@ fn a_bad_name_is_refused_rather_than_stored() {
 
 // ---------------------------------------------------------------- created, tags, active
 
-/// **A body is stored verbatim**, header or no header, because it is a script and not a field.
+/// **A body is stored verbatim**, header or no header, because it is code and not a field.
 #[test]
 fn the_header_carries_the_fields_and_the_body_carries_itself() {
     let (_dir, store) = store();
     let awkward = "#!/bin/sh\n# a body with\ttabs, a comma, and\nseveral lines\n";
-    let mine = Entry::new(Kind::Script, "deploy", awkward).tagged(&["work".into(), "ci".into()]);
+    let mine = Entry::new(Kind::Func, "deploy", awkward).tagged(&["work".into(), "ci".into()]);
     put(&store, &mine).expect("put");
 
-    let back = get(&store, Kind::Script, "deploy").expect("stored");
+    let back = get(&store, Kind::Func, "deploy").expect("stored");
     assert_eq!(back.body, awkward, "byte for byte");
     assert_eq!(back.tags, ["work", "ci"]);
     assert!(back.active);

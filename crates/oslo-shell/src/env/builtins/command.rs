@@ -158,9 +158,9 @@ fn terse_description(env: &Environment, name: &str, default_path: bool) -> Optio
     if let Some(path) = lookup_program(name, default_path) {
         return Some(path.display().to_string());
     }
-    // A stored macro is found after `$PATH` and has no path to print, so it answers with its own
-    // name — the same word a function answers with, and one this shell can run.
-    if crate::exec::stored::kind_of(name).is_some() {
+    // A stored function is found after `$PATH` and has no path to print, so it answers with its
+    // own name — the same word a function answers with, and one this shell can run.
+    if crate::exec::stored::is_function(name) {
         return Some(name.to_string());
     }
     // And the rest of what runs without `$PATH` knowing: a structured verb, a registered tool, a
@@ -200,21 +200,13 @@ fn verbose_description(env: &Environment, name: &str, default_path: bool) -> Opt
     if let Some(path) = lookup_program(name, default_path) {
         return Some(format!("{} is {}", name, path.display()));
     }
-    if let Some(kind) = crate::exec::stored::kind_of(name) {
-        return Some(format!("{} is {}", name, stored_as(kind)));
+    if crate::exec::stored::is_function(name) {
+        return Some(format!("{name} is a stored function"));
     }
     match oslo_base::vocab::kind_of(name) {
         Some(kind) => Some(format!("{} is a shell {}", name, kind)),
         None => crate::exec::simple::autoload::path_for(env, name)
             .map(|_| format!("{} is a function", name)),
-    }
-}
-
-/// How a stored macro is named to someone reading `-V` or `type`.
-fn stored_as(kind: oslo_base::macros::Kind) -> &'static str {
-    match kind {
-        oslo_base::macros::Kind::Func => "a stored function",
-        _ => "a stored script",
     }
 }
 

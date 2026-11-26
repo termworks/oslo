@@ -16,6 +16,7 @@
 //! person would have to remember to run it again from over there. Both stores come out holding the
 //! union, so it does not matter which end you type it on.
 
+use super::scripts::ledger;
 use super::{Entry, Kind, Store, encode, key, stored};
 use crate::track::stamp::{Verdict, settle};
 
@@ -41,12 +42,25 @@ impl MacroReport {
             && self.updated_right == 0
             && self.deleted_right == 0
     }
+
+    /// Two reports as one.
+    pub fn plus(self, other: MacroReport) -> MacroReport {
+        MacroReport {
+            added_left: self.added_left + other.added_left,
+            updated_left: self.updated_left + other.updated_left,
+            deleted_left: self.deleted_left + other.deleted_left,
+            added_right: self.added_right + other.added_right,
+            updated_right: self.updated_right + other.updated_right,
+            deleted_right: self.deleted_right + other.deleted_right,
+            unchanged: self.unchanged + other.unchanged,
+        }
+    }
 }
 
-/// Every name either store knows about, tombstones included.
-fn names(store: &Store) -> Vec<(Kind, String)> {
+/// Every name of the given kinds a store knows about, tombstones included.
+fn names(store: &Store, kinds: &[Kind]) -> Vec<(Kind, String)> {
     let mut found = Vec::new();
-    for kind in Kind::every().iter().copied() {
+    for kind in kinds.iter().copied() {
         let prefix = format!("{}/", kind.word());
         for full in crate::store::keys(store, &prefix) {
             if let Some(name) = full.strip_prefix(&prefix) {
@@ -67,13 +81,53 @@ fn names(store: &Store) -> Vec<(Kind, String)> {
 /// unusable in every new shell. It is not done here because only the caller knows which of these two
 /// stores is *this machine's*: the far end's snapshot is written on the far end, by the oslo running
 /// over there, and writing it from here would put its aliases in our file.
+///
+/// Every kind but the scripts, which are files and are merged by [`merge_scripts`].
 pub fn merge(left: &Store, right: &Store, dry_run: bool) -> Result<MacroReport, String> {
+    let kinds: Vec<Kind> = Kind::every()
+        .iter()
+        .copied()
+        .filter(|kind| *kind != Kind::Script)
+        .collect();
+    merge_kinds(left, right, &kinds, dry_run)
+}
+
+/// Merge this machine's scripts with the script records in `right`.
+///
+/// `scratch` is an empty store the caller provides. The scripts are stamped into it, merged, and —
+/// unless this is a dry run — laid back out as files. `right` ends up holding the union.
+pub fn merge_scripts(scratch: &Store, right: &Store, dry_run: bool) -> Result<MacroReport, String> {
+    let ledger = ledger::path().ok_or(ledger::NOWHERE)?;
+    merge_scripts_at(scratch, right, &ledger, dry_run)
+}
+
+/// [`merge_scripts`], against the ledger at `path`.
+pub(in crate::macros) fn merge_scripts_at(
+    scratch: &Store,
+    right: &Store,
+    path: &std::path::Path,
+    dry_run: bool,
+) -> Result<MacroReport, String> {
+    ledger::stamp_into_with(scratch, path)?;
+    let report = merge_kinds(scratch, right, &[Kind::Script], dry_run)?;
+    if !dry_run {
+        ledger::absorb_with(scratch, path)?;
+    }
+    Ok(report)
+}
+
+fn merge_kinds(
+    left: &Store,
+    right: &Store,
+    kinds: &[Kind],
+    dry_run: bool,
+) -> Result<MacroReport, String> {
     let mut report = MacroReport::default();
 
     // Both sides' names, each once. A name only one of them has is exactly the case the merge is
     // for, so the walk cannot be over either store alone.
-    let mut every = names(left);
-    every.extend(names(right));
+    let mut every = names(left, kinds);
+    every.extend(names(right, kinds));
     every.sort();
     every.dedup();
 

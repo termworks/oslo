@@ -8,14 +8,10 @@
 //! ```text
 //! ls   → ls: /usr/bin/ls /usr/share/man/man1/ls.1.gz
 //! cd   → cd: shell built-in command
-//! me   → me: stored script
+//! mkcd → mkcd: stored function
 //! ```
 //!
-//! **One entry per thing, not per file.** `oslo macros` writes a copy of every stored script into
-//! its own directory for the benefit of everything that is not oslo, and that copy is left out here
-//! exactly as it is in `which` and `type`: it is the same macro written down twice, and a line
-//! reading `me: stored script /home/…/sbin/me` says the name means two things when it means one.
-//! Where `me` is, is the database. The file is derived from it and rewritten whenever it changes.
+//! A stored script is a file on `$PATH`, so it is reported by its path like any other program.
 //!
 //! # What is not searched
 //!

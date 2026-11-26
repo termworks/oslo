@@ -80,22 +80,22 @@ What that buys beyond the fork:
 - **`--help` ends the script.** The bash rendering finishes with `exit 0`; the builtin raises the
   shell's own exit, so the body does not run with nothing set. That is a real bug this had, caught
   by a test that is still there.
-- **It works for a script with no file.** See below.
+- **It works for code with no file.** See below.
 
-## A script with no file
+## Code with no file
 
-A [macro](macros.md)-stored script runs from an anonymous `memfd`, and its `$0` is its own name
-rather than a path. So the bash idiom cannot work there:
+A stored [macro](macros.md) function runs from the database, and its `$0` is its own name rather
+than a path. So the bash idiom cannot work there:
 
 ```sh
 eval "$(oslo --argc-eval "$0" "$@")"    # $0 is `deploy`, which is not a path to read
 ```
 
-The builtin needs no path: the shell already holds the source. That makes this work, and it is not a
-combination either project has separately —
+The builtin needs no path: the shell already holds the source. A stored *script* is a file in
+`~/.local/sbin` and needs none of this — its `$0` is its path, and either spelling works:
 
 ```sh
-oslo macros add --script deploy      # write it in $EDITOR, with @option comments
+oslo macros add --script deploy      # ~/.local/sbin/deploy, in $EDITOR, with @option comments
 deploy --help                        # the help its own comments declare
 deploy --<Tab>                       # completed from those comments
 ```
@@ -196,7 +196,7 @@ switched on.
 
 - **Nothing in `oslo-minimal`.** The word `argc` falls through to `$PATH`, so the real one still
   works if it is installed.
-- **`--argc-eval` needs a real path.** `$0` in a stored script is a name; the builtin is the answer
+- **`--argc-eval` needs a real path.** `$0` in a stored function is a name; the builtin is the answer
   there.
 - **No `--argc-build`, `--argc-mangen`, `--argc-completions` or `--argc-export` yet.** They are the
   same shape as `--argc-eval` and can follow one at a time; `--argc-parallel` needs a thread pool

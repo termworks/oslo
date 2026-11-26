@@ -1,6 +1,6 @@
 //! The names that run only after the `$PATH` search has failed, gathered for the prompt.
 //!
-//! A stored macro func or script, and an autoloaded function. Dispatch finds each of them by asking
+//! A stored function and an autoloaded one. Dispatch finds each of them by asking
 //! at the moment of the call, which is right for dispatch and useless to the interface: the
 //! highlighter, the completer, the ghost and the correction all need the *set*, and they need it
 //! without a database open per keystroke.
@@ -24,7 +24,7 @@ pub fn refresh(env: &Environment) {
     oslo_base::vocab::set_dynamic(names);
 }
 
-/// The stored macro funcs and scripts that are switched on.
+/// The stored functions that are switched on.
 ///
 /// The same filter dispatch applies — an inactive entry, or one this session turned off, is not a
 /// name that runs, and the prompt must not claim otherwise.
@@ -36,16 +36,14 @@ fn stored_into(out: &mut Vec<(String, &'static str)>) {
         return;
     };
     let session = oslo_base::track::session::id();
-    for entry in macros::all(&store) {
-        let kind = match entry.kind {
-            Kind::Func => "macro",
-            Kind::Script => "script",
-            _ => continue,
-        };
-        if !entry.active || macros::live::session::is_off(&session, &entry.name) {
+    for entry in macros::database_entries(&store) {
+        if entry.kind != Kind::Func
+            || !entry.active
+            || macros::live::session::is_off(&session, &entry.name)
+        {
             continue;
         }
-        out.push((entry.name, kind));
+        out.push((entry.name, "macro"));
     }
 }
 

@@ -10,6 +10,7 @@ fn item(kind: &str, name: &str, tags: &[&str]) -> Item {
         active: true,
         session_off: false,
         stored: true,
+        clash: false,
     }
 }
 
