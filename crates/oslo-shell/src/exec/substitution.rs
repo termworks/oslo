@@ -62,6 +62,10 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
                 env.enter_subshell();
                 env.number_lines_from_here();
                 crate::exec::simple::trace::nest();
+                // bash clears `-e` in a substitution unless `inherit_errexit` or posix mode keeps it.
+                if !env.posix() && !crate::env::builtins::shopt::on("inherit_errexit") {
+                    env.set_option(crate::env::options::ShellOption::ErrExit, false);
+                }
                 let res = status_of(eval_command_list(env, &ast));
                 // Without this the capture pipe would close on an unflushed partial line.
                 flush_stdout();

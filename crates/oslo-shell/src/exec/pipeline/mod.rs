@@ -23,25 +23,26 @@ mod jobs;
 /// What each link of `a && b` did — see the module docs.
 pub mod segments;
 mod stage;
+mod stages;
 mod structured;
 mod timing;
 
+use stages::run_byte_stages;
+pub(super) use stages::pipeline_status;
+
 pub(crate) use errexit::{clear_status_exempt, errexit_suspended, suspend_errexit};
-use errexit::{err_reported, set_err_reported, set_status_exempt, status_exempt};
+use errexit::{reports_own_status, set_status_exempt, status_exempt};
 
 use crate::env::Environment;
-use crate::env::builtins::run_exit_trap;
 use crate::exec::compound::{eval_compound_command, flush_stdout};
 use crate::exec::job;
 use crate::exec::redirect::RedirectGuard;
 use crate::exec::simple::{eval_simple_command, report_redirect_failure};
 use interrupt::ListFrame;
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, close, dup2, fork, pipe};
+use nix::unistd::Pid;
 use oslo_base::ast::*;
 use oslo_base::error::{Result, ShellError};
-use stage::stage_is_nested;
-use std::os::fd::{AsRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 /// Waiting on a child, and turning what came back into a status.
 mod waiting;
@@ -114,7 +115,7 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
         // `exit 128 + signo` is what runs that trap: the shell dies of the signal either way, and
         // this is the difference between the cleanup happening and not.
         if let Some(signum) = job::fatal_signal_pending() {
-            return Err(ShellError::Exit(128 + signum));
+            return Err(die_of_signal(env, signum));
         }
 
         if item.op == ListOp::Background {
@@ -138,16 +139,29 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
                 other => other?,
             };
         }
+        // A signal that arrived during this command runs its trap now, before the next one —
+        // and before the shell ends, when this was the last.
+        crate::env::builtins::run_pending_traps(env)?;
     }
 
     // And once more on the way out, for a signal that arrived during the *last* command of the
     // list: there is no boundary after it, and the shell would otherwise end normally and report
     // the command's status rather than the signal's.
     if let Some(signum) = job::fatal_signal_pending() {
-        return Err(ShellError::Exit(128 + signum));
+        return Err(die_of_signal(env, signum));
     }
 
     Ok(last_status)
+}
+
+/// End the shell over a fatal signal that arrived while an EXIT trap was set.
+///
+/// The trap sees `$?` as the last command left it, and the shell ends with `128 + signo` unless
+/// the trap exits with something else.
+fn die_of_signal(env: &mut Environment, signum: i32) -> ShellError {
+    let last = env.last_status;
+    let code = crate::env::builtins::run_exit_trap(env, last);
+    ShellError::Exit(if code == last { 128 + signum } else { code })
 }
 
 pub fn eval_and_or_list(env: &mut Environment, and_or: &AndOrList) -> Result<i32> {
@@ -239,7 +253,6 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
     // evaluation — a compound's body setting it on the way out — and never left over from an
     // unrelated command that ran earlier.
     set_status_exempt(false);
-    set_err_reported(false);
 
     if !judged {
         let _exempt = suspend_errexit();
@@ -250,6 +263,10 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
         return Ok(status);
     }
 
+    // An ERR trap the command itself installs does not fire for that command.
+    let err_armed = env
+        .get_trap("ERR")
+        .is_some_and(|action| !action.is_empty() && action != "-");
     let status = eval_pipeline(env, pipeline)?;
     env.last_status = status;
     // **A compound inherits its body's last status, exemption included.** `if true; then false &&
@@ -259,12 +276,11 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
     // `! cmd` is exempt whichever way it comes out, so `set -e; ! true` does not end the shell
     // even though the pipeline reports 1.
     // The ERR trap shares this condition and not `set -e` itself: bash fires it for exactly the
-    // failures errexit is allowed to judge, whether or not errexit is on. See `run_err_trap`.
+    // failures errexit is allowed to judge, whether or not errexit is on — but only for a command
+    // that reports its own status, never for a compound carrying its body's out.
     if status != 0 && !pipeline.negated && !inherited && !errexit_suspended() {
-        // Once per failure, not once per construct carrying its status out — see `ERR_REPORTED`.
-        if !err_reported() {
+        if err_armed && reports_own_status(pipeline) {
             crate::env::builtins::run_err_trap(env)?;
-            set_err_reported(true);
         }
         if env.errexit() {
             return Err(ShellError::Exit(status));
@@ -354,131 +370,6 @@ fn run_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
         return coordinates::run(env, pipeline);
     }
     run_byte_stages(env, pipeline)
-}
-
-/// The pipeline as oslo has always run it: one process per stage, bytes on every descriptor.
-fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
-    if pipeline.commands.len() == 1 {
-        let status = eval_command(env, &pipeline.commands[0])?;
-        // R4.10: a one-command pipeline still has a stage vector, as bash's `PIPESTATUS` does.
-        env.set_pipeline_status(vec![status]);
-        return Ok(status);
-    }
-
-    let num_cmds = pipeline.commands.len();
-    let mut pipes = Vec::new();
-
-    for _ in 0..num_cmds - 1 {
-        let p = pipe()
-            .map_err(|e| ShellError::ExecutionError(format!("Pipe creation failed: {}", e)))?;
-        pipes.push(p);
-    }
-
-    let mut pids = Vec::new();
-    // R7.1: every stage of a foreground pipeline shares one process group, led by the first
-    // stage. That is what makes Ctrl-C reach the whole pipe and only the pipe — `kill(-pgid)` is
-    // how the tty driver delivers it — and what lets Ctrl-Z stop all of it at once.
-    let mut pgid: Option<Pid> = None;
-
-    for (idx, cmd) in pipeline.commands.iter().enumerate() {
-        unsafe {
-            match oslo_base::forksafe::quiesced(|| fork()) {
-                Ok(ForkResult::Child) => {
-                    // Before the signal reset, and before any of this stage's own work: the
-                    // parent is about to hand the terminal to this group, and a stage that had
-                    // not joined it yet would be a background process reading from the tty.
-                    job::join_foreground_group(pgid);
-                    // R4.7: a stage is a new process running commands, so it gets a fresh signal
-                    // state — otherwise the Rust runtime's inherited `SIG_IGN` for SIGPIPE turns
-                    // `while :; do echo x; done | head -1` from an instant death on the closed
-                    // pipe into a loop that spins to completion swallowing EPIPE.
-                    crate::exec::job::reset_signals_for_child();
-                    if idx > 0 {
-                        let prev_read = pipes[idx - 1].0.as_raw_fd();
-                        let _ = dup2(prev_read, 0);
-                    }
-                    if idx < num_cmds - 1 {
-                        let curr_write = pipes[idx].1.as_raw_fd();
-                        let _ = dup2(curr_write, 1);
-                    }
-
-                    for p in &pipes {
-                        let _ = close(p.0.as_raw_fd());
-                        let _ = close(p.1.as_raw_fd());
-                    }
-
-                    // R4.1: a stage is a subshell — same environment, subshell-local state only.
-                    let counted = stage_is_nested(env, cmd);
-                    env.enter_pipeline_stage(counted);
-                    // R4.2: `echo x | exit 3` exits the stage with 3, not with 1.
-                    let status = status_of(eval_command(env, cmd));
-                    flush_stdout();
-                    // Each stage is a subshell, so a trap it installed for its own exit fires here.
-                    std::process::exit(run_exit_trap(env, status));
-                }
-                Ok(ForkResult::Parent { child }) => {
-                    // The same `setpgid` the child just made, from the other side: whichever
-                    // process is scheduled first, the group exists before anyone signals it.
-                    pgid = job::place_foreground_child(child, pgid).or(pgid);
-                    pids.push(child);
-                }
-                Err(e) => return Err(ShellError::ExecutionError(format!("Fork failed: {}", e))),
-            }
-        }
-    }
-
-    for p in pipes {
-        let _ = close(p.0.into_raw_fd());
-        let _ = close(p.1.into_raw_fd());
-    }
-
-    // R7.1: the pipeline is the foreground job now, so it — not the shell — owns the terminal
-    // until it is done. The handover and the take-back are both `tcsetpgrp` calls made from a
-    // process that is no longer the foreground group, so both go through the SIGTTOU block.
-    if let Some(pgid) = pgid {
-        job::give_terminal_to(pgid);
-    }
-
-    // R4.10: every stage's status is kept, not just the last one, so `false | true` leaves a
-    // trace of the failure for `PIPESTATUS` (Round 8) and `pipefail` (Round 6) to read.
-    let mut stage_statuses = Vec::with_capacity(pids.len());
-    let mut stopped = false;
-    for pid in &pids {
-        // R4.3: exactly one `waitpid` per child, inside `wait_for_child`.
-        let (status, was_stopped) = wait_for_child(*pid);
-        stopped |= was_stopped;
-        stage_statuses.push(status);
-    }
-    // Every stage exited on its own, and none was stopped: the terminal is as they left it on
-    // purpose. See `job::reclaim_terminal`.
-    job::reclaim_terminal(
-        !stopped
-            && stage_statuses
-                .iter()
-                .all(|status| job::left_it_deliberately(*status)),
-    );
-    if stopped && let Some(pgid) = pgid {
-        jobs::remember_stopped_pipeline(pgid, &pids, pipeline);
-    }
-    segments::note_pipeline(&pipeline.commands, &stage_statuses);
-    let final_status = pipeline_status(env, &stage_statuses);
-    env.set_pipeline_status(stage_statuses);
-    Ok(final_status)
-}
-
-/// The status a pipeline reports, given what each of its stages returned.
-///
-/// R6.4: `set -o pipefail` swaps "the last stage" for "the rightmost stage that failed", so
-/// `false | true` reports 1 while `true | false | true` still reports the 1 in the middle. Without
-/// the option the leftmost stages are invisible, which is the default POSIX rule.
-pub(super) fn pipeline_status(env: &Environment, stages: &[i32]) -> i32 {
-    if env.pipefail() {
-        // Rightmost, not first: `exit 3 | exit 4` is 4 in bash, the failure closest to the output.
-        if let Some(failed) = stages.iter().rev().find(|s| **s != 0) {
-            return *failed;
-        }
-    }
-    stages.last().copied().unwrap_or(0)
 }
 
 pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {

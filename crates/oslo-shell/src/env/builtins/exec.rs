@@ -112,7 +112,7 @@ fn unavailable(name: &str) -> String {
 }
 
 /// `exec [-cl] [-a name] [command [args…]]`.
-pub fn builtin_exec(_env: &mut Environment, args: &[String]) -> Result<i32> {
+pub fn builtin_exec(env: &mut Environment, args: &[String]) -> Result<i32> {
     let inv = match parse(args) {
         Ok(inv) => inv,
         Err(msg) => {
@@ -131,10 +131,9 @@ pub fn builtin_exec(_env: &mut Environment, args: &[String]) -> Result<i32> {
     let name = &inv.operands[0];
     let Some(program) = resolve_program(name) else {
         eprintln!("{}{}", origin_now(), unavailable(name));
-        // POSIX: a non-interactive shell exits when `exec` cannot find its command. Signalling
-        // the exit rather than returning a status is what stops the rest of the script running
-        // with descriptors that were set up for a program that never started.
-        return Err(ShellError::Exit(NOT_FOUND));
+        // Something is there but cannot run — a directory, a file without the execute bit.
+        let found = name.contains('/') && std::fs::metadata(name).is_ok();
+        return failed(env, if found { NOT_EXECUTABLE } else { NOT_FOUND });
     };
 
     let mut argv0 = inv.argv0.unwrap_or(name.as_str()).to_string();
@@ -183,7 +182,25 @@ pub fn builtin_exec(_env: &mut Environment, args: &[String]) -> Result<i32> {
         format!("exec: {name}")
     };
     eprintln!("{}{label}: {}", origin_now(), failure_text(failure));
-    Err(ShellError::Exit(NOT_EXECUTABLE))
+    failed(env, NOT_EXECUTABLE)
+}
+
+/// What a failed `exec` does to the shell: with `execfail` set, or at a prompt, nothing but a
+/// status; otherwise the shell ends at once, without running its EXIT trap.
+fn failed(env: &Environment, status: i32) -> Result<i32> {
+    if env.interactive() || super::shopt::on("execfail") {
+        // The exec reset the shell's own signal handling on its way; put it back.
+        if env.interactive() {
+            crate::exec::job::install_shell_signals();
+            if env.monitor() {
+                crate::exec::job::enable_job_control();
+            }
+        }
+        super::process::rearm_traps(env);
+        return Ok(status);
+    }
+    super::process::forget_exit_trap();
+    Err(ShellError::Exit(status))
 }
 
 fn failure_text(err: Option<nix::errno::Errno>) -> String {
