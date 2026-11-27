@@ -7,9 +7,12 @@ export -f f
 "$BASH" -c 'f child'
 env | grep -c '^BASH_FUNC_f%%=() {' || true
 declare -F | grep ' f$'
+# The entry holds bash's exported form of the definition, byte for byte.
+printenv 'BASH_FUNC_f%%'
 # A redefinition keeps the mark and travels with it.
-f() { echo "redefined"; }
+f() { echo "redefined"; local x=1; }
 "$BASH" -c f
+printenv 'BASH_FUNC_f%%'
 # `export -nf` and `unset -f` take it back out of the environment.
 export -nf f
 env | grep -c '^BASH_FUNC_f%%=' || true

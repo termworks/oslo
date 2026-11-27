@@ -112,11 +112,17 @@ impl Environment {
         let Some(body) = self.get_function(name) else {
             return;
         };
-        let text = crate::env::builtins::format_function(name, body);
-        let header = format!("{name} () \n{{");
-        let value = match text.strip_prefix(&header) {
-            Some(rest) => format!("() {{{rest}"),
-            None => return,
+        // bash's exported form from the source text; the tree's reprint when there is none.
+        let value = match self.function_export_text(name) {
+            Some(text) => text,
+            None => {
+                let text = crate::env::builtins::format_function(name, body);
+                let header = format!("{name} () \n{{");
+                match text.strip_prefix(&header) {
+                    Some(rest) => format!("() {{{rest}"),
+                    None => return,
+                }
+            }
         };
         environ_set(&environ_key(name), &value);
     }
