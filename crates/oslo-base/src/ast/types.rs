@@ -244,6 +244,9 @@ pub struct Redirection {
     /// the trailing newlines command substitution strips, and a literal part appended before
     /// expansion is not covered by that rule.
     pub here_string: bool,
+    /// `{name}>file`: the descriptor is chosen by the shell (10 or above) and stored in `name`,
+    /// or, for `{name}>&-`, read from it. `name` may carry a subscript, as in `{fd[1]}`.
+    pub fd_var: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +289,21 @@ pub enum CompoundCommand {
         var_name: String,
         items: Option<Vec<Word>>,
         body: CommandList,
+    },
+    /// `select name [in words]; do … done`: a numbered menu on stderr, one line of stdin per turn.
+    ///
+    /// `items` is `None` for `select name; do`, which offers the positional parameters.
+    Select {
+        var_name: String,
+        items: Option<Vec<Word>>,
+        body: CommandList,
+    },
+    /// `coproc [NAME] command`: `body` runs asynchronously, joined to the shell by two pipes.
+    ///
+    /// `NAME` (`COPROC` when omitted) becomes an array of the shell's two ends, `NAME_PID` the pid.
+    Coproc {
+        name: String,
+        body: Box<Command>,
     },
     Case {
         word: Word,

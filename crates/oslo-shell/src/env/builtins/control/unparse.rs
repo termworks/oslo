@@ -192,6 +192,33 @@ fn format_compound(kind: &CompoundCommand, depth: usize) -> Vec<String> {
             lines.extend(format_list(body, depth + 1, true));
             lines.push(format!("{pad}done"));
         }
+        CompoundCommand::Select {
+            var_name,
+            items,
+            body,
+        } => {
+            // bash spells the implicit word list out: `select y; do` prints as `in "$@"`.
+            let words = match items {
+                Some(words) => words.iter().map(format_word).collect::<Vec<_>>().join(" "),
+                None => "\"$@\"".to_string(),
+            };
+            lines.push(format!("{pad}select {var_name} in {words};"));
+            lines.push(format!("{pad}do"));
+            lines.extend(format_list(body, depth + 1, true));
+            lines.push(format!("{pad}done"));
+        }
+        CompoundCommand::Coproc { name, body } => {
+            let mut inner = format_command(body, depth);
+            let simple = matches!(**body, Command::Simple(_));
+            if let Some(first) = inner.first_mut() {
+                let text = first.trim_start().to_string();
+                *first = match (simple, name.as_str()) {
+                    (true, _) | (false, "COPROC") => format!("{pad}coproc {text}"),
+                    (false, _) => format!("{pad}coproc {name} {text}"),
+                };
+            }
+            lines.extend(inner);
+        }
         CompoundCommand::Case { word, items } => {
             lines.push(format!("{pad}case {} in ", format_word(word)));
             for CaseItem {

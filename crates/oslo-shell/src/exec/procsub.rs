@@ -104,6 +104,8 @@ pub fn open(
             // and a pipe from `nix` is no exception, so clearing it is what makes the path
             // resolvable on the other side of the `exec`.
             let _ = fcntl(ours, FcntlArg::F_SETFD(FdFlag::empty()));
+            // bash publishes the substitution's child as `$!`, as for any asynchronous command.
+            env.last_bg_pid = Some(child.as_raw() as u32);
             Ok((format!("/dev/fd/{ours}"), Substitution { fd: ours, child }))
         }
         Err(e) => {
@@ -135,6 +137,16 @@ fn above_the_scripts_range(fd: RawFd) -> RawFd {
     }
 }
 
+/// Close the substitutions opened since `env.procsubs` held `before` of them.
+///
+/// Each command closes only its own, so a loop's `<(…)` words outlive the commands in its body.
+pub fn finish_from(env: &mut Environment, before: usize) {
+    if env.procsubs.len() > before {
+        let mut open = env.procsubs.split_off(before);
+        finish(&mut open);
+    }
+}
+
 /// Close every descriptor in `open` and reap what can be reaped without blocking.
 ///
 /// Closing before reaping is not tidiness: a `>(cmd)` child is *reading* from the pipe, and only
@@ -143,7 +155,7 @@ fn above_the_scripts_range(fd: RawFd) -> RawFd {
 ///
 /// Reaping never blocks: a substitution's child is asynchronous, and `exec 8< <(gen)` keeps one
 /// running on purpose. See the `UNREAPED` list above.
-pub fn finish(open: &mut Vec<Substitution>) {
+fn finish(open: &mut Vec<Substitution>) {
     for sub in open.iter() {
         let _ = close(sub.fd);
     }

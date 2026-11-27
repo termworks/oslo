@@ -19,20 +19,20 @@
 //!
 //! - Here-document bodies are carried through verbatim; whether an unquoted body expands is
 //!   decided from the delimiter's quoting, which rune records.
-//! - `coproc` is refused by name rather than approximated: it has no representation in oslo's AST
-//!   and cannot get one until there are arrays to publish the descriptors in and job control to
-//!   manage the child.
+//! - `coproc` is not a keyword to rune, so [`coproc`] blanks its header out of the source and
+//!   wraps the command that is left.
 //! - `time -p` is carried as plain `time`: [`oslo_base::ast::Pipeline`] records *that* a pipeline
 //!   is timed, not which of bash's two report formats was asked for.
 //! - `[[ ... ]]` becomes calls to the `[[` builtin, with `&&`, `||` and `!` expressed using the
 //!   shell's own and-or lists and pipeline negation; see [`super::lower::cond`].
 
 mod commands;
+mod coproc;
 mod redirects;
 
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::{Result, ShellError};
-use rune::ast::{AndOrList, Command, CommandList, ListItem, Pipeline, Script, SimpleCommand};
+use rune::ast::{AndOrList, Command, CommandList, ListItem, Pipeline, Script};
 use rune::{SyntaxKind, Tree};
 
 /// Parse `script` and lower it into something oslo can run.
@@ -43,10 +43,14 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
     // not need the guard; what comes after it does.
     oslo_base::nesting::check_nesting(script)?;
 
-    let parsed = rune::parse(script);
-    if let Some(construct) = unsupported_command(parsed.tree(), parsed.tree().root()) {
-        return Err(unsupported(construct));
+    match coproc::prepare(script) {
+        Some((text, sites)) => coproc::with_sites(sites, || parse_prepared(&text)),
+        None => parse_prepared(script),
     }
+}
+
+fn parse_prepared(script: &str) -> Result<oslo_ast::CommandList> {
+    let parsed = rune::parse(script);
     // **The first error is the one to report, and rune orders them by position.** It finds every
     // mistake in the file, which is what a checker wants; a shell about to run the script wants
     // the earliest one, because that is where the program stopped making sense.
@@ -59,25 +63,6 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
         return Err(ShellError::SyntaxError(error.message.clone()));
     }
     convert_script(parsed.tree())
-}
-
-fn unsupported_command(tree: &Tree, node: &rune::Node) -> Option<&'static str> {
-    if matches!(
-        node.kind(),
-        SyntaxKind::CommandSubstitution | SyntaxKind::ProcessSubstitution
-    ) && closed(tree, node)
-    {
-        return None;
-    }
-    if let Some(command) = SimpleCommand::cast(node)
-        && command
-            .name()
-            .is_some_and(|word| tree.source().slice(word.span()) == "coproc")
-    {
-        return Some("coproc");
-    }
-    node.nodes()
-        .find_map(|child| unsupported_command(tree, child))
 }
 
 /// Whether an offset falls inside a command substitution that was properly closed.
@@ -262,12 +247,4 @@ fn convert_pipeline_node(tree: &Tree, pipeline: Pipeline<'_>) -> Result<oslo_ast
         timed: pipeline.is_timed(),
         commands: converted,
     })
-}
-
-/// A construct oslo parses but cannot yet execute.
-///
-/// Reported as a syntax error so it reaches the user with a non-zero status and the name of the
-/// thing that is missing, rather than being approximated into something that runs.
-pub(super) fn unsupported(construct: &str) -> ShellError {
-    ShellError::SyntaxError(format!("{construct} is not supported yet"))
 }

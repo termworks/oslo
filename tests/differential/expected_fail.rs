@@ -61,9 +61,8 @@ pub const EXPECTED_FAIL: &[(&str, &str, &str)] = &[
     // `case` item, so its `arithmetic_for_clause` rule never saw the two `;` it asked for. Fixing
     // it in that grammar meant carrying a patch across 10,181 vendored lines. `rune` reads the
     // head of a `for ((…))` as text and splits it on `;` itself, so the unspaced form parses like
-    // any other — which is the kind of thing owning the parser was for.
-    ("syntax_unsupported_coproc.sh", "R8.5", "coproc is refused by name and deliberately not implemented — it needs job control; bash runs the body and exits 0"),
-    ("syntax_unsupported_select.sh", "R8.6", "select is refused by name and deliberately not implemented — it needs a prompt, PS3 and REPLY; bash runs the loop and reads EOF"),
+    // any other — which is the kind of thing owning the parser was for. `coproc` and `select`
+    // (R8.5, R8.6) closed too.
 
     // --- the tokenizer ---
     // Empty. The comment-after-an-odd-number-of-blanks bug that lived here belonged to the

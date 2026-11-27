@@ -46,6 +46,15 @@ pub(crate) fn describe_command(command: &Command) -> String {
     }
 }
 
+/// `coproc …` as `jobs` shows it: the name only when the script gave a compound command one.
+pub(crate) fn describe_coproc(name: &str, body: &Command) -> String {
+    let text = describe_command(body);
+    match matches!(body, Command::Simple(_)) || name == "COPROC" {
+        true => format!("coproc {text}"),
+        false => format!("coproc {name} {text}"),
+    }
+}
+
 fn describe_simple(simple: &SimpleCommand) -> String {
     let mut parts: Vec<String> = simple.assignments.iter().map(describe_assignment).collect();
     parts.extend(simple.words.iter().map(describe_word));
@@ -76,6 +85,8 @@ fn describe_compound(kind: &CompoundCommand) -> String {
         CompoundCommand::Until { .. } => "until ...".to_string(),
         CompoundCommand::For { var_name, .. } => format!("for {} ...", var_name),
         CompoundCommand::ArithmeticFor { .. } => "for ((...))".to_string(),
+        CompoundCommand::Select { var_name, .. } => format!("select {} ...", var_name),
+        CompoundCommand::Coproc { name, body } => describe_coproc(name, body),
         CompoundCommand::Case { .. } => "case ...".to_string(),
         CompoundCommand::Arithmetic(expr) => format!("(( {} ))", expr),
         CompoundCommand::Subshell(list) => format!("( {} )", describe_list(list)),

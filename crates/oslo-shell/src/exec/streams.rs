@@ -367,7 +367,7 @@ fn rewrite_compound(kind: &mut CompoundCommand, streams: &Streams) {
             rewrite_list(condition, streams);
             rewrite_list(body, streams);
         }
-        CompoundCommand::For { items, body, .. } => {
+        CompoundCommand::For { items, body, .. } | CompoundCommand::Select { items, body, .. } => {
             if let Some(items) = items {
                 let mut words = std::mem::take(items);
                 rewrite(&mut words, streams);
@@ -382,6 +382,7 @@ fn rewrite_compound(kind: &mut CompoundCommand, streams: &Streams) {
             }
         }
         CompoundCommand::ArithmeticFor { body, .. } => rewrite_list(body, streams),
+        CompoundCommand::Coproc { body, .. } => rewrite_command(body, streams),
         CompoundCommand::Subshell(list) | CompoundCommand::Group(list) => {
             rewrite_list(list, streams)
         }

@@ -1,7 +1,7 @@
 //! Command and compound-command conversion.
 
+use super::convert_command_list;
 use super::redirects::{convert_redirects, redirects_of};
-use super::{convert_command_list, unsupported};
 use crate::syntax::lower::cond;
 use crate::syntax::lower::{
     convert_braced_words_from_str, convert_words_from_str, single_word_from_str,
@@ -83,6 +83,9 @@ fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word>
 }
 
 pub(super) fn convert_command(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Command> {
+    if let Some(name) = super::coproc::take_site(command.syntax().span().start) {
+        return Ok(super::coproc::wrap(name, convert_command(tree, command)?));
+    }
     match command {
         Command::Simple(simple) => Ok(oslo_ast::Command::Simple(convert_simple(tree, simple)?)),
         Command::Function(function) => {
@@ -196,9 +199,6 @@ fn convert_if(tree: &Tree, conditional: IfCommand<'_>) -> Result<oslo_ast::Compo
 }
 
 fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::CompoundCommand> {
-    if looping.kind() == SyntaxKind::SelectCommand {
-        return Err(unsupported("select"));
-    }
     let body = list_at(tree, looping.body())?;
     if looping.kind() == SyntaxKind::ArithForCommand {
         let (init, cond, step) = arithmetic_for_sections(tree, looping.syntax());
@@ -230,6 +230,13 @@ fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::Compoun
             Some(converted)
         }
     };
+    if looping.kind() == SyntaxKind::SelectCommand {
+        return Ok(oslo_ast::CompoundCommand::Select {
+            var_name,
+            items,
+            body,
+        });
+    }
     Ok(oslo_ast::CompoundCommand::For {
         var_name,
         items,
@@ -275,8 +282,10 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
     let mut assignments = Vec::new();
     let mut words = Vec::new();
     let mut redirections = Vec::new();
+    let mut fd_var = None;
 
-    for child in simple.syntax().nodes() {
+    let children: Vec<&Node> = simple.syntax().nodes().collect();
+    for (at, child) in children.iter().copied().enumerate() {
         match child.kind() {
             // **Only a *prefix* `name=value` is an assignment.** After the command name it is an
             // ordinary argument — `alias g='echo hi'`, `env FOO=bar`, and `declare -a w=(a b)`,
@@ -299,10 +308,17 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
                 {
                     words.extend(convert_words_from_str(prefix.text(tree.source()))?);
                 }
-                redirections.extend(super::redirects::convert_redirect(tree, child)?);
+                let mut converted = super::redirects::convert_redirect(tree, child)?;
+                if let Some(first) = converted.first_mut() {
+                    first.fd_var = fd_var.take();
+                }
+                redirections.extend(converted);
             }
             SyntaxKind::Word => {
-                words.extend(words_of(tree, child)?);
+                match super::redirects::fd_variable(tree, child, children.get(at + 1).copied()) {
+                    Some(name) => fd_var = Some(name),
+                    None => words.extend(words_of(tree, child)?),
+                }
             }
             _ => {}
         }

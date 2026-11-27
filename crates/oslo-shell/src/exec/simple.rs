@@ -32,11 +32,9 @@ pub(crate) fn eval_simple_command(env: &mut Environment, simple: &SimpleCommand)
     // Any `<(cmd)` in this command's words opens a pipe during expansion; it has to stay open
     // until the command has run and be closed afterwards, whichever way the command ends. The
     // wrapper is what guarantees the second half on the error paths too.
+    let opened_before = env.procsubs.len();
     let result = eval_simple_command_inner(env, simple);
-    if !env.procsubs.is_empty() {
-        let mut open = std::mem::take(&mut env.procsubs);
-        crate::exec::procsub::finish(&mut open);
-    }
+    crate::exec::procsub::finish_from(env, opened_before);
     result
 }
 

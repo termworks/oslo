@@ -69,6 +69,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                 target: oslo_ast::Word::from_literal(""),
                 heredoc_content: Some(target.clone()),
                 here_string: true,
+                fd_var: None,
             }]);
         }
 
@@ -89,6 +90,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     target: target.clone(),
                     heredoc_content: None,
                     here_string: false,
+                    fd_var: None,
                 },
                 oslo_ast::Redirection {
                     fd: Some(2),
@@ -96,6 +98,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     target: oslo_ast::Word::from_literal("1"),
                     heredoc_content: None,
                     here_string: false,
+                    fd_var: None,
                 },
             ]);
         }
@@ -108,6 +111,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         target,
         heredoc_content: None,
         here_string: false,
+        fd_var: None,
     }])
 }
 
@@ -152,7 +156,31 @@ fn convert_heredoc(
         target: oslo_ast::Word::from_literal(delimiter.trim_matches(['\'', '"'])),
         heredoc_content: Some(body),
         here_string: false,
+        fd_var: None,
     }])
+}
+
+/// The `name` of a `{name}` word written touching the redirection after it.
+///
+/// `name` is an identifier, optionally with a subscript; anything else is an ordinary word.
+pub(super) fn fd_variable(tree: &Tree, word: &Node, next: Option<&Node>) -> Option<String> {
+    let next = next.filter(|next| next.kind() == SyntaxKind::Redirect)?;
+    if next.span().start != word.span().end || next.token(SyntaxKind::Text).is_some() {
+        return None;
+    }
+    let inner = text_of(tree, word).strip_prefix('{')?.strip_suffix('}')?;
+    let name = inner
+        .split_once('[')
+        .map_or(inner, |(name, rest)| match rest.ends_with(']') {
+            true => name,
+            false => "",
+        });
+    let mut chars = name.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    valid.then(|| inner.to_string())
 }
 
 /// The body belonging to this here-document.

@@ -16,7 +16,7 @@
 //! exempt reach in through `suspend_errexit`.
 
 mod coordinates;
-mod describe;
+pub(crate) mod describe;
 mod errexit;
 mod interrupt;
 mod jobs;
@@ -102,6 +102,7 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
         // R7.4: a command boundary is the one moment the shell is provably not waiting for a
         // foreground child, which is what makes reaping every finished background job here safe.
         job::reap_background_jobs();
+        crate::exec::coproc::reap(env);
         // R7.2: and the one moment a Ctrl-C can be acted on when nothing has entered the kernel —
         // `while true; do :; done` never blocks, so polling is the only way out of it.
         if job::interrupt_pending() {
@@ -483,15 +484,21 @@ pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {
         }
         Command::Simple(simple) => eval_simple_command(env, simple),
         Command::Compound { kind, redirections } => {
+            // A process substitution in the construct's own words (`for f in <(a) <(b)`) stays
+            // open until the whole construct has run, not just the first command inside it.
+            let opened_before = env.procsubs.len();
             let mut guard = RedirectGuard::new();
             // R4.8: a redirection the shell cannot perform fails the *command*, it does not abort
             // the script — `{ echo hi; } < /nonexistent` prints a diagnostic, leaves `$?` at 1 and
             // the next command still runs. Propagating the error here made it fatal, which is the
             // one thing bash reserves for a special builtin in POSIX mode.
-            if let Err(e) = guard.apply(env, redirections) {
-                return Ok(report_redirect_failure(&env.origin(), &e));
-            }
-            eval_compound_command(env, kind)
+            let result = match guard.apply(env, redirections) {
+                Ok(()) => eval_compound_command(env, kind),
+                Err(e) => Ok(report_redirect_failure(&env.origin(), &e)),
+            };
+            drop(guard);
+            crate::exec::procsub::finish_from(env, opened_before);
+            result
         }
         Command::FunctionDef { name, body } => {
             env.set_function(name, *body.clone());

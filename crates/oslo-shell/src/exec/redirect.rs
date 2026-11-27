@@ -6,8 +6,14 @@ use oslo_base::ast::{RedirectKind, Redirection};
 use oslo_base::error::{Result, ShellError, reason};
 use oslo_base::shown::shown;
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::RawFd;
+
+mod heredoc;
+mod varfd;
+
+use heredoc::heredoc_body;
+#[cfg(test)]
+use heredoc::unlinked_temp_file;
 
 /// Lowest descriptor number a saved copy may occupy.
 ///
@@ -85,116 +91,133 @@ impl RedirectGuard {
                 _ => 1,
             });
 
+            // `{name}>file`: the shell picks the descriptor, and it outlives the command.
+            if let Some(name) = &redir.fd_var {
+                varfd::apply(env, redir, name, &target_str)?;
+                continue;
+            }
+
+            // The source is checked before anything is saved: a save could land on the very
+            // number a closed source used to have, and `dup2` would then copy the saved stdout.
+            if let Some(source) =
+                moved_descriptor(&target_str).or_else(|| target_str.parse::<RawFd>().ok())
+                && matches!(redir.kind, RedirectKind::DupInput | RedirectKind::DupOutput)
+                && fcntl(source, FcntlArg::F_GETFD).is_err()
+            {
+                return Err(bad_descriptor(&source.to_string()));
+            }
+
             if self.save {
                 self.saved_fds.push((target_fd, save_fd(target_fd)));
             }
 
-            match redir.kind {
-                RedirectKind::Input => {
-                    let file =
-                        File::open(oslo_base::lossless::to_os(&target_str)).map_err(|e| {
-                            ShellError::ExecutionError(format!(
-                                "{}: {}",
-                                shown(&target_str),
-                                reason(&e)
-                            ))
-                        })?;
-                    install(file, target_fd)?;
-                }
-                // `>` and `>|` differ in exactly one situation, and only when `set -C` is on.
-                RedirectKind::Output => {
-                    let file = open_for_output(&target_str, env.noclobber())?;
-                    install(file, target_fd)?;
-                }
-                RedirectKind::Clobber => {
-                    let file = open_for_output(&target_str, false)?;
-                    install(file, target_fd)?;
-                }
-                RedirectKind::Append => {
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(oslo_base::lossless::to_os(&target_str))
-                        .map_err(|e| {
-                            ShellError::ExecutionError(format!(
-                                "{}: {}",
-                                shown(&target_str),
-                                reason(&e)
-                            ))
-                        })?;
-                    install(file, target_fd)?;
-                }
-                RedirectKind::ReadWrite => {
-                    let file = OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(oslo_base::lossless::to_os(&target_str))
-                        .map_err(|e| {
-                            ShellError::ExecutionError(format!(
-                                "{}: {}",
-                                shown(&target_str),
-                                reason(&e)
-                            ))
-                        })?;
-                    install(file, target_fd)?;
-                }
-                RedirectKind::DupInput | RedirectKind::DupOutput => {
-                    if target_str == "-" {
-                        let _ = nix::unistd::close(target_fd);
-                    } else if let Ok(src_fd) = target_str.parse::<RawFd>() {
-                        // Report the descriptor number the script named, the way bash does; the
-                        // raw errno text ("EBADF: Bad file descriptor") names nothing the author
-                        // can act on.
-                        dup2(src_fd, target_fd).map_err(|_| {
-                            ShellError::ExecutionError(format!(
-                                "{}: Bad file descriptor",
-                                shown(&target_str)
-                            ))
-                        })?;
-                    } else if redir.kind == RedirectKind::DupOutput && redir.fd.is_none() {
-                        // **`>&file` is `&>file`.** With no descriptor in front of it and a target
-                        // that is not a number, `>&` names a file and means "both streams" — the
-                        // spelling `cmd >&/dev/null` is everywhere. This used to be refused as an
-                        // invalid descriptor, so the command ran and neither stream was captured.
-                        let file = open_for_output(&target_str, env.noclobber())?;
-                        if self.save {
-                            self.saved_fds.push((2, save_fd(2)));
-                        }
-                        install(file, target_fd)?;
-                        // Standard error joins whatever standard output now is, rather than being
-                        // opened a second time: one file description means one write offset, so
-                        // the two streams interleave instead of overwriting each other.
-                        dup2(target_fd, 2)?;
-                    } else {
-                        return Err(ShellError::ExecutionError(format!(
-                            "Invalid file descriptor for dup: {}",
-                            shown(&target_str)
-                        )));
-                    }
-                }
-                RedirectKind::Heredoc | RedirectKind::HeredocStrip => {
-                    let mut content = match &redir.heredoc_content {
-                        // Not `expand_word`: a body is one document, not an argument list, so
-                        // field splitting would collapse its whitespace and globbing would turn
-                        // a line reading `*` into a directory listing.
-                        Some(word) => expand_word_to_string(env, word)?,
-                        None => String::new(),
-                    };
-                    // A here-string's newline goes on *after* expansion. `<<< "$(cmd)"` has to
-                    // lose the trailing newlines command substitution strips before this one is
-                    // added, or every such body gains a blank line.
-                    if redir.here_string {
-                        content.push('\n');
-                    }
-                    let body = heredoc_body(&content)?;
-                    install(body, target_fd)?;
-                }
+            match open_target(env, redir, &target_str)? {
+                Some(file) => install(file, target_fd)?,
+                None => self.duplicate(env, redir, target_fd, &target_str)?,
             }
         }
         Ok(())
     }
+
+    /// `n<&m`, `n>&m`, `n>&-` and the move forms `n>&m-` / `n<&m-`.
+    fn duplicate(
+        &mut self,
+        env: &mut Environment,
+        redir: &Redirection,
+        target_fd: RawFd,
+        target_str: &str,
+    ) -> Result<()> {
+        if target_str == "-" {
+            let _ = nix::unistd::close(target_fd);
+        } else if let Some(src_fd) = moved_descriptor(target_str) {
+            if self.save && src_fd != target_fd {
+                self.saved_fds.push((src_fd, save_fd(src_fd)));
+            }
+            dup2(src_fd, target_fd).map_err(|_| bad_descriptor(&src_fd.to_string()))?;
+            if src_fd != target_fd {
+                let _ = nix::unistd::close(src_fd);
+            }
+        } else if let Ok(src_fd) = target_str.parse::<RawFd>() {
+            // Report the descriptor number the script named, the way bash does; the raw errno
+            // text ("EBADF: Bad file descriptor") names nothing the author can act on.
+            dup2(src_fd, target_fd).map_err(|_| bad_descriptor(target_str))?;
+        } else if redir.kind == RedirectKind::DupOutput && redir.fd.is_none() {
+            // **`>&file` is `&>file`.** With no descriptor in front of it and a target that is not
+            // a number, `>&` names a file and means "both streams" — the spelling
+            // `cmd >&/dev/null` is everywhere.
+            let file = open_for_output(target_str, env.noclobber())?;
+            if self.save {
+                self.saved_fds.push((2, save_fd(2)));
+            }
+            install(file, target_fd)?;
+            // Standard error joins whatever standard output now is, rather than being opened a
+            // second time: one file description means one write offset, so the two streams
+            // interleave instead of overwriting each other.
+            dup2(target_fd, 2)?;
+        } else {
+            return Err(ShellError::ExecutionError(format!(
+                "{}: ambiguous redirect",
+                shown(target_str)
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The `m` of a move, `n>&m-`.
+fn moved_descriptor(target: &str) -> Option<RawFd> {
+    target.strip_suffix('-')?.parse().ok()
+}
+
+fn bad_descriptor(named: &str) -> ShellError {
+    ShellError::ExecutionError(format!("{}: Bad file descriptor", shown(named)))
+}
+
+/// The file a redirection opens, or `None` for the duplicating kinds, which open nothing.
+fn open_target(
+    env: &mut Environment,
+    redir: &Redirection,
+    target_str: &str,
+) -> Result<Option<File>> {
+    let failed = |e: std::io::Error| {
+        ShellError::ExecutionError(format!("{}: {}", shown(target_str), reason(&e)))
+    };
+    let path = oslo_base::lossless::to_os(target_str);
+    let file = match redir.kind {
+        RedirectKind::Input => File::open(path).map_err(failed)?,
+        // `>` and `>|` differ in exactly one situation, and only when `set -C` is on.
+        RedirectKind::Output => open_for_output(target_str, env.noclobber())?,
+        RedirectKind::Clobber => open_for_output(target_str, false)?,
+        RedirectKind::Append => OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(failed)?,
+        RedirectKind::ReadWrite => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(failed)?,
+        RedirectKind::DupInput | RedirectKind::DupOutput => return Ok(None),
+        RedirectKind::Heredoc | RedirectKind::HeredocStrip => {
+            let mut content = match &redir.heredoc_content {
+                // Not `expand_word`: a body is one document, not an argument list, so field
+                // splitting would collapse its whitespace and globbing would turn a line reading
+                // `*` into a directory listing.
+                Some(word) => expand_word_to_string(env, word)?,
+                None => String::new(),
+            };
+            // A here-string's newline goes on *after* expansion. `<<< "$(cmd)"` has to lose the
+            // trailing newlines command substitution strips before this one is added.
+            if redir.here_string {
+                content.push('\n');
+            }
+            heredoc_body(&content)?
+        }
+    };
+    Ok(Some(file))
 }
 
 /// Point `target_fd` at `file`, and make sure the descriptor survives `file` going out of scope.
@@ -301,76 +324,6 @@ fn open_for_output(path: &str, refuse_existing: bool) -> Result<File> {
     }
 }
 
-/// Materialise a heredoc or here-string body as a readable fd positioned at byte 0.
-///
-/// The body must not go into a pipe. Nothing is reading the far end yet — the command that will
-/// read it has not been forked — so a body larger than the kernel's pipe buffer (64 KB by default)
-/// blocks the shell forever. In the REPL the `SA_RESTART` SIGINT handler makes that hang
-/// un-interruptible. A seekable file has no capacity limit, so any body size works.
-fn heredoc_body(content: &str) -> Result<File> {
-    let mut file = anonymous_file()?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| ShellError::ExecutionError(format!("heredoc: {}", reason(&e))))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| ShellError::ExecutionError(format!("heredoc: {}", reason(&e))))?;
-    Ok(file)
-}
-
-/// An empty read/write file with no name in the filesystem, so nothing has to clean it up.
-fn anonymous_file() -> Result<File> {
-    use nix::sys::memfd::{MemFdCreateFlag, memfd_create};
-    // ENOSYS below Linux 3.17, and blocked by some seccomp policies; fall back rather than making
-    // heredocs a kernel-version feature.
-    if let Ok(fd) = memfd_create(c"oslo-heredoc", MemFdCreateFlag::MFD_CLOEXEC) {
-        return Ok(File::from(fd));
-    }
-    unlinked_temp_file()
-}
-
-/// A temp file unlinked the instant it exists: the fd stays valid, the name does not.
-fn unlinked_temp_file() -> Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    static SEQ: AtomicU32 = AtomicU32::new(0);
-
-    let dir = std::env::temp_dir();
-    // A name collision is another process (or an earlier heredoc in this one) owning the path;
-    // retry rather than clobbering it, since `create_new` guarantees we never open someone else's.
-    for _ in 0..64 {
-        let path = dir.join(format!(
-            "oslo-heredoc-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(nix::fcntl::OFlag::O_CLOEXEC.bits())
-            .open(&path)
-        {
-            Ok(file) => {
-                let _ = std::fs::remove_file(&path);
-                return Ok(file);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => {
-                return Err(ShellError::ExecutionError(format!(
-                    "heredoc: {}: {}",
-                    dir.display(),
-                    e
-                )));
-            }
-        }
-    }
-    Err(ShellError::ExecutionError(format!(
-        "heredoc: {}: could not create a temporary file",
-        dir.display()
-    )))
-}
-
 /// Stash whatever `target_fd` currently points at, out of the way of the script and of `exec`.
 ///
 /// `dup(2)` is the obvious call and the wrong one twice over. It hands back the *lowest* free
@@ -408,7 +361,7 @@ impl Drop for RedirectGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
 

@@ -26,7 +26,7 @@ pub(crate) fn flush_stdout() {
 }
 
 /// What one iteration of a loop body decided.
-enum LoopStep {
+pub(super) enum LoopStep {
     /// Carry on with the next iteration.
     Next,
     /// Leave this loop, normally.
@@ -44,7 +44,11 @@ enum LoopStep {
 /// it is itself the last command the body executed and it succeeded. Leaving the previous
 /// iteration's status in place made `for ((i=0; ; i++)); do echo $i; ((i>=2)) && break; done`
 /// report 1 — the status of the `&&` test that was false last time round.
-fn run_loop_body(env: &mut Environment, body: &CommandList, status: &mut i32) -> LoopStep {
+pub(super) fn run_loop_body(
+    env: &mut Environment,
+    body: &CommandList,
+    status: &mut i32,
+) -> LoopStep {
     match eval_command_list(env, body) {
         Ok(st) => {
             *status = st;
@@ -323,6 +327,12 @@ pub(crate) fn eval_compound_command(
             env.exit_loop();
             result
         }
+        CompoundCommand::Select {
+            var_name,
+            items,
+            body,
+        } => super::select::eval_select(env, var_name, items.as_deref(), body),
+        CompoundCommand::Coproc { name, body } => super::coproc::start(env, name, body),
         CompoundCommand::Case { word, items } => eval_case(env, word, items),
         CompoundCommand::Arithmetic(expr) => Ok(eval_arithmetic_command(env, expr)),
         CompoundCommand::ArithmeticFor {

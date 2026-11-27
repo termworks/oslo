@@ -1,4 +1,4 @@
 # mode: bash
-# oslo refuses coproc by name rather than running its body inline; bash runs it for real.
+# A named coprocess with a group body starts in the background, and starting it succeeds.
 coproc counter { echo one; }
 echo "started=$?"

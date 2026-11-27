@@ -6,10 +6,12 @@
 
 pub mod argv;
 pub mod compound;
+mod coproc;
 pub mod job;
 pub mod pipeline;
 pub mod procsub;
 pub mod redirect;
+mod select;
 pub mod simple;
 pub mod stored;
 /// The stack of streams a coordinate reads from. See [`streams`].
