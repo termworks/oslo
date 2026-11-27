@@ -123,6 +123,20 @@ pub fn arm(signum: i32, disposition: &Disposition<'_>) -> bool {
     }
 }
 
+/// Point the kernel back at every trapped signal's disposition, after something reset them.
+pub fn rearm_traps(env: &Environment) {
+    for name in env.get_traps().keys() {
+        if let Some(number) = signals::number_from_name(name) {
+            let _ = arm(signals::real(number), &disposition(env, name));
+        }
+    }
+}
+
+/// Mark the EXIT trap as run, so the shell ends without it — as a failed `exec` does.
+pub fn forget_exit_trap() {
+    EXIT_TRAP_DONE.store(true, Ordering::SeqCst);
+}
+
 /// The lowest-numbered signal whose trap has arrived and not yet run, without taking it.
 ///
 /// For the one caller that must not wait for a command boundary: `wait` blocks inside the kernel,
@@ -132,7 +146,7 @@ pub fn arm(signum: i32, disposition: &Disposition<'_>) -> bool {
 /// Peeking rather than draining, because running the bodies is still [`run_pending_traps`]'s.
 pub fn pending_signal() -> Option<i32> {
     let pending = PENDING.load(Ordering::SeqCst);
-    (pending != 0).then(|| pending.trailing_zeros() as i32 + 1)
+    (pending != 0).then(|| signals::from_real(pending.trailing_zeros() as i32 + 1))
 }
 
 /// Run the handler of every signal that has arrived since the last check.
@@ -165,128 +179,62 @@ fn drain(env: &mut Environment) -> Result<()> {
     while pending != 0 {
         let bit = pending.trailing_zeros();
         pending &= !(1u64 << bit);
-        let Some(name) = signals::name_from_number(bit as i32 + 1) else {
+        let number = signals::from_real(bit as i32 + 1);
+        let Some(name) = signals::name_from_number(number) else {
             continue;
         };
         let Disposition::Run(text) = disposition(env, &name) else {
             continue;
         };
         let action = text.to_string();
-        run_handler(env, &action)?;
+        run_handler(env, &action, number)?;
     }
     Ok(())
 }
+
+/// `$BASH_TRAPSIG` for the conditions that are not signals: bash numbers them past `NSIG`.
+pub(super) const TRAPSIG_DEBUG: i32 = 65;
+pub(super) const TRAPSIG_ERR: i32 = 66;
+pub(super) const TRAPSIG_RETURN: i32 = 67;
 
 /// Run one trap body, leaving `$?` as the interrupted code left it.
 ///
 /// A trap fires *between* two commands rather than as one of them, so the status the next command
 /// sees has to be the one the previous command produced: `false; trap-fires; echo $?` must print
 /// 1, not whatever the handler's last command returned.
-fn run_handler(env: &mut Environment, action: &str) -> Result<i32> {
+pub(super) fn run_handler(env: &mut Environment, action: &str, trapsig: i32) -> Result<i32> {
     let saved = env.last_status;
     let traced = crate::exec::simple::trace::Nested::enter();
     // The action's lines count from the line it interrupted, as bash reports `$LINENO` there.
     let line = env.current_line();
-    let outer = env.number_lines_from_here();
-    let result = parse_and_run(env, action);
-    env.set_line_offset(outer);
+    let offset = env.number_lines_from_here();
+    // A bare `exit` inside the handler leaves with the status from before it ran.
+    let outer = EXIT_TRAP_STATUS.with(|s| s.replace(Some(saved)));
+    let result = parse_and_run(env, action, trapsig);
+    EXIT_TRAP_STATUS.with(|s| s.set(outer));
+    env.set_line_offset(offset);
     env.resume_line(line);
     drop(traced);
     env.last_status = saved;
     result
 }
 
-fn parse_and_run(env: &mut Environment, action: &str) -> Result<i32> {
+/// Run a trap's text with `$BASH_COMMAND` left as the trapped command set it, and
+/// `$BASH_TRAPSIG` naming the condition for as long as it runs.
+fn parse_and_run(env: &mut Environment, action: &str, trapsig: i32) -> Result<i32> {
     let ast = crate::syntax::parse_bash_script(action)?;
-    crate::exec::eval_command_list(env, &ast)
-}
-
-/// Whether a DEBUG handler is on the stack, so its own commands do not fire it again.
-static IN_DEBUG_TRAP: AtomicBool = AtomicBool::new(false);
-
-/// Run the DEBUG trap, before the command about to execute.
-///
-/// bash fires this before each *simple* command, and with `$PROMPT_COMMAND` it forms the
-/// preexec/precmd pair every bash integration is built on: this one starts a timer, that one
-/// draws the prompt with the elapsed time.
-///
-/// **`$BASH_COMMAND` is deliberately not set.** bash names the command about to run in it, which
-/// needs the parsed command rendered back to shell text — 234 lines of renderer for one variable,
-/// which is not a trade oslo makes. A hook that only needs to know *that* a command is starting
-/// works as it does under bash; one that needs to know *which* does not.
-///
-/// Three things make it safe to call from the execution path:
-///
-/// * **it does not recurse.** The handler is shell code and its commands are simple commands too,
-///   so without the guard `trap 'date' DEBUG` would fire the trap for `date`, forever. bash has
-///   the same rule and spells the exception `set -o functrace`, which oslo does not have;
-/// * **it cannot change `$?`.** The handler runs between two commands, so the status the next one
-///   sees must still be the previous one's. `run_handler` restores it;
-/// * **a failing handler is not the command's failure.** An error inside a hook is reported and
-///   the command still runs, because a broken prompt integration must not make the shell unusable.
-///
-pub fn run_debug_trap(env: &mut Environment) {
-    if IN_DEBUG_TRAP.load(Ordering::SeqCst) {
-        return;
-    }
-    let Disposition::Run(text) = disposition(env, "DEBUG") else {
-        return;
+    let _running = super::conditions::TrapRunning::enter();
+    let outer = env.get_var("BASH_TRAPSIG").map(str::to_string);
+    env.set_var("BASH_TRAPSIG", &trapsig.to_string(), false);
+    let result = crate::exec::eval_command_list(env, &ast);
+    match outer {
+        Some(value) => env.set_var("BASH_TRAPSIG", &value, false),
+        None => {
+            env.unset_var("BASH_TRAPSIG");
+            true
+        }
     };
-    let action = text.to_string();
-
-    IN_DEBUG_TRAP.store(true, Ordering::SeqCst);
-    let outcome = run_handler(env, &action);
-    IN_DEBUG_TRAP.store(false, Ordering::SeqCst);
-
-    if let Err(e) = outcome {
-        eprintln!("{}trap: DEBUG: {e}", origin_now());
-    }
-}
-
-/// Whether an ERR handler is on the stack, so a failure inside it does not fire it again.
-static IN_ERR_TRAP: AtomicBool = AtomicBool::new(false);
-
-/// Run the ERR trap, for a command that has just failed.
-///
-/// **`set -e; trap cleanup ERR` is the error-handling idiom**, and the condition was refused
-/// outright: the handler was never installed, so every script that relied on it lost its cleanup.
-///
-/// Fired from the one place that already knows which failures count — the `set -e` judgement in
-/// `pipeline::run_and_record`. That is not a convenience: bash exempts a failing command from ERR
-/// under exactly the POSIX 2.9.1 rules errexit uses (an `if`/`while` condition, every command of
-/// an and-or list but the last, anything under `!`), so deriving the two from one condition is
-/// what keeps them from drifting. The difference is that ERR fires whether or not `set -e` is on.
-///
-/// Unlike DEBUG this **propagates**: `trap 'exit 1' ERR` is the point of the condition for many
-/// scripts, and swallowing the `exit` would leave the shell running past the failure it was
-/// written to stop.
-///
-/// # The one place this is not bash
-///
-/// bash does not inherit the ERR trap into a function body unless `set -E` is on; oslo behaves as
-/// though it always is. The two are observable together only under `set -e`: `set -e; trap 'echo
-/// ERR' ERR; f() { false; }; f` prints nothing under bash and `ERR` here, and `bash -E` prints
-/// `ERR` too. Every other shape tested — the call reporting its own failure, `case`, `for`, `if`
-/// bodies, brace groups, pipelines, subshells, `$?` inside the handler, `trap -p`, `trap - ERR`,
-/// the exemptions and the recursion guard — agrees with bash exactly.
-///
-/// Left this way deliberately rather than by omission: `set -E` is a shell option oslo does not
-/// have, and of the two ways to be wrong without it, running a cleanup handler that bash would
-/// have skipped is the one that does not silently drop a script's error handling.
-pub fn run_err_trap(env: &mut Environment) -> Result<()> {
-    if IN_ERR_TRAP.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-    let Disposition::Run(text) = disposition(env, "ERR") else {
-        return Ok(());
-    };
-    let action = text.to_string();
-
-    IN_ERR_TRAP.store(true, Ordering::SeqCst);
-    let outcome = run_handler(env, &action);
-    IN_ERR_TRAP.store(false, Ordering::SeqCst);
-
-    outcome.map(|_| ())
+    result
 }
 
 /// Run the EXIT trap and give the status the shell should finally exit with.
@@ -316,7 +264,7 @@ pub fn run_exit_trap(env: &mut Environment, status: i32) -> i32 {
 
     // What a bare `exit` inside the action means; see [`exit_trap_status`].
     EXIT_TRAP_STATUS.with(|s| s.set(Some(status)));
-    let outcome = parse_and_run(env, &action);
+    let outcome = parse_and_run(env, &action, 0);
     EXIT_TRAP_STATUS.with(|s| s.set(None));
 
     match outcome {

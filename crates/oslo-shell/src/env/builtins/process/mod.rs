@@ -14,6 +14,7 @@
 //! `sigaction` and an atomic pending set — and mixing them is how the trap table ended up with no
 //! reader at all.
 
+mod conditions;
 mod handlers;
 mod kill;
 mod trap;
@@ -24,8 +25,11 @@ mod umask;
 /// copy of the table.
 pub(crate) mod signals;
 
+pub use conditions::{
+    in_debug_trap, in_trap, run_debug_trap, run_err_trap, run_return_trap, skip_next_debug_trap,
+};
 pub use handlers::{
-    exit_trap_status, pending_signal, run_debug_trap, run_err_trap, run_exit_trap,
+    exit_trap_status, forget_exit_trap, pending_signal, rearm_traps, run_exit_trap,
     run_pending_traps,
 };
 pub use kill::builtin_kill;

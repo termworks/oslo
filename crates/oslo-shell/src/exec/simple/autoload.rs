@@ -114,7 +114,12 @@ pub fn try_call(
     redirections: &[oslo_base::ast::Redirection],
 ) -> Option<Result<i32>> {
     match load(env, name)? {
-        true => Some(super::call_named_function(env, name, words, redirections)),
+        true => Some(super::call::call_named_function(
+            env,
+            name,
+            words,
+            redirections,
+        )),
         // The file was there and was wrong. Status 127 still, because the command did not run —
         // but without a second message contradicting the one already printed.
         false => Some(Ok(127)),

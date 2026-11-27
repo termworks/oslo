@@ -281,7 +281,7 @@ fn joined(list: &CommandList, depth: usize) -> String {
     out
 }
 
-fn format_simple(simple: &SimpleCommand) -> String {
+pub(crate) fn format_simple(simple: &SimpleCommand) -> String {
     let mut parts: Vec<String> = Vec::new();
     for a in &simple.assignments {
         parts.push(format_assignment(a));

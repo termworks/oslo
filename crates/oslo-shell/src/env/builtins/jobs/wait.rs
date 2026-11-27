@@ -54,8 +54,8 @@ fn a_trap_cut_it_short() -> Option<Interrupted> {
 
 /// The status a `wait` ended by a trapped signal reports.
 fn interrupted_status(env: &mut Environment, Interrupted(signum): Interrupted) -> Result<i32> {
-    // The body first, then the status — the order bash prints them in, and the reason the trap is
-    // worth setting at all.
+    // The body first, then the status — the order bash prints them in. The body sees the status.
+    env.last_status = 128 + signum;
     crate::env::builtins::run_pending_traps(env)?;
     Ok(128 + signum)
 }

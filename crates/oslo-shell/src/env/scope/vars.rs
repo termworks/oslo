@@ -29,6 +29,7 @@ impl Environment {
             // name (which no assignment can create, but `environ` can carry) must not shadow it.
             "?" | "$" | "!" | "#" | "*" | "@" | "-" => None,
             "BASH_ARGV0" if !crate::env::dynamic::retired(name) => Some(&self.shell_name),
+            "BASH_COMMAND" => Some(self.bash_command.as_str()),
             _ => match self.vars.get(name) {
                 Some((v, _)) => Some(v.as_str()),
                 None => self.arrays.get(name).and_then(|a| a.get(0)),

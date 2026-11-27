@@ -11,6 +11,7 @@
 mod assign;
 mod autocd;
 pub(crate) mod autoload;
+mod call;
 mod declare;
 /// `\command` and `\\command`, which decide how much of the shell a name skips past.
 mod escape;
@@ -22,7 +23,6 @@ pub(crate) use assign::build_array;
 pub use autocd::set_autocd;
 
 use crate::env::Environment;
-use crate::exec::pipeline::eval_command;
 use crate::exec::redirect::RedirectGuard;
 use crate::exec::simple::declare::{is_declaration_builtin, looks_like_an_assignment};
 use crate::exec::simple::external::{Lookup, look_up_command, run_external};
@@ -44,13 +44,18 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // where the trap body can run ordinary shell code. See `run_pending_traps`.
     crate::env::builtins::run_pending_traps(env)?;
 
-    // Before expansion, as bash fires it: a hook that times a command has to start counting
-    // before the work, not after.
+    // `$BASH_COMMAND` names the command before the DEBUG trap fires for it, and stays put while
+    // a trap runs.
+    if !crate::env::builtins::in_trap() {
+        env.set_bash_command(crate::env::builtins::control::format_simple(simple));
+    }
     crate::env::builtins::run_debug_trap(env);
 
     if simple.words.is_empty() {
         return apply_assignments_only(env, simple);
     }
+    // A command whose words all expand away reports its last substitution's status: `$(exit 3)`.
+    env.take_substitution_status();
 
     // The command name decides how the rest of the words expand, so it is expanded first: a
     // declaration builtin's `name=value` operands are assignments and must not be field-split or
@@ -75,7 +80,13 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
             words.extend(expand_word(env, w)?);
         }
         if words.is_empty() {
-            return apply_assignments_only(env, simple);
+            let expanded = env.take_substitution_status();
+            let status = apply_assignments_only(env, simple)?;
+            let assigned = env.take_substitution_status();
+            return Ok(match status {
+                0 => assigned.or(expanded).unwrap_or(0),
+                failed => failed,
+            });
         }
     } else {
         let declaring = is_declaration_builtin(words[0].trim());
@@ -317,7 +328,7 @@ fn run_command_word(
     }
 
     if let Some(func_body) = env.shared_function(name) {
-        return call_function_command(env, &func_body, words, redirections);
+        return call::call_function_command(env, &func_body, words, redirections);
     }
 
     if !escape.skips_builtin() && env.is_builtin(name) {
@@ -352,55 +363,6 @@ fn run_builtin(
     }
     let result = execute_builtin(env, name, words);
     posix::resolve_builtin_result(env, name, result)
-}
-
-/// Call the function registered under `name`.
-///
-/// Looking it up here rather than taking a body keeps [`autoload`] from having to know how a
-/// function is stored — it loads a file and asks for the name back.
-pub(super) fn call_named_function(
-    env: &mut Environment,
-    name: &str,
-    words: &[String],
-    redirections: &[Redirection],
-) -> Result<i32> {
-    let Some(body) = env.shared_function(name) else {
-        return Ok(127);
-    };
-    call_function_command(env, &body, words, redirections)
-}
-
-/// Call a shell function, absorbing the control flow that must not escape it.
-fn call_function_command(
-    env: &mut Environment,
-    body: &Command,
-    words: &[String],
-    redirections: &[Redirection],
-) -> Result<i32> {
-    // Checked before anything is set up, so a refused call has nothing to unwind. `f() { f; }`
-    // recurses through the whole evaluator; without this the stack overflows and Rust aborts
-    // the process outright, status 134 and a core dump.
-    // **Named**, because the name is the whole point of recording the frame. `enter_function`
-    // records `NULL`, which is what `caller` printed as the source of every frame and what
-    // `status current-function` would answer for a function that plainly has a name. The API to
-    // do this right already existed; nothing called it outside its own tests.
-    env.enter_function_named(words.first().map_or("", String::as_str))?;
-    let res = call_function(env, body, words, redirections);
-    env.exit_function();
-
-    // **A call is judged on its own, whatever the body did.** The `set -e` exemption a compound
-    // inherits from its last command stops at the function boundary: `set -e; f() { false && :; };
-    // f` ends the shell in bash and dash even though the same `false && :` written inline inside
-    // an `if` does not. The body's status crosses the boundary; its exemption does not.
-    crate::exec::pipeline::clear_status_exempt();
-
-    // `return` unwinds to here and becomes the function's exit status. `break`/`continue`
-    // are also absorbed: they must not escape into a loop in the caller.
-    match res {
-        Err(ShellError::Return(code)) => Ok(code),
-        Err(ShellError::Break(_)) | Err(ShellError::Continue(_)) => Ok(0),
-        other => other,
-    }
 }
 
 /// Run an external program, or explain why the word does not name one.
@@ -460,31 +422,6 @@ fn run_program(
 /// The end of the command search, and how it is reported.
 mod notfound;
 use notfound::{nothing_to_run, report_unrunnable};
-
-/// Run a shell function body with its own positional parameters and variable scope.
-///
-/// Split out from [`run_command_word`] so the call-depth counter can be entered and exited around
-/// exactly one expression: a redirection failure here still has to leave the depth balanced.
-fn call_function(
-    env: &mut Environment,
-    body: &Command,
-    words: &[String],
-    redirections: &[Redirection],
-) -> Result<i32> {
-    let mut guard = RedirectGuard::new();
-    if let Err(e) = guard.apply(env, redirections) {
-        // The body does not run at all: `f < /nonexistent` is a failed command, not a call whose
-        // stdin happens to be the shell's.
-        return Ok(report_redirect_failure(&env.origin(), &e));
-    }
-
-    let old_pos = env.swap_positional(words[1..].to_vec());
-    env.push_scope();
-    let res = eval_command(env, body);
-    env.pop_scope();
-    env.set_positional(old_pos);
-    res
-}
 
 /// Report a redirection failure and hand back the status the failed command takes on.
 ///

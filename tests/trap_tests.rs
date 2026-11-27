@@ -105,34 +105,25 @@ fn an_ignored_signal_is_discarded() {
     assert_eq!(r.out(), "survived", "stderr: {}", r.stderr);
 }
 
-/// Not implemented has to *say* not implemented. A stored-and-never-run handler is the one
-/// outcome a script cannot detect for itself.
-///
-/// `DEBUG` left this list when it became real, and `ERR` has now followed it — see
-/// [`the_err_trap_fires_for_a_failed_command`]. `RETURN` is what is left.
+/// `RETURN` fires as a function returns, inside it.
 #[test]
-fn the_unsupported_conditions_refuse_loudly() {
-    let condition = "RETURN";
+fn the_return_trap_runs_as_a_function_returns() {
     let r = run_in(
         tempfile::tempdir().expect("tempdir").path(),
-        &format!("trap 'echo handler' {condition}\necho \"status=$?\""),
+        "f() { trap 'echo handler' RETURN; echo body; }\nf\necho after",
     );
-    assert_eq!(r.out(), "status=1", "{condition}");
-    assert!(
-        r.stderr.contains("not supported"),
-        "{condition}: stderr said {:?}",
-        r.stderr
-    );
+    assert_eq!(r.out(), "body\nhandler\nafter", "stderr: {}", r.stderr);
 }
 
-/// `trap -l` names every signal this system can deliver, in the spelling the other operands take.
+/// `trap -l` is bash's numbered table: every signal this system can deliver, with its number.
 #[test]
 fn dash_l_lists_the_signal_names() {
     let r = run_in(tempfile::tempdir().expect("tempdir").path(), "trap -l");
     let names: Vec<&str> = r.out().split_whitespace().collect();
-    assert!(names.contains(&"INT"), "{:?}", r.out());
-    assert!(names.contains(&"TERM"));
-    assert!(names.contains(&"KILL"));
+    assert!(names.contains(&"SIGINT"), "{:?}", r.out());
+    assert!(names.contains(&"SIGTERM"));
+    assert!(names.contains(&"9)"));
+    assert!(names.contains(&"SIGKILL"));
 }
 
 /// End of input is a shell ending like any other, so the EXIT trap fires there too.

@@ -44,9 +44,8 @@ enum Condition {
     /// `ERR`: the handler runs for a command that failed, under exactly the exemptions `set -e`
     /// uses. Fired from `pipeline::run_and_record` rather than armed with the kernel.
     Err,
-    /// `RETURN` — named by bash, not implemented here. Kept as a distinct case so the
-    /// diagnostic can say *why* rather than claiming the name does not exist.
-    Unsupported(String),
+    /// `RETURN`: the handler runs as a function or a sourced file finishes.
+    Return,
 }
 
 impl Condition {
@@ -60,12 +59,9 @@ impl Condition {
     /// posix-mode script, which is how the corpus caught it. `EXIT` carries no prefix either way.
     fn display_name(&self, posix: bool) -> String {
         match self {
-            Condition::Exit => "EXIT".to_string(),
-            Condition::Debug => "DEBUG".to_string(),
-            Condition::Err => "ERR".to_string(),
             Condition::Signal { name, .. } if posix => name.to_string(),
             Condition::Signal { name, .. } => format!("SIG{name}"),
-            Condition::Unsupported(name) => name.to_string(),
+            other => other.key().to_string(),
         }
     }
 
@@ -74,21 +70,19 @@ impl Condition {
             Condition::Exit => "EXIT",
             Condition::Debug => "DEBUG",
             Condition::Err => "ERR",
+            Condition::Return => "RETURN",
             Condition::Signal { name, .. } => name,
-            Condition::Unsupported(name) => name,
         }
     }
 
-    /// Sort position for a listing: EXIT first, then signals in number order.
+    /// Sort position for a listing, bash's: EXIT, the signals by number, DEBUG, ERR, RETURN.
     fn order(&self) -> i32 {
         match self {
             Condition::Exit => 0,
-            // After EXIT and before every signal: it is not a signal, and a listing that sorted it
-            // among them by an invented number would imply one.
-            Condition::Debug => 1,
-            Condition::Err => 2,
-            Condition::Signal { number, .. } => *number + 2,
-            Condition::Unsupported(_) => i32::MAX,
+            Condition::Signal { number, .. } => *number,
+            Condition::Debug => 65,
+            Condition::Err => 66,
+            Condition::Return => 67,
         }
     }
 }
@@ -97,24 +91,14 @@ impl Condition {
 /// own: the line above already said where, and this one is a reminder rather than a report.
 const USAGE: &str = "trap: usage: trap [-lp] [[action] condition ...]";
 
-/// bash's non-POSIX conditions that oslo still does not run. Recognised so the diagnostic can be
-/// truthful rather than claiming the name does not exist.
-const UNSUPPORTED: [&str; 1] = ["RETURN"];
-
+/// A condition by name or number. The four that are not signals take no `SIG` prefix.
 fn resolve(spec: &str) -> Option<Condition> {
-    let upper = spec.to_uppercase();
-    let bare = upper.strip_prefix("SIG").unwrap_or(&upper);
-    if bare == "EXIT" {
-        return Some(Condition::Exit);
-    }
-    if bare == "ERR" {
-        return Some(Condition::Err);
-    }
-    if bare == "DEBUG" {
-        return Some(Condition::Debug);
-    }
-    if UNSUPPORTED.contains(&bare) {
-        return Some(Condition::Unsupported(bare.to_string()));
+    match spec.to_uppercase().as_str() {
+        "EXIT" => return Some(Condition::Exit),
+        "ERR" => return Some(Condition::Err),
+        "DEBUG" => return Some(Condition::Debug),
+        "RETURN" => return Some(Condition::Return),
+        _ => {}
     }
     let number = signals::parse_spec(spec)?;
     if number == 0 {
@@ -167,7 +151,8 @@ pub fn builtin_trap(env: &mut Environment, args: &[String]) -> Result<i32> {
 
     // POSIX: an unsigned integer first operand means every operand is a condition, and the
     // request is a reset. `-` is the ordinary spelling of the same thing.
-    let resets_only = first.chars().all(|c| c.is_ascii_digit()) && !first.is_empty();
+    let resets_only = first.chars().all(|c| c.is_ascii_digit()) && !first.is_empty()
+        || operands.len() == 1 && resolve(first).is_some();
     let (action, conditions) = if first == "-" {
         (Some(DEFAULT_ACTION), &operands[1..])
     } else if resets_only {
@@ -208,26 +193,13 @@ fn apply(args: &[String], env: &mut Environment, spec: &str, action: &str) -> bo
         return false;
     };
 
-    if let Condition::Unsupported(name) = &condition {
-        // Honest refusal rather than a silent no-op: a script that sets an ERR trap and gets
-        // status 0 back is entitled to believe the handler will run.
-        crate::env::complain(
-            args,
-            name,
-            &format!("trap: {name}: condition not supported; no handler was installed"),
-            "known, but not wired up",
-            Some(TRAP_CONDITIONS),
-        );
-        return false;
-    }
-
     env.set_trap(condition.key(), action);
 
     if let Condition::Signal { number, .. } = condition {
         let disposition = handlers::disposition(env, condition.key());
         // A refusal from the kernel is SIGKILL or SIGSTOP, which no process may catch. bash also
         // reports success here; the trap is recorded and simply never fires, exactly as in bash.
-        let _ = handlers::arm(number, &disposition);
+        let _ = handlers::arm(signals::real(number), &disposition);
     }
     // An EXIT trap is only worth setting if it runs, and SIGTERM or SIGHUP would otherwise kill
     // the shell before it could. Armed here and disarmed by `trap - EXIT`, so a shell without one
@@ -257,6 +229,7 @@ fn list(args: &[String], env: &Environment, conditions: &[String]) -> i32 {
                 wanted.push(condition);
             }
         }
+        wanted.sort_by_key(Condition::order);
     } else {
         for spec in conditions {
             match resolve(spec) {
@@ -275,7 +248,6 @@ fn list(args: &[String], env: &Environment, conditions: &[String]) -> i32 {
         }
     }
 
-    wanted.sort_by_key(Condition::order);
     // Read from the *listable* view, not from `disposition`: in a subshell the inherited handlers
     // no longer run, so `disposition` correctly answers Default for them — and listing them is
     // exactly what `saved=$(trap)` needs. The two questions have different answers here.
@@ -296,8 +268,7 @@ fn list(args: &[String], env: &Environment, conditions: &[String]) -> i32 {
 
 /// `trap -l`: the signal names, in the same form `kill -l` prints them.
 fn list_signal_names() -> i32 {
-    let names: Vec<String> = signals::all().into_iter().map(|(_, name)| name).collect();
-    println!("{}", names.join(" "));
+    print!("{}", signals::table());
     0
 }
 
@@ -373,19 +344,28 @@ mod tests {
         assert_eq!(run(&mut env, &["trap", "-p", "NOSUCHSIG"]), 1);
     }
 
-    /// Not implemented is reported as not implemented. The previous behaviour — store it, return
-    /// 0, never run it — is the failure mode a cleanup handler cannot survive.
-    ///
-    /// `DEBUG` and `ERR` both used to be on this list and are now real; they are asserted below
-    /// rather than removed, so that implementing `RETURN` cannot quietly leave this test passing
-    /// for the wrong reason.
+    /// The four conditions that are not signals take no `SIG` prefix.
     #[test]
-    fn the_bash_only_conditions_refuse_rather_than_pretend() {
+    fn a_sig_prefix_on_a_pseudo_condition_is_refused() {
         let mut env = Environment::new();
-        for name in super::UNSUPPORTED {
+        for name in ["SIGEXIT", "SIGERR", "SIGDEBUG", "SIGRETURN"] {
             assert_eq!(run(&mut env, &["trap", "echo x", name]), 1, "{name}");
-            assert_eq!(env.get_trap(name), None, "{name}");
         }
+        assert_eq!(run(&mut env, &["trap", "echo x", "RETURN"]), 0);
+        assert_eq!(env.get_trap("RETURN"), Some("echo x"));
+    }
+
+    /// A lone condition is a reset; a lone action is a usage error.
+    #[test]
+    fn a_single_operand_resets_the_condition_it_names() {
+        let mut env = Environment::new();
+        run(&mut env, &["trap", "echo x", "USR1"]);
+        assert_eq!(run(&mut env, &["trap", "USR1"]), 0);
+        assert_eq!(
+            handlers::disposition(&env, "USR1"),
+            handlers::Disposition::Default
+        );
+        assert_eq!(run(&mut env, &["trap", "echo x"]), 2);
     }
 
     /// `DEBUG` and `ERR` are conditions the shell fires itself, so they have to be *stored* like

@@ -142,6 +142,11 @@ impl Environment {
         &self.pipeline_status
     }
 
+    /// Record the text of the command about to run, for `$BASH_COMMAND`.
+    pub fn set_bash_command(&mut self, text: String) {
+        self.bash_command = text;
+    }
+
     /// Record what a command substitution exited with. Called by `exec::substitution`.
     pub fn note_substitution_status(&mut self, status: i32) {
         self.substitution_status = Some(status);

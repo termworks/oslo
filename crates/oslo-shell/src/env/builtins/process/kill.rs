@@ -159,8 +159,7 @@ fn usage() -> i32 {
 /// `kill -l`: the whole table, or the other half of each spec given.
 fn list(args: &[String], specs: &[String]) -> i32 {
     if specs.is_empty() {
-        let names: Vec<String> = signals::all().into_iter().map(|(_, name)| name).collect();
-        println!("{}", names.join(" "));
+        print!("{}", signals::table());
         return 0;
     }
 
@@ -186,6 +185,9 @@ fn list(args: &[String], specs: &[String]) -> i32 {
 /// A number becomes a name, a name becomes a number.
 fn describe(spec: &str) -> Option<String> {
     let Ok(num) = spec.parse::<i32>() else {
+        if spec.eq_ignore_ascii_case("EXIT") || spec.eq_ignore_ascii_case("SIGEXIT") {
+            return Some("0".to_string());
+        }
         return signals::number_from_name(spec).map(|n| n.to_string());
     };
     if num == 0 {
@@ -231,7 +233,7 @@ fn send(pid: i32, signum: i32) -> std::result::Result<(), Errno> {
     // SAFETY: kill(2) takes two scalars, reads no memory owned by this process and cannot
     // invalidate any Rust invariant. Failure is reported through errno, which is what
     // `Errno::result` reads.
-    let res = unsafe { nix::libc::kill(pid, signum) };
+    let res = unsafe { nix::libc::kill(pid, signals::real(signum)) };
     Errno::result(res).map(|_| ())
 }
 

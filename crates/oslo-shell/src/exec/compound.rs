@@ -27,6 +27,28 @@ pub(crate) fn flush_stdout() {
     let _ = std::io::stdout().flush();
 }
 
+/// Name a compound's header in `$BASH_COMMAND` and fire the DEBUG trap for it, as bash does for
+/// a `for` iteration, a `case`, and each `(( ))` evaluation.
+///
+/// `always` renders the text even with no DEBUG trap set, for the headers that can fail and so
+/// reach the ERR trap.
+fn announce(env: &mut Environment, always: bool, text: impl FnOnce() -> String) {
+    let debugging = env.get_trap("DEBUG").is_some_and(|action| action != "-");
+    if (always || debugging) && !crate::env::builtins::in_trap() {
+        env.set_bash_command(text());
+    }
+    if debugging {
+        crate::env::builtins::run_debug_trap(env);
+    }
+}
+
+/// The hooks a `for` iteration and a `case` share, in bash's order: the DEBUG trap with
+/// `$BASH_COMMAND` set to `command`, then the `set -x` line `traced`.
+fn header_hooks(env: &mut Environment, command: &str, traced: &str) {
+    announce(env, false, || command.to_string());
+    trace::trace_header(env, traced);
+}
+
 /// What one iteration of a loop body decided.
 pub(super) enum LoopStep {
     /// Carry on with the next iteration.
@@ -68,7 +90,7 @@ fn classify_unwind(error: ShellError, status: &mut i32) -> LoopStep {
     match error {
         ShellError::Break(depth) if depth > 1 => LoopStep::Unwind(ShellError::Break(depth - 1)),
         ShellError::Break(_) => {
-            *status = 0;
+            *status = crate::env::builtins::control::take_break_status();
             LoopStep::Stop
         }
         ShellError::Continue(depth) if depth > 1 => {
@@ -166,7 +188,9 @@ fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) 
 /// The status is that of the last body actually run, so a `;;&` chain whose later patterns all
 /// fail still reports what the branch that did match returned.
 fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i32> {
-    trace::trace_header(env, &format!("case {} in", format_word(word)));
+    let written = format!("case {} in", format_word(word));
+    // bash's `$BASH_COMMAND` for a `case` keeps the space after `in`; its trace line does not.
+    header_hooks(env, &format!("{written} "), &written);
     let subject = expand_word_to_test_string(env, word)?;
 
     let mut status = 0;
@@ -195,6 +219,7 @@ fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i
 /// `None` means "already reported"; callers turn it into status 1 and stop. An unset name under
 /// `set -u` is the exception, and unwinds as it would from a word.
 fn eval_arith(env: &mut Environment, expr: &str) -> Result<Option<i64>> {
+    announce(env, true, || format!("(({expr}))"));
     // Expanded once, so the trace shows what is evaluated and a substitution runs once.
     let expr: String = match env.xtrace() {
         true => match crate::expand::arithmetic::expand_expression(env, expr) {
@@ -357,7 +382,7 @@ pub(crate) fn eval_compound_command(
             env.enter_loop();
             let result = 'items: {
                 for item in item_words {
-                    trace::trace_header(env, &header);
+                    header_hooks(env, &header, &header);
                     env.set_var(var_name, &item, false);
                     match run_loop_body(env, body, &mut status) {
                         LoopStep::Next => {}
