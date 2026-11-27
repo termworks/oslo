@@ -67,6 +67,18 @@ fn parse_prepared(script: &str) -> Result<oslo_ast::CommandList> {
     if let Some(error) = errors.first() {
         return Err(ShellError::SyntaxError(error.message.clone()));
     }
+    // bash reads an `extglob` group only with the option on, and refuses the line otherwise. A
+    // program that names the option outside a comment may turn it on before the group runs, and
+    // is left to the check made where the group is expanded.
+    if !oslo_base::glob::walk::extglob()
+        && opens_group(script)
+        && !names_extglob(parsed.tree())
+        && refused_group(parsed.tree(), parsed.tree().root())
+    {
+        return Err(ShellError::SyntaxError(
+            "syntax error near unexpected token `('".to_string(),
+        ));
+    }
     // bash runs a here-document the input ends inside, and says so.
     for warning in warnings {
         let (line, _) = parsed.tree().source().line_col(warning.span.start);
@@ -78,6 +90,56 @@ fn parse_prepared(script: &str) -> Result<oslo_ast::CommandList> {
         }
     }
     convert_script(parsed.tree())
+}
+
+/// Whether the tree holds an `extglob` group outside the places bash reads one regardless.
+///
+/// A `[[ ]]` test takes patterns with the option off. A substitution's body is read again when it
+/// runs, and arithmetic, a subscript and a `${…}` operand are not words that could hold a group.
+fn refused_group(tree: &Tree, node: &rune::Node) -> bool {
+    if matches!(
+        node.kind(),
+        SyntaxKind::CondCommand
+            | SyntaxKind::CommandSubstitution
+            | SyntaxKind::ProcessSubstitution
+            | SyntaxKind::ParameterExpansion
+            | SyntaxKind::ArithmeticExpansion
+            | SyntaxKind::ArithCommand
+            | SyntaxKind::ArithForCommand
+            | SyntaxKind::Subscript
+    ) {
+        return false;
+    }
+    // Inside `"…"` a parenthesis is a character, so the quotes a word opens are followed.
+    let mut quoted = false;
+    node.children().any(|child| match child {
+        rune::Element::Node(inner) => refused_group(tree, inner),
+        rune::Element::Token(token) => {
+            if token.kind() == SyntaxKind::DoubleQuote {
+                quoted = !quoted;
+            }
+            !quoted && token.kind() == SyntaxKind::Text && opens_group(token.text(tree.source()))
+        }
+    })
+}
+
+/// Whether any word of the program, rather than a comment or a here-document, names `extglob`.
+fn names_extglob(tree: &Tree) -> bool {
+    let mut named = false;
+    tree.root().visit_tokens(&mut |token| {
+        named |= !matches!(
+            token.kind(),
+            SyntaxKind::Comment | SyntaxKind::HeredocText | SyntaxKind::HeredocEnd
+        ) && token.text(tree.source()).contains("extglob");
+    });
+    named
+}
+
+/// Whether `text` holds an `extglob` operator with its `(`: `@(`, `!(`, `*(`, `+(` or `?(`.
+fn opens_group(text: &str) -> bool {
+    text.as_bytes()
+        .windows(2)
+        .any(|pair| matches!(pair, [b'?' | b'*' | b'+' | b'@' | b'!', b'(']))
 }
 
 /// Whether an offset falls inside a command substitution that was properly closed.
