@@ -17,10 +17,10 @@ pub use resolve::is_keyword;
 /// has two dispatch tables and one of them is wrong. There is one, and it is [`resolve::ways`].
 pub use resolve::{Kind, ways};
 pub use source::builtin_source;
-/// Render a function definition as shell source; also what `set` and `declare -f` need to print.
-pub use unparse::{format_function, format_word};
 /// A simple command as source text, for `$BASH_COMMAND`.
 pub(crate) use unparse::format_simple;
+/// Render a function definition as shell source; also what `set` and `declare -f` need to print.
+pub use unparse::{format_function, format_word};
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
