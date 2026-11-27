@@ -11,10 +11,12 @@
 //! the `$PATH` cache lock the warming thread is holding.
 //!
 //! One gate settles it. A thread wraps the region in which it holds a process-wide lock in
-//! [`guarded`]; a fork goes through [`quiesced`], which waits for those regions to end and holds
-//! them off until the fork has returned. The child inherits every one of them unlocked.
+//! [`guarded`](forksafe::guarded); a fork goes through [`quiesced`](forksafe::quiesced), which
+//! waits for those regions to end and holds them off until the fork has returned. The child
+//! inherits every one of them unlocked.
 //!
-//! Nothing may fork from inside a [`guarded`] region — see [`quiesced`].
+//! Nothing may fork from inside a [`guarded`](forksafe::guarded) region — see
+//! [`quiesced`](forksafe::quiesced).
 
 use std::cell::Cell;
 use std::sync::RwLock;
