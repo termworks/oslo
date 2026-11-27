@@ -83,7 +83,11 @@ fn looks_binary(path: &CString) -> bool {
     if sample.starts_with(b"\x7fELF") {
         return true;
     }
-    let lines = if sample.starts_with(b"#!") { usize::MAX } else { 1 };
+    let lines = if sample.starts_with(b"#!") {
+        usize::MAX
+    } else {
+        1
+    };
     let mut seen = 0;
     for &byte in sample {
         if byte == b'\n' {

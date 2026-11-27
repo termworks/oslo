@@ -8,7 +8,10 @@ use oslo::env::options::ShellOption;
 /// Whether `script` has to be read a command at a time even though it parses: `-v` or `-t` is
 /// on already, or the text may turn one of them on.
 pub(super) fn needs_line_at_a_time(env: &Environment, script: &str) -> bool {
-    let options = [(ShellOption::Verbose, 'v', "o verbose"), (ShellOption::OneCmd, 't', "o onecmd")];
+    let options = [
+        (ShellOption::Verbose, 'v', "o verbose"),
+        (ShellOption::OneCmd, 't', "o onecmd"),
+    ];
     options.iter().any(|&(option, letter, name)| {
         env.option(option) || script.contains(name) || sets_letter(script, letter)
     })

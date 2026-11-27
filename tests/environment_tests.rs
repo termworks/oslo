@@ -312,7 +312,9 @@ fn shlvl_counts_nesting() {
 /// Every option bash's `set -o` has is accepted by a script, as bash accepts it.
 #[test]
 fn every_bash_option_is_accepted_by_a_script() {
-    for name in ["notify", "keyword", "nolog", "vi", "emacs", "errtrace", "physical"] {
+    for name in [
+        "notify", "keyword", "nolog", "vi", "emacs", "errtrace", "physical",
+    ] {
         let r = run(&format!("set -o {name}\necho status=$?"));
         assert_eq!(r.out(), "status=0", "{name}: stderr was {:?}", r.stderr);
     }

@@ -107,7 +107,9 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
     }
     if !last_here {
         let last_pid = pids.last().copied();
-        super::announce_death(env, last_pid, || super::describe::describe_pipeline(pipeline));
+        super::announce_death(env, last_pid, || {
+            super::describe::describe_pipeline(pipeline)
+        });
     }
     job::reclaim_terminal(
         !stopped
@@ -147,7 +149,11 @@ fn close_all(pipes: &[(OwnedFd, OwnedFd)]) {
 }
 
 /// Run the last stage in this shell, reading the pipe, with stdin put back afterwards.
-fn run_last_here(env: &mut Environment, cmd: &Command, pipes: Vec<(OwnedFd, OwnedFd)>) -> Result<i32> {
+fn run_last_here(
+    env: &mut Environment,
+    cmd: &Command,
+    pipes: Vec<(OwnedFd, OwnedFd)>,
+) -> Result<i32> {
     use nix::fcntl::{FcntlArg, fcntl};
     let saved = fcntl(0, FcntlArg::F_DUPFD_CLOEXEC(10)).ok();
     if let Some((read, _)) = pipes.last() {

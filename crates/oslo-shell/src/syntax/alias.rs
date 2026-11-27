@@ -26,16 +26,14 @@
 //! Quoted text, comments and here-document bodies are copied through untouched. The heredoc rule
 //! is not a nicety: `config.guess` writes a C program through `<<EOF`, and a body is data.
 
+mod definitions;
 mod scan;
 /// When a verb name outranks an alias of the same name.
 mod verbs;
 use verbs::a_verb_follows;
 
 use oslo_base::nesting::heredoc_delimiters;
-use scan::{
-    Balance, Quote, is_assignment, is_function_definition, is_plain_name, split_words, unquote,
-    word_end,
-};
+use scan::{Balance, Quote, is_assignment, is_function_definition, is_plain_name, word_end};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -559,45 +557,6 @@ impl Scanner<'_> {
             self.cases.last(),
             Some(Case::AwaitingIn) | Some(Case::Patterns)
         )
-    }
-
-    /// Record the `alias name=value` definitions a line makes, for use from the next line on.
-    ///
-    /// Only the literal form is recognised. `eval "alias $x=$y"` is beyond a text scan, and
-    /// guessing at it would be worse than not trying: the environment's own table still answers
-    /// for anything defined before this unit was parsed.
-    fn record_definitions(&mut self, line: &str) {
-        let words = split_words(line);
-        // `shopt -s expand_aliases` takes effect from the next line, as it does in bash.
-        for window in words.windows(3) {
-            if window[0] == "shopt" && window[2] == "expand_aliases" {
-                match window[1].as_str() {
-                    "-s" => self.expanding = true,
-                    "-u" => self.expanding = false,
-                    _ => {}
-                }
-            }
-        }
-        let mut rest = words.as_slice();
-        // Definitions can follow `;` or `&&`, so look for `alias` anywhere a command may start.
-        while let Some(position) = rest.iter().position(|w| w == "alias") {
-            rest = &rest[position + 1..];
-            for word in rest {
-                if word == ";" || word == "&&" || word == "||" || word == "|" || word == "&" {
-                    break;
-                }
-                if word.starts_with('-') {
-                    continue;
-                }
-                let Some((name, value)) = word.split_once('=') else {
-                    continue;
-                };
-                if is_plain_name(name) {
-                    self.defined
-                        .insert(name.to_string(), (self.line, unquote(value)));
-                }
-            }
-        }
     }
 }
 

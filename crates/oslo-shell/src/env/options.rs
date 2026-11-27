@@ -122,7 +122,8 @@ const fn refused(
     }
 }
 
-const EDITOR: &str = "the editing mode is `oslo.vi.enabled` or `--no-vi`, fixed when the editor is built";
+const EDITOR: &str =
+    "the editing mode is `oslo.vi.enabled` or `--no-vi`, fixed when the editor is built";
 
 /// Every option, in the order `$-` reports them: bash's flag table, then `c` and `s`.
 #[rustfmt::skip]

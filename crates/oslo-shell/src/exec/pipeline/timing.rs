@@ -188,7 +188,11 @@ fn render(format: &str, [real, user, sys]: [Duration; 3]) -> Result<String, char
             Some('S') => out.push_str(&seconds(sys, digits, long)),
             Some('P') => {
                 let busy = (user + sys).as_secs_f64();
-                let share = if real.is_zero() { 0.0 } else { busy * 100.0 / real.as_secs_f64() };
+                let share = if real.is_zero() {
+                    0.0
+                } else {
+                    busy * 100.0 / real.as_secs_f64()
+                };
                 out.push_str(&format!("{share:.2}"));
             }
             Some(other) => return Err(other),

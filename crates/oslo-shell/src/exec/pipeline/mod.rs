@@ -27,8 +27,8 @@ mod stages;
 mod structured;
 mod timing;
 
-use stages::run_byte_stages;
 pub(super) use stages::pipeline_status;
+use stages::run_byte_stages;
 
 pub(crate) use errexit::{clear_status_exempt, errexit_suspended, suspend_errexit};
 use errexit::{reports_own_status, set_status_exempt, status_exempt};
