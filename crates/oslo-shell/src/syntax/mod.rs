@@ -18,10 +18,19 @@ pub use rune_adapter::{array_literal, parse_bash_script};
 /// This is what every caller that has an [`crate::env::Environment`] should use. Alias
 /// substitution belongs before parsing — an alias body is source text, not a list of arguments —
 /// so it cannot be a step the executor performs afterwards; see [`alias`].
+///
+/// Nothing is substituted while `expand_aliases` is off, which is bash's default for a shell
+/// that is not interactive.
 pub fn parse_with_aliases(
     source: &str,
     any_defined: bool,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> oslo_base::error::Result<oslo_base::ast::CommandList> {
-    parse_bash_script(&alias::substitute(source, any_defined, lookup))
+    let expanding = crate::env::builtins::shopt::on("expand_aliases");
+    parse_bash_script(&alias::substitute_while(
+        source,
+        expanding,
+        any_defined,
+        lookup,
+    ))
 }

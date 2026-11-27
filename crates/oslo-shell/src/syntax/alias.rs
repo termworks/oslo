@@ -74,6 +74,17 @@ pub fn substitute<'a>(
     any_defined: bool,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Cow<'a, str> {
+    substitute_while(source, true, any_defined, lookup)
+}
+
+/// [`substitute`], starting with `expand_aliases` in the state `expanding` says and following the
+/// literal `shopt -s expand_aliases` / `shopt -u expand_aliases` the text runs, from the next line.
+pub fn substitute_while<'a>(
+    source: &'a str,
+    expanding: bool,
+    any_defined: bool,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Cow<'a, str> {
     // Almost every program contains no alias at all, and the scan is not free. A source with no
     // `alias` command in it can only be affected by an alias the environment already holds, so
     // when there are none of those either there is nothing to do — and returning the source
@@ -81,7 +92,12 @@ pub fn substitute<'a>(
     if !any_defined && !source.contains("alias") {
         return Cow::Borrowed(source);
     }
+    if !expanding && !source.contains("expand_aliases") {
+        return Cow::Borrowed(source);
+    }
     let mut scanner = Scanner {
+        expanding,
+        partial: None,
         lookup,
         defined: HashMap::new(),
         out: String::with_capacity(source.len()),
@@ -102,6 +118,10 @@ pub fn substitute<'a>(
 }
 
 struct Scanner<'a> {
+    /// Whether `expand_aliases` is on for the line being scanned.
+    expanding: bool,
+    /// The lines of a command whose quoted text has not closed yet, for its definitions.
+    partial: Option<String>,
     lookup: &'a dyn Fn(&str) -> Option<String>,
     /// Aliases the text defines, and the line each was defined on.
     defined: HashMap<String, (usize, String)>,
@@ -164,9 +184,17 @@ impl Scanner<'_> {
                     self.check_next_word = false;
                 }
             }
-            // A line's alias definitions take effect on the next line, never on this one.
+            // A line's alias definitions take effect on the next line, never on this one. A
+            // quoted value that runs on is gathered until its quote closes.
             if self.pending.is_none() {
-                self.record_definitions(line);
+                let mut text = self.partial.take().unwrap_or_default();
+                text.push_str(line);
+                if scan::leaves_quote_open(&text) {
+                    text.push('\n');
+                    self.partial = Some(text);
+                } else {
+                    self.record_definitions(&text);
+                }
             }
             index += 1;
 
@@ -454,6 +482,9 @@ impl Scanner<'_> {
 
     /// The replacement text for `word`, from the script's own definitions or the environment.
     fn body_for(&self, word: &str) -> Option<String> {
+        if !self.expanding {
+            return None;
+        }
         if let Some((defined_on, body)) = self.defined.get(word) {
             // Not on the line that defined it: `alias x=y; x` finds no `x`, in bash either.
             if *defined_on < self.line {
@@ -537,6 +568,16 @@ impl Scanner<'_> {
     /// for anything defined before this unit was parsed.
     fn record_definitions(&mut self, line: &str) {
         let words = split_words(line);
+        // `shopt -s expand_aliases` takes effect from the next line, as it does in bash.
+        for window in words.windows(3) {
+            if window[0] == "shopt" && window[2] == "expand_aliases" {
+                match window[1].as_str() {
+                    "-s" => self.expanding = true,
+                    "-u" => self.expanding = false,
+                    _ => {}
+                }
+            }
+        }
         let mut rest = words.as_slice();
         // Definitions can follow `;` or `&&`, so look for `alias` anywhere a command may start.
         while let Some(position) = rest.iter().position(|w| w == "alias") {

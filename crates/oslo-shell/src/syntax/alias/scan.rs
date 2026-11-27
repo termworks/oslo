@@ -55,6 +55,27 @@ pub(super) fn word_end(chars: &[char], start: usize) -> usize {
     chars.len()
 }
 
+/// Whether `text` ends inside a single- or double-quoted string.
+pub(super) fn leaves_quote_open(text: &str) -> bool {
+    let mut quote = Quote::None;
+    let mut word_start = true;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Quote::Single, '\'') | (Quote::Double, '"') => quote = Quote::None,
+            (Quote::Double | Quote::None, '\\') => {
+                chars.next();
+            }
+            (Quote::None, '\'') => quote = Quote::Single,
+            (Quote::None, '"') => quote = Quote::Double,
+            (Quote::None, '#') if word_start => break,
+            _ => {}
+        }
+        word_start = quote == Quote::None && matches!(c, ' ' | '\t' | '\n' | ';');
+    }
+    quote != Quote::None
+}
+
 /// Whether the next non-blank characters are `()`, which makes the word a function's name.
 pub(super) fn is_function_definition(chars: &[char], from: usize) -> bool {
     let mut i = from;
