@@ -279,8 +279,9 @@ carries, because it replaced the process image and nothing registered at exit co
 | `tests/posix_stays_on_the_byte_path.rs` | the zero-structured-edges assertion |
 | `tests/command_escape_tests.rs` | `\cmd` and `\\cmd`, run twice: prompt and script |
 | `crates/oslo-shell/src/exec/simple/posix.rs` | `exits_on_error`, `resolve_builtin_result`, `assignment_failure` |
-| `crates/oslo-shell/src/env/builtins/declare.rs` | `Attributes` — which letters are honoured, and which are refused |
-| `tests/declare_builtin_tests.rs` | the refusals through the real binary: status, diagnostic, nothing left behind |
+| `crates/oslo-shell/src/env/builtins/declare/mod.rs` | `Spec`, `declare_one` — the engine `declare`, `local`, `readonly` and `export` share |
+| `crates/oslo-shell/src/env/scope/value.rs` | `Var`, `Attrs` — a binding's value and its attributes |
+| `tests/declare_builtin_tests.rs` | the attributes through the real binary: status, diagnostic, scope |
 | `crates/oslo-shell/src/exec/simple/external.rs` | `wait_for_child` — where a key the shell never saw is read off the wait status |
 | `crates/oslo-shell/src/exec/pipeline/interrupt.rs` | turning that into an unwind, and back into 130 at the top |
 | `tests/signal_tests.rs` | the pty tests: a forking loop ends, and the rest of the line does not run |

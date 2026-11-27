@@ -233,10 +233,8 @@ pub(crate) fn split_operand(text: &str) -> Option<Operand<'_>> {
         (None, false)
     } else if let Some(value) = rest.strip_prefix("+=") {
         (Some(value), true)
-    } else if let Some(value) = rest.strip_prefix('=') {
-        (Some(value), false)
     } else {
-        return None;
+        (Some(rest.strip_prefix('=')?), false)
     };
     (is_valid_identifier(name) && subscript != Some("")).then_some(Operand {
         text,

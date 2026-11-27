@@ -1,7 +1,7 @@
 //! Name references: `declare -n r=x` makes every read and write of `r` one of `x`.
 //!
 //! A reference may name an array element (`declare -n r='a[1]'`), and a reference may name another
-//! reference. The chain is followed at most [`MAX_DEPTH`] links, as bash follows it, so a loop is
+//! reference. The chain is followed at most eight links, as bash follows it, so a loop is
 //! a name that resolves to nothing rather than a hang.
 
 use super::Environment;
