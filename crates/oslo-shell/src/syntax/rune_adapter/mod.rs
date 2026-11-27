@@ -59,8 +59,23 @@ fn parse_prepared(script: &str) -> Result<oslo_ast::CommandList> {
     let deferred = |error: &&rune::Error| {
         inside_closed_substitution(parsed.tree(), parsed.tree().root(), error.span.start)
     };
-    if let Some(error) = parsed.errors().iter().find(|error| !deferred(error)) {
+    let (warnings, errors): (Vec<_>, Vec<_>) = parsed
+        .errors()
+        .iter()
+        .filter(|error| !deferred(error))
+        .partition(|error| error.severity == rune::Severity::Warning);
+    if let Some(error) = errors.first() {
         return Err(ShellError::SyntaxError(error.message.clone()));
+    }
+    // bash runs a here-document the input ends inside, and says so.
+    for warning in warnings {
+        let (line, _) = parsed.tree().source().line_col(warning.span.start);
+        match warning.message.contains("here-document") {
+            true => {
+                eprintln!("oslo: warning: here-document at line {line} delimited by end-of-file")
+            }
+            false => eprintln!("oslo: warning: line {line}: {}", warning.message),
+        }
     }
     convert_script(parsed.tree())
 }

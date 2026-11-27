@@ -144,24 +144,34 @@ fn convert_heredoc(
 ) -> Result<Vec<oslo_ast::Redirection>> {
     let strip_tabs = node.token(SyntaxKind::LessLessDash).is_some();
     let mut content = heredoc_body(tree, node);
-
-    // `<<-` strips leading tabs from every line, including the delimiter line. This runs on the
-    // raw text, before lexing: a tab is stripped because of where it sits in the line, which is a
-    // fact about the source and not about the parts it lexes into.
-    if strip_tabs {
-        content = content
-            .lines()
-            .map(|line| line.trim_start_matches('\t'))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
+    // A body the input ended inside still ends its last line, as bash reads it.
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
     }
 
     // A quoted delimiter (`<<'EOF'`) makes the whole body literal. The quotes are on the
     // delimiter, which is why the delimiter's *source text* is what decides.
     let expands = !delimiter.contains(['\'', '"', '\\']);
+
+    // `<<-` strips leading tabs from every line, including the delimiter line. This runs on the
+    // raw text, before lexing: a tab is stripped because of where it sits in the line, which is a
+    // fact about the source and not about the parts it lexes into. In an unquoted body a line
+    // ending in `\` runs on into the next, so that next one keeps its tabs.
+    if strip_tabs {
+        let mut stripped = String::with_capacity(content.len());
+        let mut continued = false;
+        for line in content.split_inclusive('\n') {
+            stripped.push_str(match continued {
+                true => line,
+                false => line.trim_start_matches('\t'),
+            });
+            let text = line.strip_suffix('\n').unwrap_or(line);
+            let backslashes = text.bytes().rev().take_while(|byte| *byte == b'\\').count();
+            continued = expands && line.ends_with('\n') && backslashes % 2 == 1;
+        }
+        content = stripped;
+    }
+
     let body = match expands {
         true => parse_heredoc_body(&content)?,
         false => oslo_ast::Word::from_literal(&content),

@@ -208,7 +208,7 @@ fn convert_if(tree: &Tree, conditional: IfCommand<'_>) -> Result<oslo_ast::Compo
 fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::CompoundCommand> {
     let body = list_at(tree, looping.body())?;
     if looping.kind() == SyntaxKind::ArithForCommand {
-        let (init, cond, step) = arithmetic_for_sections(tree, looping.syntax());
+        let (init, cond, step) = arithmetic_for_sections(looping.arithmetic(tree.source()));
         return Ok(oslo_ast::CompoundCommand::ArithmeticFor {
             init,
             cond,
@@ -257,17 +257,10 @@ fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::Compoun
 /// middle of `for (( ; ; ))` as a condition would end the loop before its first iteration instead
 /// of running it forever.
 fn arithmetic_for_sections(
-    tree: &Tree,
-    node: &Node,
+    header: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>) {
-    let text = text_of(tree, node);
-    let inner = match text.find("((") {
-        Some(at) => &text[at + 2..],
-        None => return (None, None, None),
-    };
-    let inner = match inner.find("))") {
-        Some(at) => &inner[..at],
-        None => inner,
+    let Some(inner) = header else {
+        return (None, None, None);
     };
     let mut sections = inner
         .splitn(3, ';')
@@ -351,13 +344,18 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
         .unwrap_or_default();
     let append = node.token(SyntaxKind::PlusEqual).is_some();
 
-    // `name[i]=value`. rune keeps the subscript in the name token's text, because the lexer has no
-    // reason to split a run of ordinary characters; the shape is recovered here.
-    let target = match name.split_once('[') {
-        Some((name, rest)) => oslo_ast::AssignmentTarget::Element {
-            name: name.to_string(),
-            index: single_word_from_str(rest.trim_end_matches(']'))?,
-        },
+    // `name[i]=value`, whose subscript rune gives a node of its own: `a[$i]=x`, `a[ $i + 1 ]=x`.
+    // The subscript is one word however many blanks it holds.
+    let target = match node.node(SyntaxKind::Subscript) {
+        Some(subscript) => {
+            let text = text_of(tree, subscript);
+            let inner = text.strip_prefix('[').unwrap_or(text);
+            let inner = inner.strip_suffix(']').unwrap_or(inner);
+            oslo_ast::AssignmentTarget::Element {
+                name,
+                index: crate::lexer::parse_single_word(inner.trim())?,
+            }
+        }
         None => oslo_ast::AssignmentTarget::Name(name),
     };
 
@@ -389,7 +387,10 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
 /// An unindexed element may still expand to several words — `a=($list)` and `a=(*.c)` both do — so
 /// it becomes one [`oslo_ast::ArrayElement`] per word rather than being forced into one. An
 /// *indexed* element (`[3]=x`) is a single value by construction.
-fn convert_array_element(tree: &Tree, text: &str) -> Result<Vec<oslo_ast::ArrayElement>> {
+pub(super) fn convert_array_element(
+    tree: &Tree,
+    text: &str,
+) -> Result<Vec<oslo_ast::ArrayElement>> {
     let _ = tree;
     if let Some(rest) = text.strip_prefix('[')
         && let Some((index, value)) = rest.split_once("]=")
