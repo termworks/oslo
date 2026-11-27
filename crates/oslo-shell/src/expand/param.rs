@@ -310,12 +310,17 @@ fn is_param_name(name: &str) -> bool {
 /// runs `cmd` rather than `cmd ""`. `$*` is always exactly one field, joined by the first
 /// character of IFS.
 fn positional_fields(env: &Environment, name: &str, origin: Origin) -> Vec<Field> {
-    array::list_fields(
+    let star_apart = name == "*" && array::star_stays_apart(env, origin);
+    let fields = array::list_fields(
         env.get_positional(),
-        name == "@",
+        name == "@" || star_apart,
         &env.ifs_separator(),
         origin,
-    )
+    );
+    if star_apart {
+        return crate::expand::join::marked(fields, Origin::Glue);
+    }
+    fields
 }
 
 #[cfg(test)]

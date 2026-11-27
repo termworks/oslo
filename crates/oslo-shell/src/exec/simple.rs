@@ -60,8 +60,11 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // stops being visible. See `escape`, which is also where the interactive gate lives.
     let mut escape = escape::Escape::None;
     let mut backslashes = 0;
+    // A lowered `[[ … ]]`, whose operands are never split: each is one string.
+    let mut testing = false;
     if let Some(first) = rest.next() {
         (escape, backslashes) = escape::intent(first, env.interactive());
+        testing = matches!(first.parts.as_slice(), [WordPart::Literal(w)] if w == "[[");
         words.extend(crate::expand::expand_command_word(env, first)?);
     }
 
@@ -76,7 +79,9 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     } else {
         let declaring = is_declaration_builtin(words[0].trim());
         for w in rest {
-            if declaring && looks_like_an_assignment(w) {
+            if testing {
+                words.push(crate::expand::word::expand_word_to_test_string(env, w)?);
+            } else if declaring && looks_like_an_assignment(w) {
                 words.push(crate::expand::expand_word_to_string(env, w)?);
             } else {
                 words.extend(expand_word(env, w)?);
@@ -197,7 +202,10 @@ fn heredocs_expanded(
             RedirectKind::Heredoc | RedirectKind::HeredocStrip
         ) && let Some(word) = &redir.heredoc_content
         {
-            let text = expand_word_to_string(env, word)?;
+            let text = match redir.here_string {
+                true => expand_word_to_string(env, word)?,
+                false => crate::expand::join::expand_heredoc_to_string(env, word)?,
+            };
             redir.heredoc_content = Some(Word::from_literal(&text));
         }
         out.push(redir);

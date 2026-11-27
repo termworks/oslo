@@ -164,6 +164,9 @@ enum Coordinates {
 /// literal: pattern-versus-text is decided from the *source* quoting by [`binary_op`], before this
 /// runs, and is carried in the operator word.
 fn operand(word: &str, coordinates: Coordinates) -> Result<oslo_ast::Word> {
+    if let Some(substitution) = process_substitution(word) {
+        return Ok(substitution);
+    }
     let inner = single_word_from_str(word)?;
     if let Some(expanding) = relex_inside_quotes(word, &inner) {
         return Ok(expanding);
@@ -192,6 +195,22 @@ fn operand(word: &str, coordinates: Coordinates) -> Result<oslo_ast::Word> {
     }
     Ok(oslo_ast::Word {
         parts: vec![oslo_ast::WordPart::DoubleQuoted(inner.parts)],
+    })
+}
+
+/// An operand that is a whole `<(cmd)` or `>(cmd)`, as the pipe's path: `[[ -e <(true) ]]`.
+fn process_substitution(word: &str) -> Option<oslo_ast::Word> {
+    let word = word.trim();
+    let reads_from_command = word.starts_with("<(");
+    let command = word
+        .strip_prefix("<(")
+        .or_else(|| word.strip_prefix(">("))?
+        .strip_suffix(')')?;
+    Some(oslo_ast::Word {
+        parts: vec![oslo_ast::WordPart::ProcessSubstitution {
+            reads_from_command,
+            command: command.to_string(),
+        }],
     })
 }
 

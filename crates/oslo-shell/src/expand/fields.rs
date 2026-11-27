@@ -30,6 +30,9 @@ pub fn split_field(ifs: &str, field: Field) -> Vec<Field> {
         open: None,
     };
     for run in field {
+        if run.origin.is_mark() {
+            continue;
+        }
         if run.splits() {
             splitter.split_text(&run.text);
         } else {

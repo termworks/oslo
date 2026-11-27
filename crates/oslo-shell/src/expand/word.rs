@@ -34,6 +34,19 @@ pub enum Origin {
     Quoted,
     /// The output of an unquoted expansion. Field-split on IFS; whatever survives still globs.
     Expanded,
+    /// An empty run opening a field that an assignment joins to the field before it on IFS's
+    /// first character rather than a space. See [`crate::expand::join`].
+    Seam,
+    /// An empty run opening a field that every single-string context joins to the field before
+    /// it with nothing in between. See [`crate::expand::join`].
+    Glue,
+}
+
+impl Origin {
+    /// Whether this is one of the empty marks [`crate::expand::join`] reads.
+    pub fn is_mark(self) -> bool {
+        matches!(self, Origin::Seam | Origin::Glue)
+    }
 }
 
 /// A maximal stretch of expanded text sharing one [`Origin`].
@@ -276,19 +289,28 @@ fn check_nounset(env: &Environment, name: &str, expansion_type: &ParamExpansion)
 /// `case foo in f*)` into a match against whatever files happen to be in the working directory,
 /// so the branch silently stops firing depending on where you run the script.
 pub fn expand_word_to_string(env: &mut Environment, word: &Word) -> Result<String> {
+    expand_word_joined(env, word, crate::expand::join::Joining::Value)
+}
+
+/// [`expand_word_to_string`] for a `[[ ]]` operand or a `case` word, which join a list
+/// differently from an assignment; see [`crate::expand::join`].
+pub fn expand_word_to_test_string(env: &mut Environment, word: &Word) -> Result<String> {
+    expand_word_joined(env, word, crate::expand::join::Joining::Test)
+}
+
+fn expand_word_joined(
+    env: &mut Environment,
+    word: &Word,
+    joining: crate::expand::join::Joining,
+) -> Result<String> {
     let fields = expand_word_fields(env, word)?;
     let fields =
         crate::expand::sugar::marked_fields(env, fields).map_err(ShellError::ExpansionError)?;
     if fields.len() == 1 {
         return Ok(field_text(&fields[0]));
     }
-    // Only `$@` reaches here with more than one field. Joining is what a context that insisted on
-    // a single string would have got from `$*` anyway.
-    Ok(fields
-        .iter()
-        .map(|f| field_text(f))
-        .collect::<Vec<_>>()
-        .join(&env.ifs_separator()))
+    // Only a list expansion reaches here with more than one field.
+    Ok(crate::expand::join::join_fields(env, &fields, joining))
 }
 
 /// Expand a word that is going to be used as a *pattern*, keeping its quoting.
@@ -302,9 +324,9 @@ pub fn expand_word_to_string(env: &mut Environment, word: &Word) -> Result<Strin
 /// context insisting on one string would have got.
 pub fn expand_word_to_pattern(env: &mut Environment, word: &Word) -> Result<Vec<Run>> {
     let fields = expand_word_fields(env, word)?;
-    Ok(crate::expand::sugar::marked_fields(env, fields)
-        .map_err(ShellError::ExpansionError)?
-        .concat())
+    let fields =
+        crate::expand::sugar::marked_fields(env, fields).map_err(ShellError::ExpansionError)?;
+    Ok(crate::expand::join::join_runs(env, fields))
 }
 
 /// Full expansion of one word: parameters, substitutions, field splitting, then pathname

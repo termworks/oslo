@@ -13,6 +13,7 @@
 pub mod arithmetic;
 pub mod fields;
 pub mod glob;
+pub mod join;
 pub mod param;
 pub mod sugar;
 pub mod tilde;

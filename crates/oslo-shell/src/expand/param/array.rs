@@ -80,7 +80,14 @@ fn whole_array(
             None => (Vec::new(), Vec::new()),
         },
     };
-    let separate = matches!(subscript, Subscript::All);
+    let star = matches!(subscript, Subscript::Joined);
+    let separate = !star || star_stays_apart(env, origin);
+    let operator_form = !matches!(
+        expansion_type,
+        ParamExpansion::Normal
+            | ParamExpansion::DefaultValue { .. }
+            | ParamExpansion::UseAlternative { .. }
+    );
 
     let values: Vec<String> = match expansion_type {
         ParamExpansion::Normal => values,
@@ -140,12 +147,16 @@ fn whole_array(
         _ => {
             return Err(ShellError::ExpansionError(format!(
                 "${{{name}[{}]…}}: this operator on a whole array is not supported yet",
-                if separate { "@" } else { "*" }
+                if star { "*" } else { "@" }
             )));
         }
     };
 
-    Ok(list_fields(&values, separate, &env.ifs_separator(), origin))
+    let fields = list_fields(&values, separate, &env.ifs_separator(), origin);
+    if star || operator_form {
+        return Ok(seam_list(fields, separate, star, origin));
+    }
+    Ok(fields)
 }
 
 /// The fields a list contributes: one per value when `separate`, or a single joined field.
@@ -193,12 +204,26 @@ pub(super) fn positional_list(
         }
         _ => return Ok(None),
     };
-    Ok(Some(list_fields(
-        &values,
-        name == "@",
-        &env.ifs_separator(),
-        origin,
-    )))
+    let separate = name == "@" || star_stays_apart(env, origin);
+    let fields = list_fields(&values, separate, &env.ifs_separator(), origin);
+    Ok(Some(seam_list(fields, separate, name == "*", origin)))
+}
+
+/// Whether an unquoted `$*` or `${a[*]}` stays one field per element, which a null IFS makes it.
+pub(super) fn star_stays_apart(env: &Environment, origin: Origin) -> bool {
+    origin == Origin::Expanded && crate::expand::join::ifs_is_null(env)
+}
+
+/// Mark the fields of a list operator's result for a single-string context.
+///
+/// An unquoted `[*]` kept apart by a null IFS is glued back together there, and a quoted `[@]`
+/// operator form is seamed; see [`crate::expand::join`].
+fn seam_list(fields: Vec<Field>, separate: bool, star: bool, origin: Origin) -> Vec<Field> {
+    match (separate, star, origin) {
+        (true, true, _) => crate::expand::join::marked(fields, Origin::Glue),
+        (true, false, Origin::Quoted) => crate::expand::join::marked(fields, Origin::Seam),
+        _ => fields,
+    }
 }
 
 /// Evaluate a subscript as arithmetic, which is what bash does for an indexed array: `${a[i+1]}`

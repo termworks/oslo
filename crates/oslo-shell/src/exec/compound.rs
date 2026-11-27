@@ -10,8 +10,8 @@
 use crate::env::Environment;
 use crate::env::builtins::run_exit_trap;
 use crate::exec::pipeline::{eval_command_list, status_of, suspend_errexit, wait_for_status};
-use crate::expand::word::expand_word_to_pattern;
-use crate::expand::{expand_word, expand_word_to_string};
+use crate::expand::expand_word;
+use crate::expand::word::{expand_word_to_pattern, expand_word_to_test_string};
 use nix::unistd::{ForkResult, fork};
 use oslo_base::ast::*;
 use oslo_base::error::{Result, ShellError};
@@ -164,7 +164,7 @@ fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) 
 /// The status is that of the last body actually run, so a `;;&` chain whose later patterns all
 /// fail still reports what the branch that did match returned.
 fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i32> {
-    let subject = expand_word_to_string(env, word)?;
+    let subject = expand_word_to_test_string(env, word)?;
 
     let mut status = 0;
     let mut forced = false;

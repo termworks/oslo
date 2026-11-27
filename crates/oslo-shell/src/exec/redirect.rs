@@ -205,7 +205,8 @@ fn open_target(
                 // Not `expand_word`: a body is one document, not an argument list, so field
                 // splitting would collapse its whitespace and globbing would turn a line reading
                 // `*` into a directory listing.
-                Some(word) => expand_word_to_string(env, word)?,
+                Some(word) if redir.here_string => expand_word_to_string(env, word)?,
+                Some(word) => crate::expand::join::expand_heredoc_to_string(env, word)?,
                 None => String::new(),
             };
             // A here-string's newline goes on *after* expansion. `<<< "$(cmd)"` has to lose the
