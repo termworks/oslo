@@ -138,6 +138,8 @@ fn stage_debug_trap(env: &mut Environment, cmd: &Command) -> bool {
         env.set_bash_command(crate::env::builtins::control::format_simple(simple));
     }
     crate::env::builtins::run_debug_trap(env);
+    // What the handler wrote must not be copied into the stage about to be forked.
+    flush_stdout();
     true
 }
 
