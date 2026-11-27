@@ -1,8 +1,8 @@
 //! Redirection conversion: files, fd duplication, here-documents and here-strings.
 
-use super::commands::{text_of, word_of};
+use super::commands::{holds_a_process_substitution, text_of, word_of};
 use crate::lexer::{TildeMode, parse_heredoc_body};
-use crate::syntax::lower::single_word_with_tilde;
+use crate::syntax::lower::{convert_braced_words_from_str, single_word_with_tilde};
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::Result;
 use rune::{Node, SyntaxKind, Tree};
@@ -45,7 +45,20 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         .unwrap_or_default();
     // Built through `word_of` rather than from the text: `cmd < <(gen)` redirects from a process
     // substitution, whose value is the name of a pipe and not anything the word lexer can read.
+    // A target is brace-expanded, and more than one word from it is an ambiguous redirect.
+    let mut ambiguous = false;
     let target = match node.node(SyntaxKind::Word) {
+        Some(word) if target_text.contains('{') && !holds_a_process_substitution(word) => {
+            let mut words = convert_braced_words_from_str(target_text)?;
+            match words.len() {
+                1 => words.remove(0),
+                0 => word_of(tree, word)?,
+                _ => {
+                    ambiguous = true;
+                    oslo_ast::Word::from_literal(target_text)
+                }
+            }
+        }
         Some(word) => word_of(tree, word)?,
         None => oslo_ast::Word::from_literal(""),
     };
@@ -73,6 +86,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                 heredoc_content: Some(body),
                 here_string: true,
                 fd_var: None,
+                ambiguous: false,
             }]);
         }
 
@@ -94,6 +108,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     heredoc_content: None,
                     here_string: false,
                     fd_var: None,
+                    ambiguous,
                 },
                 oslo_ast::Redirection {
                     fd: Some(2),
@@ -102,6 +117,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     heredoc_content: None,
                     here_string: false,
                     fd_var: None,
+                    ambiguous: false,
                 },
             ]);
         }
@@ -115,6 +131,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         heredoc_content: None,
         here_string: false,
         fd_var: None,
+        ambiguous,
     }])
 }
 
@@ -160,6 +177,7 @@ fn convert_heredoc(
         heredoc_content: Some(body),
         here_string: false,
         fd_var: None,
+        ambiguous: false,
     }])
 }
 

@@ -65,6 +65,12 @@ impl RedirectGuard {
 
     pub fn apply(&mut self, env: &mut Environment, redirections: &[Redirection]) -> Result<()> {
         for redir in redirections {
+            if redir.ambiguous {
+                return Err(ShellError::ExecutionError(format!(
+                    "{}: ambiguous redirect",
+                    name_of(&redir.target, &[])
+                )));
+            }
             let target_words = expand_word(env, &redir.target)?;
             // **A filename is one word or it is a mistake.** `f="a b"; echo hi > $f` used to join
             // the fields with a space and create a file literally called `a b`, reporting success;
@@ -270,6 +276,7 @@ fn name_of(target: &oslo_base::ast::Word, expanded: &[String]) -> String {
     use oslo_base::ast::WordPart;
     match target.parts.as_slice() {
         [WordPart::Variable { name, .. }] => format!("${}", name),
+        [WordPart::Literal(text)] if expanded.is_empty() => text.clone(),
         _ => expanded.join(" "),
     }
 }

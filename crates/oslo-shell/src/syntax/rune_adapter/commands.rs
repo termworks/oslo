@@ -47,7 +47,7 @@ pub(super) fn word_of(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
     process_substitution_word(tree, node)
 }
 
-fn holds_a_process_substitution(node: &Node) -> bool {
+pub(super) fn holds_a_process_substitution(node: &Node) -> bool {
     node.nodes()
         .any(|child| child.kind() == SyntaxKind::ProcessSubstitution)
 }

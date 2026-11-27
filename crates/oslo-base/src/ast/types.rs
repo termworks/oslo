@@ -257,6 +257,9 @@ pub struct Redirection {
     /// `{name}>file`: the descriptor is chosen by the shell (10 or above) and stored in `name`,
     /// or, for `{name}>&-`, read from it. `name` may carry a subscript, as in `{fd[1]}`.
     pub fd_var: Option<String>,
+    /// True when brace expansion turned the target into several words, as in `> o{a,b}`, which
+    /// is an ambiguous redirect when the command runs; `target` is then the text as written.
+    pub ambiguous: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
