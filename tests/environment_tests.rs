@@ -315,10 +315,10 @@ fn every_bash_option_is_accepted_by_a_script() {
     for name in [
         "notify", "keyword", "nolog", "vi", "emacs", "errtrace", "physical",
     ] {
-        let r = run(&format!("set -o {name}\necho status=$?"));
-        assert_eq!(r.out(), "status=0", "{name}: stderr was {:?}", r.stderr);
+        // No `=` in the word echoed: under `keyword` it would be an assignment.
+        let r = run(&format!("set -o {name}\necho status $?"));
+        assert_eq!(r.out(), "status 0", "{name}: stderr was {:?}", r.stderr);
     }
-    // Turning one off is fine — it is already off, so there is nothing to disagree with.
     let r = run("set +o notify\necho status=$?");
     assert_eq!(r.out(), "status=0", "{:?}", r.stderr);
 }
