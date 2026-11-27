@@ -1,540 +1,390 @@
-//! The format string itself: one `%` conversion at a time.
+//! One pass over the format: literal bytes, escapes, and one `%` conversion at a time.
 //!
-//! Split from [`super`] because the two halves answer different questions and only one of them is
-//! about the shell. The builtin decides what was asked for — which options, which variable, how
-//! many times to reuse the format; this decides what `%#0*.3Lf` means, which is a question about
-//! C rather than about `printf`, and is most of the code either way.
+//! Conversions bash hands to C's `printf` (`%d %s %c %f`...) follow C's rules for flags, width
+//! and precision; the ones bash pads itself (`%b %q %Q %T %ls %lc`) follow bash's.
 
-use crate::env::builtins::io::echo::expand_escapes;
+use super::args::{Args, Wide};
+use super::float::Width;
+use super::out::Out;
+use super::render::Field;
+use super::{quote, time};
+use crate::env::builtins::io::escape::{expand_b, printf_escape};
 use crate::env::origin_now;
+use std::ops::Range;
 
-/// One pass over the format. `next` indexes the next unconsumed argument.
-pub fn render(
-    format: &str,
-    args: &[String],
-    next: &mut usize,
-    out: &mut Vec<u8>,
-) -> std::result::Result<(), i32> {
-    let chars: Vec<char> = format.chars().collect();
-    let mut i = 0;
-    let mut status = Ok(());
-
-    while i < chars.len() {
-        if chars[i] != '%' {
-            // Literal text, escapes and all. Collected in one run so the decoder sees whole
-            // sequences rather than a backslash at a time.
-            let start = i;
-            while i < chars.len() && chars[i] != '%' {
-                i += 1;
-            }
-            let literal: String = chars[start..i].iter().collect();
-            let (bytes, _) = expand_escapes(&literal);
-            out.extend_from_slice(&bytes);
-            continue;
-        }
-
-        // `%%` is a literal percent and consumes no argument.
-        if i + 1 < chars.len() && chars[i + 1] == '%' {
-            out.push(b'%');
-            i += 2;
-            continue;
-        }
-
-        let Some(spec) = Spec::parse(&chars, &mut i) else {
-            // **The format ran out before a conversion letter**, which is `printf '%'`,
-            // `printf '%5'` or `printf '%z'` — `z` being a length modifier, so it too is waiting
-            // for the letter that never came.
-            //
-            // It used to print the `%` and report success, on the note that "bash prints it and
-            // carries on". bash does neither: it says `printf: '%z': missing format character` and
-            // exits 1, and so does dash. A format string with a typo in it silently producing
-            // near-enough output and a status of 0 is the failure this whole builtin's error
-            // handling exists to avoid.
-            let malformed: String = chars[i..].iter().collect();
-            // The caret goes into the format string itself, which is the one place printf has a
-            // real source: the malformed piece is its tail, so where it starts is what is left of
-            // the string without it.
-            let at = format.len().saturating_sub(malformed.len());
-            crate::env::complain_within(
-                &[String::from("printf"), format.to_string()],
-                format,
-                at..format.len(),
-                &format!("printf: `{malformed}': missing format character"),
-                "a conversion with no letter",
-                Some(
-                    "a `%` starts a conversion and needs a letter: %s %d %f %x %c %b %q, or %% for a literal percent",
-                ),
-            );
-            return Err(1);
-        };
-
-        // Each `*` eats an argument before the conversion's own, as C and every shell do.
-        let mut sizes = Vec::new();
-        for _ in 0..spec.star_count() {
-            let value = args.get(*next).map(String::as_str).unwrap_or("0");
-            if *next < args.len() {
-                *next += 1;
-            }
-            // A width that is not a number is reported and treated as 0, exactly as an unreadable
-            // *argument* is: the format itself is still valid, so the rest of the line is still
-            // what the author asked for. bash and dash both say something here and carry on.
-            sizes.push(parse_int(value).unwrap_or_else(|()| {
-                eprintln!("{}printf: {value}: invalid number", origin_now());
-                status = Err(1);
-                0
-            }));
-        }
-        let spec = spec.with_sizes(&sizes);
-
-        let arg = args.get(*next).map(String::as_str).unwrap_or("");
-        if *next < args.len() {
-            *next += 1;
-        }
-        match spec.render(arg, out) {
-            Ok(()) => {}
-            // A bad *argument* is reported and the format carries on, printing 0 — bash does the
-            // same, because the rest of the line is still what the author asked for.
-            Err(Bad::Argument(code)) => status = Err(code),
-            // A conversion letter that does not exist is a bug in the format itself, so nothing
-            // further in it can be trusted; bash stops there and prints no more of the line.
-            Err(Bad::Format(code)) => return Err(code),
-        }
-    }
-    status
+/// The state one `printf` call carries from pass to pass.
+pub struct Printer<'a> {
+    pub args: Args<'a>,
+    pub out: Out,
+    pub utf8: bool,
+    /// `--posix`: a floating conversion without `L` goes through `double`.
+    pub posix: bool,
+    /// `%n` assignments in the order they were made.
+    pub counts: Vec<(String, usize)>,
 }
 
-/// Why a conversion failed, which decides whether the rest of the format still runs.
-enum Bad {
-    /// The argument could not be read as the conversion wanted. Reported; the format continues.
-    Argument(i32),
-    /// The conversion letter does not exist. The format is wrong, so rendering stops.
-    Format(i32),
+/// A pass that ended `printf` early, with the status to return.
+pub struct Stop(pub i32);
+
+/// A width or precision as the format gives it.
+#[derive(Clone, Copy)]
+enum Given {
+    Absent,
+    /// From `*`, already an `int`.
+    Star(i32),
+    /// Written out, at this range of the format; `None` if it does not fit an `int`.
+    Digits(Option<i32>, usize, usize),
+    /// A `.` with no digits after it.
+    Empty,
+    /// A precision written with a `-`.
+    Negative,
 }
 
-/// A width or a precision: written out, or `*` meaning "the next argument says".
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Size {
-    Fixed(usize),
-    /// `%*d` and `%.*f`. The argument is consumed **before** the one being converted, which is the
-    /// order C and every shell use — `printf '%*d' 5 42` is width 5, value 42.
-    FromArgument,
-}
-
-/// One `%` conversion: its flags, width, precision and the letter that decides the type.
+/// One conversion as written: flags, sizes, length modifiers and the letter.
 struct Spec {
-    flags: String,
-    width: Option<Size>,
-    precision: Option<Size>,
-    conversion: char,
+    field: Field,
+    width: Given,
+    precision: Given,
+    long: bool,
+    long_double: bool,
+    letter: u8,
 }
 
-impl Spec {
-    /// How many arguments this conversion eats before its own: one per `*`.
-    fn star_count(&self) -> usize {
-        usize::from(self.width == Some(Size::FromArgument))
-            + usize::from(self.precision == Some(Size::FromArgument))
+fn digits(format: &[u8], at: &mut usize) -> Given {
+    let start = *at;
+    let mut value: Option<i32> = Some(0);
+    while let Some(&b) = format.get(*at).filter(|b| b.is_ascii_digit()) {
+        value = value.and_then(|v| v.checked_mul(10)?.checked_add(i32::from(b - b'0')));
+        *at += 1;
+    }
+    match *at == start {
+        true => Given::Absent,
+        false => Given::Digits(value, start, *at),
+    }
+}
+
+impl Printer<'_> {
+    /// Render `format` once, consuming arguments as its conversions ask.
+    pub fn pass(&mut self, format: &[u8]) -> Result<(), Stop> {
+        let mut at = 0;
+        let mut decoded = Vec::new();
+        while at < format.len() {
+            match format[at] {
+                b'\\' => {
+                    let (used, _) =
+                        printf_escape(&format[at + 1..], false, self.utf8, &mut decoded);
+                    self.out.bytes(&decoded);
+                    decoded.clear();
+                    at += 1 + used;
+                }
+                b'%' if format.get(at + 1) == Some(&b'%') => {
+                    self.out.byte(b'%');
+                    at += 2;
+                }
+                b'%' => at = self.conversion(format, at)?,
+                _ => {
+                    let run = format[at..]
+                        .iter()
+                        .take_while(|b| !matches!(b, b'\\' | b'%'))
+                        .count();
+                    self.out.bytes(&format[at..at + run]);
+                    at += run;
+                }
+            }
+        }
+        Ok(())
     }
 
-    /// Replace each `*` with the number that was read for it, in written order.
-    ///
-    /// A **negative** width means left-justify at that width, exactly as a `-` flag would — C says
-    /// so, and `printf '%*s' -6 hi` is how a script asks for it without knowing the sign up front.
-    fn with_sizes(mut self, sizes: &[i64]) -> Self {
-        let mut next = sizes.iter().copied();
-        if self.width == Some(Size::FromArgument) {
-            let n = next.next().unwrap_or(0);
-            if n < 0 {
-                self.flags.push('-');
+    /// Read the conversion at `format[start] == '%'`, consuming the arguments its `*`s take.
+    fn spec(&mut self, format: &[u8], start: usize) -> Result<(Spec, usize), Stop> {
+        let mut at = start + 1;
+        let mut field = Field::default();
+        while let Some(&b) = format.get(at) {
+            match b {
+                b'#' => field.alt = true,
+                b'-' => field.left = true,
+                b'+' => field.plus = true,
+                b' ' => field.space = true,
+                b'0' => field.zero = true,
+                b'\'' => {}
+                _ => break,
             }
-            self.width = Some(Size::Fixed(n.unsigned_abs() as usize));
+            at += 1;
         }
-        if self.precision == Some(Size::FromArgument) {
-            // A negative precision means "no precision given" in C, not a precision of zero.
-            self.precision = match next.next().unwrap_or(0) {
-                n if n < 0 => None,
-                n => Some(Size::Fixed(n as usize)),
+        let width = match format.get(at) == Some(&b'*') {
+            true => {
+                at += 1;
+                Given::Star(self.args.int(0))
+            }
+            false => digits(format, &mut at),
+        };
+        let mut precision = Given::Absent;
+        if format.get(at) == Some(&b'.') {
+            at += 1;
+            precision = if format.get(at) == Some(&b'*') {
+                at += 1;
+                Given::Star(self.args.int(-1))
+            } else if format.get(at) == Some(&b'-') {
+                at += 1;
+                digits(format, &mut at);
+                Given::Negative
+            } else {
+                match digits(format, &mut at) {
+                    Given::Absent => Given::Empty,
+                    given => given,
+                }
             };
         }
-        self
-    }
-
-    /// The width, once every `*` has been resolved.
-    fn width(&self) -> Option<usize> {
-        match self.width {
-            Some(Size::Fixed(n)) => Some(n),
-            _ => None,
+        let (mut long, mut long_double) = (false, false);
+        while let Some(&b) = format.get(at).filter(|b| b"hjlLtz".contains(b)) {
+            long |= b == b'l';
+            long_double |= b == b'L';
+            at += 1;
         }
-    }
-
-    /// The precision, once every `*` has been resolved.
-    fn precision(&self) -> Option<usize> {
-        match self.precision {
-            Some(Size::Fixed(n)) => Some(n),
-            _ => None,
-        }
-    }
-
-    /// Parse a conversion starting at `chars[*i] == '%'`, leaving `*i` just past it.
-    fn parse(chars: &[char], i: &mut usize) -> Option<Self> {
-        let mut j = *i + 1;
-        let mut flags = String::new();
-        while j < chars.len() && matches!(chars[j], '-' | '+' | ' ' | '#' | '0') {
-            flags.push(chars[j]);
-            j += 1;
-        }
-        // `*` takes the number from an argument. Required by every shell that scripts are written
-        // against — `printf '%c %*u. %s\n'` is how `select-editor` lines its menu up — and without
-        // it the `*` reached the conversion letter and the whole format was refused.
-        let take_size = |j: &mut usize| -> Option<Size> {
-            if chars.get(*j) == Some(&'*') {
-                *j += 1;
-                return Some(Size::FromArgument);
-            }
-            take_number(chars, j).map(Size::Fixed)
+        let Some(&letter) = format.get(at) else {
+            let malformed = String::from_utf8_lossy(&format[start..]).into_owned();
+            complain_in(
+                format,
+                start..format.len(),
+                &format!("printf: `{malformed}': missing format character"),
+                "a conversion with no letter",
+                Some(LETTERS),
+            );
+            return Err(Stop(1));
         };
-        let width = take_size(&mut j);
-        let precision = if j < chars.len() && chars[j] == '.' {
-            j += 1;
-            Some(take_size(&mut j).unwrap_or(Size::Fixed(0)))
-        } else {
-            None
-        };
-        // C's length modifiers are accepted and ignored: a shell has one integer type, so `%ld`
-        // and `%d` cannot differ, and scripts written against C's printf pass them. Skipping them
-        // is not cosmetic — bash reads `%zb` as `%b`, so treating `z` as the conversion letter
-        // made a valid format an error. `q` is deliberately absent: in a shell it is a
-        // *conversion*, not a modifier.
-        while j < chars.len() && matches!(chars[j], 'h' | 'l' | 'L' | 'j' | 'z' | 't') {
-            j += 1;
-        }
-        let conversion = *chars.get(j)?;
-        *i = j + 1;
-        Some(Self {
-            flags,
+        let spec = Spec {
+            field,
             width,
             precision,
-            conversion,
-        })
+            long,
+            long_double,
+            letter,
+        };
+        Ok((spec, at + 1))
     }
 
-    fn render(&self, arg: &str, out: &mut Vec<u8>) -> std::result::Result<(), Bad> {
-        let mut status = Ok(());
-        let body: Vec<u8> = match self.conversion {
-            's' => {
-                let mut s = arg.to_string();
-                if let Some(p) = self.precision() {
-                    s.truncate(whole_characters(&s, p.min(s.len())));
-                }
-                s.into_bytes()
+    /// The field C's `printf` would use; a size past `int` is the error it would report.
+    fn c_field(&self, spec: &Spec) -> Result<Field, Stop> {
+        let mut field = spec.field;
+        let too_large = || {
+            eprintln!(
+                "{}printf: Value too large for defined data type",
+                origin_now()
+            );
+            Stop(1)
+        };
+        match spec.width {
+            Given::Star(w) => {
+                field.left |= w < 0;
+                field.width = w.unsigned_abs() as usize;
             }
-            // bash's `%b`: the argument's escapes are decoded, which is the only way to get
-            // `\n` out of *data* rather than out of the format.
-            'b' => expand_escapes(arg).0,
-            // bash's `%q`: quote the argument so the shell would read it back as this exact
-            // string. What a script uses to build a command line out of untrusted data.
-            'q' => shell_quote(arg).into_bytes(),
-            'c' => arg
-                .chars()
-                .next()
-                .map(String::from)
-                .unwrap_or_default()
-                .into_bytes(),
-            'd' | 'i' => match parse_int(arg) {
-                Ok(n) => self.signed(n.to_string()).into_bytes(),
-                Err(()) => {
-                    eprintln!("{}printf: {}: invalid number", origin_now(), arg);
-                    status = Err(Bad::Argument(1));
-                    b"0".to_vec()
-                }
-            },
-            'u' => match parse_int(arg) {
-                Ok(n) => (n as u64).to_string().into_bytes(),
-                Err(()) => {
-                    eprintln!("{}printf: {}: invalid number", origin_now(), arg);
-                    status = Err(Bad::Argument(1));
-                    b"0".to_vec()
-                }
-            },
-            'o' | 'x' | 'X' => match parse_int(arg) {
-                Ok(n) => {
-                    let n = n as u64;
-                    // `#` is C's alternate form: a leading `0` on octal, `0x`/`0X` on hex. It is
-                    // how a script prints a number something else will read back as one, and it
-                    // was parsed and then dropped — `printf '%#x' 255` gave `ff`.
-                    let alt = self.flags.contains('#');
-                    match self.conversion {
-                        'o' => match alt && n != 0 {
-                            true => format!("0{n:o}"),
-                            false => format!("{n:o}"),
-                        },
-                        'x' => match alt && n != 0 {
-                            true => format!("0x{n:x}"),
-                            false => format!("{n:x}"),
-                        },
-                        _ => match alt && n != 0 {
-                            true => format!("0X{n:X}"),
-                            false => format!("{n:X}"),
-                        },
-                    }
-                    .into_bytes()
-                }
-                Err(()) => {
-                    eprintln!("{}printf: {}: invalid number", origin_now(), arg);
-                    status = Err(Bad::Argument(1));
-                    b"0".to_vec()
-                }
-            },
-            'f' | 'F' | 'e' | 'E' | 'g' | 'G' => {
-                let value: f64 = arg.trim().parse().unwrap_or_else(|_| {
-                    if !arg.is_empty() {
-                        eprintln!("{}printf: {}: invalid number", origin_now(), arg);
-                        status = Err(Bad::Argument(1));
-                    }
-                    0.0
-                });
-                // **Rust's formatter takes a `u16` precision and panics above it.**
-                // `printf '%.70000f' 1` aborted the shell with `Formatting argument out of range`;
-                // bash prints the number. Clamped rather than refused: a precision past this is
-                // already more digits than a `f64` can distinguish, so the answer is the same one.
-                let p = self.precision().unwrap_or(6).min(u16::MAX as usize);
-                let rendered = match self.conversion {
-                    'e' => c_exponent(&format!("{:.*e}", p, value), 'e'),
-                    'E' => c_exponent(&format!("{:.*E}", p, value), 'E'),
-                    'g' | 'G' => self.general(value, p),
-                    _ => format!("{:.*}", p, value),
+            Given::Digits(Some(w), ..) => field.width = w as usize,
+            Given::Digits(None, ..) => return Err(too_large()),
+            Given::Absent | Given::Empty | Given::Negative => {}
+        }
+        field.precision = match spec.precision {
+            Given::Star(p) => usize::try_from(p).ok(),
+            Given::Digits(Some(p), ..) => Some(p as usize),
+            Given::Digits(None, ..) => return Err(too_large()),
+            Given::Empty => Some(0),
+            Given::Absent | Given::Negative => None,
+        };
+        Ok(field)
+    }
+
+    /// The field bash pads with itself; a size past `int` is reported and then ignored.
+    fn bash_field(&mut self, spec: &Spec, format: &[u8]) -> Field {
+        let mut field = spec.field;
+        let mut out_of_range = |from: usize, to: usize| {
+            let shown = String::from_utf8_lossy(&format[from..to]);
+            let body = format!("printf: {shown}: Numerical result out of range");
+            complain_in(format, from..to, &body, "wider than an int", None);
+            self.args.error = true;
+        };
+        match spec.width {
+            Given::Star(w) => {
+                field.left |= w < 0;
+                field.width = w.unsigned_abs() as usize;
+            }
+            Given::Digits(Some(w), ..) => field.width = w as usize,
+            Given::Digits(None, from, to) => out_of_range(from, to),
+            Given::Absent | Given::Empty | Given::Negative => {}
+        }
+        field.precision = match spec.precision {
+            Given::Star(p) => usize::try_from(p).ok(),
+            Given::Digits(Some(p), ..) => Some(p as usize),
+            Given::Digits(None, from, to) => {
+                out_of_range(from, to);
+                Some(0)
+            }
+            Given::Empty | Given::Negative => Some(0),
+            Given::Absent => None,
+        };
+        field
+    }
+
+    /// Render the conversion at `format[start]`, returning where the format continues.
+    fn conversion(&mut self, format: &[u8], start: usize) -> Result<usize, Stop> {
+        let (spec, next) = self.spec(format, start)?;
+        let wide = self.utf8 && (spec.long || spec.letter.is_ascii_uppercase());
+        match spec.letter {
+            b'c' | b'C' if wide => {
+                let field = self.bash_field(&spec, format);
+                let (body, units): (Vec<u8>, usize) = match self.args.wide_char() {
+                    Wide::Nul => (vec![0], 1),
+                    Wide::Char(c) => (c.to_string().into_bytes(), 1),
+                    Wide::Invalid => (Vec::new(), 1),
                 };
-                self.signed(rendered).into_bytes()
+                let shown = field.precision.map_or(units, |p| p.min(units));
+                let body = if shown == 0 { Vec::new() } else { body };
+                field.text_counted(&mut self.out, &body, shown);
+            }
+            b'c' | b'C' => {
+                let field = self.c_field(&spec)?;
+                let byte = self.args.byte();
+                if spec.letter == b'C' && !byte.is_ascii() {
+                    return Err(unconvertible());
+                }
+                field.text_counted(&mut self.out, &[byte], 1);
+            }
+            b's' | b'S' if wide => {
+                let field = self.bash_field(&spec, format);
+                let chars = self.args.wide_string();
+                let shown = field.precision.map_or(chars.len(), |p| p.min(chars.len()));
+                let body: Option<String> = chars[..shown].iter().copied().collect();
+                field.text_counted(&mut self.out, body.unwrap_or_default().as_bytes(), shown);
+            }
+            b'S' => return Err(unconvertible()),
+            b's' => {
+                let field = self.c_field(&spec)?;
+                let text = self.args.string();
+                field.text(&mut self.out, text);
+            }
+            b'b' => {
+                let field = self.bash_field(&spec, format);
+                let (body, stop) = expand_b(self.args.string(), self.utf8);
+                field.text(&mut self.out, &body);
+                if stop {
+                    return Err(Stop(0));
+                }
+            }
+            b'q' | b'Q' => {
+                // `%Q` cuts the argument to the precision before quoting and prints the quoted
+                // text whole, except that a `.` with no digits prints nothing.
+                let field = self.bash_field(&spec, format);
+                let mut text = self.args.string();
+                if spec.letter == b'Q' {
+                    let cut = match spec.precision {
+                        Given::Star(p) => usize::try_from(p).ok(),
+                        Given::Digits(p, ..) => p.map(|p| p as usize),
+                        _ => None,
+                    };
+                    text = &text[..cut.unwrap_or(text.len()).min(text.len())];
+                }
+                let quoted = quote::quote(text, self.utf8, field.alt);
+                match (spec.letter, spec.precision) {
+                    (b'Q', Given::Empty | Given::Negative) => {
+                        field.text_counted(&mut self.out, b"", 0)
+                    }
+                    (b'Q', _) => field.text_counted(&mut self.out, &quoted, quoted.len()),
+                    _ => field.text(&mut self.out, &quoted),
+                }
+            }
+            b'(' => return self.time(format, start, next, &spec),
+            b'n' => {
+                let name = String::from_utf8_lossy(self.args.string()).into_owned();
+                if !name.is_empty() {
+                    if !crate::env::scope::is_valid_identifier(&name) {
+                        let body = format!("printf: `{name}': not a valid identifier");
+                        self.args.complain(&body, "not a name");
+                        return Err(Stop(1));
+                    }
+                    self.counts.push((name, self.out.pass));
+                }
+            }
+            b'd' | b'i' => {
+                let field = self.c_field(&spec)?;
+                let value = self.args.intmax();
+                field.signed(&mut self.out, value);
+            }
+            b'o' | b'u' | b'x' | b'X' => {
+                let field = self.c_field(&spec)?;
+                let value = self.args.uintmax();
+                field.unsigned(&mut self.out, value, spec.letter);
+            }
+            b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
+                let field = self.c_field(&spec)?;
+                let width = match self.posix && !spec.long_double {
+                    true => Width::Double,
+                    false => Width::Extended,
+                };
+                let value = self.args.float(width);
+                field.float(&mut self.out, value, spec.letter, width);
             }
             other => {
-                eprintln!(
-                    "{}printf: `%{}': invalid format character",
-                    origin_now(),
-                    other
+                let shown = String::from_utf8_lossy(&[other]).into_owned();
+                let body = format!("printf: `{shown}': invalid format character");
+                complain_in(
+                    format,
+                    start..next,
+                    &body,
+                    "not a conversion",
+                    Some(LETTERS),
                 );
-                return Err(Bad::Format(1));
-            }
-        };
-
-        out.extend_from_slice(&self.pad(body));
-        status
-    }
-
-    /// Put back the sign the flags asked for.
-    ///
-    /// `+` prints one on a non-negative number and ` ` prints a space in its place, which is how a
-    /// column of numbers is kept in line. Both were parsed and then ignored, so `printf '%+d' 5`
-    /// gave `5`. `+` wins when both are given, as in C.
-    fn signed(&self, rendered: String) -> String {
-        if rendered.starts_with('-') {
-            return rendered;
-        }
-        match (self.flags.contains('+'), self.flags.contains(' ')) {
-            (true, _) => format!("+{rendered}"),
-            (false, true) => format!(" {rendered}"),
-            (false, false) => rendered,
-        }
-    }
-
-    /// `%g`: whichever of `%e` and `%f` is the shorter honest answer, C's rule.
-    ///
-    /// It used to fall through to `%f`, so `printf '%g' 1e20` printed twenty-one digits and a
-    /// fraction where C prints `1e+20` — the one conversion whose whole purpose is not to do that.
-    ///
-    /// The rule, from C99 7.19.6.1: with precision `p` (0 read as 1) and `x` the exponent `%e`
-    /// would use, `%f` with precision `p - 1 - x` when `p > x >= -4`, and `%e` with precision
-    /// `p - 1` otherwise. Trailing zeros come off unless `#` asked for them.
-    fn general(&self, value: f64, precision: usize) -> String {
-        let p = precision.max(1);
-        let exponent = match value == 0.0 {
-            true => 0,
-            false => value.abs().log10().floor() as i32,
-        };
-        let wide = (p as i32) > exponent && exponent >= -4;
-        let mut rendered = match wide {
-            true => format!("{:.*}", (p as i32 - 1 - exponent).max(0) as usize, value),
-            // Formatted in the case it will be printed in: `c_exponent` finds the marker in the
-            // text, so asking it for `E` while writing `e` leaves the exponent unnormalised.
-            false => match self.conversion == 'G' {
-                true => c_exponent(&format!("{:.*E}", p - 1, value), 'E'),
-                false => c_exponent(&format!("{:.*e}", p - 1, value), 'e'),
-            },
-        };
-        if self.flags.contains('#') || !rendered.contains('.') {
-            return rendered;
-        }
-        // Only the fraction's zeros, and only up to the exponent — `1.500000e+20` loses three
-        // zeros and keeps its `e+20`.
-        let (mantissa, tail) = match rendered.find(['e', 'E']) {
-            Some(at) => (rendered[..at].to_string(), rendered[at..].to_string()),
-            None => (rendered.clone(), String::new()),
-        };
-        let trimmed = mantissa.trim_end_matches('0').trim_end_matches('.');
-        rendered = format!("{trimmed}{tail}");
-        rendered
-    }
-
-    /// Apply width, with `-` for left and `0` for zero-fill.
-    ///
-    /// Zero-fill is ignored for `%s`, as in C: padding a string with zeros produces `000abc`,
-    /// which no caller means.
-    fn pad(&self, body: Vec<u8>) -> Vec<u8> {
-        let Some(width) = self.width() else {
-            return body;
-        };
-        if body.len() >= width {
-            return body;
-        }
-        // **A width is a number somebody typed, and the padding for it is allocated.**
-        // `printf '%9999999999s' x` asked for ten gigabytes of spaces; bash answers `Value too
-        // large for defined data type` and carries on, and anything past a line of output is a
-        // typo rather than a request. Reported once and clamped, so the format still runs.
-        if width > WIDEST {
-            eprintln!("{}printf: {width}: width is too large", origin_now());
-            return body;
-        }
-        let fill = if self.flags.contains('0')
-            && !self.flags.contains('-')
-            && !matches!(self.conversion, 's' | 'b' | 'c')
-        {
-            b'0'
-        } else {
-            b' '
-        };
-        let padding = vec![fill; width - body.len()];
-        if self.flags.contains('-') {
-            let mut out = body;
-            out.extend_from_slice(&padding);
-            out
-        } else {
-            let mut out = padding;
-            out.extend_from_slice(&body);
-            out
-        }
-    }
-}
-
-/// Quote `text` so that reading it back as shell input yields `text` exactly.
-///
-/// Backslash-escaping rather than wrapping in single quotes. Both are correct shell and read back
-/// the same, but bash prints `a\ b` where quoting would print `'a b'`, and the differential corpus
-/// compares bytes — matching the form is what lets `%q` be covered by it at all.
-///
-/// A control character has no backslash spelling outside `$'...'`, which is where those go; a
-/// string that needs nothing is printed as itself, and an empty one as `''` so it does not vanish.
-pub fn shell_quote(text: &str) -> String {
-    if text.is_empty() {
-        return "''".to_string();
-    }
-    if text
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "_-./=:+@,%^".contains(c))
-    {
-        return text.to_string();
-    }
-    if text.chars().any(|c| c.is_control()) {
-        let mut out = String::from("$'");
-        for c in text.chars() {
-            match c {
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\r' => out.push_str("\\r"),
-                '\'' => out.push_str("\\'"),
-                '\\' => out.push_str("\\\\"),
-                c if c.is_control() => out.push_str(&format!("\\{:03o}", c as u32)),
-                c => out.push(c),
+                return Err(Stop(1));
             }
         }
-        out.push('\'');
-        return out;
+        Ok(next)
     }
-    let mut out = String::with_capacity(text.len() * 2);
-    for c in text.chars() {
-        if !c.is_ascii_alphanumeric() && !"_-./=:+@,%^".contains(c) {
-            out.push('\\');
-        }
-        out.push(c);
+
+    /// `%(fmt)T`. A format with no closing `)T` is a warning, and the `%` is printed as text.
+    fn time(
+        &mut self,
+        format: &[u8],
+        start: usize,
+        next: usize,
+        spec: &Spec,
+    ) -> Result<usize, Stop> {
+        let Some((pattern, used)) = time::split(&format[next..]) else {
+            eprintln!(
+                "{}printf: warning: invalid time format specification",
+                origin_now()
+            );
+            self.out.byte(b'%');
+            return Ok(start + 1);
+        };
+        let field = self.bash_field(spec, format);
+        let arg = (self.args.next < self.args.len()).then(|| self.args.intmax());
+        let text = time::render(pattern, arg);
+        field.text(&mut self.out, &text);
+        Ok(next + used)
     }
-    out
 }
 
-/// Rewrite Rust's exponent to C's, which is what every other `printf` prints.
-///
-/// Rust renders `1234.5` as `1.234500e3`; C — and therefore bash, dash and coreutils — renders it
-/// `1.234500e+03`, with an explicit sign and at least two digits. A script comparing `printf %e`
-/// output against a recorded value would differ on every number without this.
-fn c_exponent(rendered: &str, marker: char) -> String {
-    let Some((mantissa, exponent)) = rendered.split_once(marker) else {
-        return rendered.to_string();
-    };
-    let (sign, digits) = match exponent.strip_prefix('-') {
-        Some(rest) => ('-', rest),
-        None => ('+', exponent.strip_prefix('+').unwrap_or(exponent)),
-    };
-    format!("{mantissa}{marker}{sign}{:0>2}", digits)
-}
+const LETTERS: &str = "a `%` starts a conversion and needs a letter: %s %d %f %x %c %b %q, or %% for a literal percent";
 
-fn take_number(chars: &[char], j: &mut usize) -> Option<usize> {
-    let start = *j;
-    while *j < chars.len() && chars[*j].is_ascii_digit() {
-        *j += 1;
-    }
-    if *j == start {
-        return None;
-    }
-    chars[start..*j].iter().collect::<String>().parse().ok()
-}
-
-/// Parse an integer argument the way `printf` does.
-///
-/// An empty argument is 0 rather than an error: a format reused past the end of its arguments
-/// gets empty strings, and `printf '%d\n' 1 2` must not complain about a third that is not there.
-/// A leading `'` or `"` means "the numeric value of the next character", which is POSIX and is how
-/// scripts get a character's codepoint without `od`.
-fn parse_int(arg: &str) -> std::result::Result<i64, ()> {
-    let text = arg.trim();
-    if text.is_empty() {
-        return Ok(0);
-    }
-    if let Some(rest) = text.strip_prefix(['\'', '"']) {
-        return Ok(rest.chars().next().map(|c| c as i64).unwrap_or(0));
-    }
-    let (sign, digits) = match text.strip_prefix('-') {
-        Some(rest) => (-1, rest),
-        None => (1, text.strip_prefix('+').unwrap_or(text)),
-    };
-    let value = if let Some(hex) = digits
-        .strip_prefix("0x")
-        .or_else(|| digits.strip_prefix("0X"))
+/// Report a problem at `range` of the format, with the caret under it where the bytes allow.
+fn complain_in(format: &[u8], range: Range<usize>, body: &str, label: &str, help: Option<&str>) {
+    let text = String::from_utf8_lossy(format).into_owned();
+    let from = String::from_utf8_lossy(&format[..range.start]).len();
+    let to = from + String::from_utf8_lossy(&format[range]).len();
+    let inside = match to <= text.len() && text.is_char_boundary(from) && text.is_char_boundary(to)
     {
-        i64::from_str_radix(hex, 16)
-    } else if digits.len() > 1 && digits.starts_with('0') {
-        i64::from_str_radix(&digits[1..], 8)
-    } else {
-        digits.parse()
+        true => from..to,
+        false => 0..text.len(),
     };
-    value.map(|v| sign * v).map_err(|_| ())
+    let words = [String::from("printf"), text.clone()];
+    crate::env::complain_within(&words, &text, inside, body, label, help);
 }
 
-/// The largest cut at or below `bytes` that does not land inside a character.
-///
-/// **`%.2s` on `héllo` aborted the shell.** POSIX counts a precision in bytes, and `é` is two of
-/// them, so the cut fell between them — `String::truncate` asserts on that and a panic in a shell
-/// is a terminal left in raw mode. bash writes the half character and produces invalid UTF-8; a
-/// Rust `String` cannot hold that, so the character is dropped instead. The only disagreement with
-/// bash is one broken byte that nothing can read on purpose.
-fn whole_characters(text: &str, bytes: usize) -> usize {
-    let mut at = bytes.min(text.len());
-    while at > 0 && !text.is_char_boundary(at) {
-        at -= 1;
-    }
-    at
+/// What C's `printf` reports for a wide conversion it cannot encode in this locale.
+fn unconvertible() -> Stop {
+    eprintln!(
+        "{}printf: Invalid or incomplete multibyte or wide character",
+        origin_now()
+    );
+    Stop(1)
 }
-
-/// The widest field `printf` will pad to.
-///
-/// A width is a number somebody typed and the padding is allocated for it, so an unbounded one is
-/// an unbounded allocation: `printf '%9999999999s' x` asked for ten gigabytes of spaces. A hundred
-const WIDEST: usize = 100_000;
 
 #[cfg(test)]
 #[path = "format/tests.rs"]

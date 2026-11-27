@@ -40,6 +40,11 @@ pub fn start() {
     SEED.store(usable_seed(seed), Ordering::Relaxed);
 }
 
+/// The second the shell started, as an epoch time.
+pub fn started() -> u64 {
+    STARTED.load(Ordering::Relaxed)
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

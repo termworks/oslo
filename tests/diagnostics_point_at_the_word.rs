@@ -112,21 +112,6 @@ const KEPT: &[(&str, &str)] = &[
     ),
     // ── A value already consumed, or a function with neither the word nor a line to put it in.
     (
-        "printf: {}: invalid number",
-        "`Spec::render` is handed one argument and no argv — the words are three frames up, and \
-         threading them through a formatter called once per conversion is a lot of signature for \
-         a caret under the only word in the message",
-    ),
-    (
-        "printf: {value}: invalid number",
-        "the same function, the same reason",
-    ),
-    (
-        "printf: {width}: width is too large",
-        "the same formatter and the same reason — the padding guard sits inside the conversion, \
-         which is handed a width and no argv",
-    ),
-    (
         "getopts: {} -- {}",
         "the message is `getopts`'s own OPTERR text, not a word of the command",
     ),
@@ -154,11 +139,6 @@ const KEPT: &[(&str, &str)] = &[
     (
         "pwd: error retrieving current directory: {e}",
         "an errno from `getcwd`",
-    ),
-    (
-        "printf: `%{}': invalid format character",
-        "`Spec::render` has the conversion character and not the format string it came from; the
-         sibling `missing format character`, which does have it, points into the format",
     ),
     (
         "mark: {here} has no name to mark it by; `mark NAME` chooses one",
