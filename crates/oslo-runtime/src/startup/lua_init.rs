@@ -6,6 +6,7 @@
 //! shell down with it either, which is why nothing here is fatal.
 
 use crate::lua::LuaEngine;
+use crate::startup::language::Modes;
 use oslo_base::error::ShellError;
 use oslo_shell::Environment;
 use std::path::{Path, PathBuf};
@@ -178,7 +179,13 @@ fn without_shebang(source: &str) -> String {
 /// from anything that checks an exit code.
 ///
 /// `name` is what a diagnostic calls the source — a path, or `-c`/`stdin` when there is no file.
-pub fn run_lua_source(source: &str, name: &str, args: &[String]) -> i32 {
+/// `asked` is what the command line asked for, on top of what the shebang does: `--func` runs it
+/// as a pure script (see [`crate::startup::func`]), `--jit` compiles hot functions.
+pub fn run_lua_source(source: &str, name: &str, args: &[String], asked: Modes) -> i32 {
+    let modes = asked.with(Modes::of_shebang(source));
+    if modes.func {
+        return crate::startup::func::run(&without_shebang(source), name, args, modes.jit);
+    }
     #[cfg(feature = "watch")]
     let _watch_cleanup = WatchCleanup;
     let env = Arc::new(Mutex::new(Environment::new()));
@@ -189,6 +196,7 @@ pub fn run_lua_source(source: &str, name: &str, args: &[String]) -> i32 {
             return 1;
         }
     };
+    lua.set_jit(modes.jit);
     if !install_bindings(&lua, Arc::clone(&env)) {
         return 1;
     }

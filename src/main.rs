@@ -199,11 +199,12 @@ fn begin_shell(interactive: bool) {
 /// A script operand: read it, work out its language, run it.
 fn run_script(invocation: &cli::Invocation, path: &str) -> ! {
     match read_script(path) {
-        Ok(script) => match language::detect(Some(path), &script) {
+        Ok(script) => match language::detect_asked(invocation.modes, Some(path), &script) {
             Language::Lua => std::process::exit(startup::lua_init::run_lua_source(
                 &script,
                 path,
                 &invocation.positional,
+                invocation.modes,
             )),
             // Streamed: a file is what polyglots and partial execution are about.
             // A script file is `main` in `$FUNCNAME`, which is what bash calls the frame a
@@ -261,11 +262,12 @@ fn run_stdin(invocation: &cli::Invocation) -> ! {
         std::process::exit(1);
     }
     let script = String::from_utf8_lossy(&bytes).into_owned();
-    match language::detect(None, &script) {
+    match language::detect_asked(invocation.modes, None, &script) {
         Language::Lua => std::process::exit(startup::lua_init::run_lua_source(
             &script,
             "stdin",
             &invocation.positional,
+            invocation.modes,
         )),
         // A pipe is a stream, and bash and dash both run what they have read of one before a later
         // syntax error stops them.

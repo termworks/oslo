@@ -39,6 +39,7 @@ pub fn load_directory_environment(
     environments::arrive(env, lua, dir);
 }
 mod follow;
+pub mod func;
 pub mod history;
 mod integration;
 pub mod language;

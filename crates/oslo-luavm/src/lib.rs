@@ -18,6 +18,7 @@
 //! it mutably, and a native cannot re-enter — see [`host`].
 
 pub mod convert;
+pub mod functional;
 pub mod globals;
 pub mod host;
 
@@ -114,6 +115,45 @@ fn plain_wording(message: &str) -> String {
         }
     }
     message.to_string()
+}
+
+/// Turn luna's native tier on or off for `lua`, answering whether it is now on.
+///
+/// `Auto` compiles a function once it is hot, during [`Lua::finish`]. A target without a backend,
+/// or a config luna refuses, stays interpreted.
+#[cfg(feature = "jit")]
+pub(crate) fn jit_mode(lua: &mut Lua, on: bool) -> bool {
+    let on = on && lua.jit_capabilities().supported_target;
+    let mode = if on {
+        luna::JitMode::Auto
+    } else {
+        luna::JitMode::Off
+    };
+    let config = luna::JitConfig {
+        mode,
+        ..luna::JitConfig::default()
+    };
+    lua.set_jit_config(config).is_ok() && on
+}
+
+/// Always off: this build has no native tier.
+#[cfg(not(feature = "jit"))]
+pub(crate) fn jit_mode(_lua: &mut Lua, _on: bool) -> bool {
+    false
+}
+
+/// A VM failure as the shell's error, with an exit request recovered if that is what it was.
+pub(crate) fn failure_in(error: luna::ExternError, chunk: &str) -> LuaError {
+    if let Some(status) = taken_exit() {
+        return LuaError::exit_request(status);
+    }
+    let message = plain_wording(&syntax_wording(&error.to_string()));
+    // The VM has already put `chunk:line:` in front where it knows one, so the message is taken
+    // whole rather than positioned again.
+    if message.starts_with(&format!("{chunk}:")) {
+        return LuaError::without_position(message);
+    }
+    LuaError::new(message).in_chunk(chunk.to_string())
 }
 
 /// A Lua interpreter, and the shell's whole view of one.
@@ -295,6 +335,17 @@ impl Engine {
         }
     }
 
+    /// Compile hot functions to machine code from now on, or stop.
+    ///
+    /// Answers whether the JIT is on afterwards: never in a build without the `jit` feature, on a
+    /// machine luna has no backend for, or while the VM is running.
+    pub fn set_jit(&self, on: bool) -> bool {
+        match self.lua.try_borrow_mut() {
+            Ok(mut lua) => jit_mode(&mut lua, on),
+            Err(_) => false,
+        }
+    }
+
     /// Compile and run `source`, answering what it returned.
     ///
     /// Re-entrant, like [`call_function`](Self::call_function): a chunk compiled while the VM is
@@ -384,20 +435,9 @@ impl Engine {
         })
     }
 
-    /// A VM failure as the shell's error, with an exit request recovered if that is what it was.
+    /// A VM failure as the shell's error. See [`failure_in`].
     fn failure(&self, error: luna::ExternError) -> LuaError {
-        if let Some(status) = taken_exit() {
-            return LuaError::exit_request(status);
-        }
-        let message = plain_wording(&syntax_wording(&error.to_string()));
-        let chunk = self.chunk.borrow().clone();
-        // The VM has already put `chunk:line:` in front where it knows one, so the message is
-        // taken whole rather than positioned again — which is what this function always meant to
-        // do, and what naming the chunk a second time undid.
-        if message.starts_with(&format!("{chunk}:")) {
-            return LuaError::without_position(message);
-        }
-        LuaError::new(message).in_chunk(chunk)
+        failure_in(error, &self.chunk.borrow())
     }
 }
 

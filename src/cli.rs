@@ -38,6 +38,7 @@ pub mod warn;
 pub mod watch;
 
 use oslo::env::options::ShellOption;
+use oslo_runtime::startup::language::Modes;
 use std::fmt::Write as _;
 
 /// Where the shell's input comes from.
@@ -106,6 +107,8 @@ pub struct Invocation {
     pub no_rc: bool,
     /// `--noprofile`: do not read `/etc/profile` or `~/.profile`, even as a login shell.
     pub no_profile: bool,
+    /// `--func` and `--jit`: how a Lua program asks to be run. See [`Modes`].
+    pub modes: Modes,
 }
 
 impl Invocation {
@@ -241,6 +244,7 @@ pub fn parse(argv: &[String]) -> Result<Invocation, Exit> {
         .is_some_and(|argv0| argv0.starts_with('-') && argv0.len() > 1);
     let mut no_rc = false;
     let mut no_profile = false;
+    let mut modes = Modes::default();
     let mut set_options = String::new();
     let mut long_options: Vec<ShellOption> = Vec::new();
     let mut unset_letters = String::new();
@@ -291,6 +295,7 @@ pub fn parse(argv: &[String]) -> Result<Invocation, Exit> {
                         long_options: Vec::new(),
                         no_rc: false,
                         no_profile: false,
+                        modes: Modes::default(),
                     });
                 }
                 "version" => {
@@ -300,9 +305,6 @@ pub fn parse(argv: &[String]) -> Result<Invocation, Exit> {
                         status: 0,
                     });
                 }
-                // `--details` modifies `--help` and may be written on either side of it, so the
-                // rest of the command line is consulted rather than only what has been seen. It
-                // stops at `--`, past which a `--details` is somebody's argument and not a flag.
                 // `--details` modifies `--help` and may be written on either side of it, so the
                 // rest of the command line is consulted rather than only what has been seen. It
                 // stops at `--`, past which a `--details` is somebody's argument and not a flag.
@@ -329,6 +331,9 @@ pub fn parse(argv: &[String]) -> Result<Invocation, Exit> {
                 // Read the config, but run none of the plugins on the runtimepath: the first
                 // question when a shell misbehaves is "is it me or a plugin?"
                 "noplugin" => oslo_runtime::runtimepath::disable(),
+                // `--func` and `--jit`, alone or as the one word a kernel makes of
+                // `#!/usr/bin/oslo --func --jit`.
+                _ if modes.take_joined(&arg) => {}
                 other => match long_option(other) {
                     Some(option) => {
                         if !long_options.contains(&option) {
@@ -502,6 +507,12 @@ pub fn parse(argv: &[String]) -> Result<Invocation, Exit> {
             None => (Action::Stdin, Vec::new()),
         },
     };
+    // `-c` is always shell, so a pure program there is a contradiction rather than a request.
+    if modes.func && matches!(action, Action::Command(_)) {
+        return Err(usage_error(
+            "--func: runs a file or standard input, not -c".to_string(),
+        ));
+    }
 
     Ok(Invocation {
         action,
@@ -515,6 +526,7 @@ pub fn parse(argv: &[String]) -> Result<Invocation, Exit> {
         long_options,
         no_rc,
         no_profile,
+        modes,
     })
 }
 
