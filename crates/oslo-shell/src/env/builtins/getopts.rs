@@ -71,11 +71,6 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
         );
         return Ok(2);
     };
-    if !crate::env::scope::is_valid_identifier(name) {
-        eprintln!("{}getopts: `{name}': not a valid identifier", origin_now());
-        return Ok(1);
-    }
-
     // With no operands `getopts` parses the positional parameters, which is what every
     // `while getopts "ab:" opt; do` in a script is relying on.
     let operands: Vec<String> = if args.len() > 3 {
@@ -139,16 +134,35 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
                 None => env.unset_var("OPTARG"),
             }
             // A name that cannot be assigned is the builtin's failure, after the scan moved on.
-            match report(&opt, name, silent, print_errors && !named, env) {
-                true => Ok(0),
-                false => Ok(2),
-            }
+            Ok(report(&opt, name, silent, print_errors && !named, env))
         }
         Step::Done => {
-            let assigned = env.set_var(name, "?", false);
             env.unset_var("OPTARG");
-            Ok(if assigned { 1 } else { 2 })
+            bind(env, name, "?");
+            Ok(1)
         }
+    }
+}
+
+/// Assign the option to `name` once the scan has moved on, as bash does: a name that is not one
+/// is refused with 1, a read-only one with 2.
+fn bind(env: &mut Environment, name: &str, value: &str) -> i32 {
+    if !crate::env::scope::is_valid_identifier(name) {
+        crate::env::complain(
+            &crate::env::line("getopts", std::slice::from_ref(&name.to_string())),
+            name,
+            &format!(
+                "getopts: `{}': not a valid identifier",
+                oslo_base::shown::shown(name)
+            ),
+            "not a name",
+            None,
+        );
+        return 1;
+    }
+    match env.set_var(name, value, false) {
+        true => 0,
+        false => 2,
     }
 }
 
@@ -157,8 +171,8 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
 /// The two error outcomes travel as the option characters `?` (unknown option) and `:` (an option
 /// that needs an argument and did not get one). In silent mode they reach the script through
 /// `name`/`OPTARG` and nothing is printed; otherwise `name` is always `?` and the message is what
-/// the script's user sees.
-fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Environment) -> bool {
+/// the script's user sees. Answers the builtin's status, which [`bind`] decides.
+fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Environment) -> i32 {
     let message = match opt {
         "?" => Some("illegal option"),
         ":" if !silent => Some("option requires an argument"),
@@ -183,7 +197,7 @@ fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Env
         ":" if !silent => "?",
         other => other,
     };
-    env.set_var(name, value, false)
+    bind(env, name, value)
 }
 
 /// Advance `optind`/`offset` over the argument list and classify the next option character.
