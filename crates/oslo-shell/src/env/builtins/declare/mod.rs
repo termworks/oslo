@@ -12,7 +12,8 @@ mod quote;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use print::{print_matching, set_line};
+pub(crate) use print::{assignment, print_matching, set_line};
+pub(crate) use quote::key as quote_key;
 #[cfg(feature = "universal")]
 pub(crate) use quote::set_style;
 

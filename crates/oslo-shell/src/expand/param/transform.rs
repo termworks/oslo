@@ -42,29 +42,41 @@ pub(super) fn text(env: &mut Environment, op: char, value: &str) -> Result<Strin
 }
 
 /// `${name@op}` on one parameter or element.
+///
+/// A nameref is read through to the variable it names, which is the name `A` prints. A declared
+/// name with no value still has its attributes: `declare -x v` makes `${v@a}` `x` and `${v@A}`
+/// `declare -x v`.
 pub(super) fn scalar(
     env: &mut Environment,
     target: &Target<'_>,
     op: char,
     value: Option<String>,
 ) -> Result<String> {
-    let Some(value) = value else {
-        return Ok(String::new());
-    };
-    if !is_known(op) {
-        return Err(unknown(&target.display(), op));
-    }
     let name = match target {
         Target::Param(name) | Target::Element { name, .. } => *name,
     };
     let declared = crate::env::scope::is_valid_identifier(name);
+    let name = env.ref_target_name(name).into_owned();
+    let Some(value) = value else {
+        return Ok(match (op, declared && env.variable(&name).is_some()) {
+            ('a', true) => attributes(env, &name),
+            ('A', true) => match attributes(env, &name) {
+                flags if flags.is_empty() => String::new(),
+                flags => format!("declare -{flags} {name}"),
+            },
+            _ => String::new(),
+        });
+    };
+    if !is_known(op) {
+        return Err(unknown(&target.display(), op));
+    }
     Ok(match op {
-        'a' if declared => attributes(env, name),
+        'a' if declared => attributes(env, &name),
         'a' => String::new(),
         'A' if !declared => String::new(),
         'A' => {
             let quoted = quote_reusable(&value, locale::is_utf8(env));
-            match attributes(env, name) {
+            match attributes(env, &name) {
                 flags if flags.is_empty() => format!("{name}={quoted}"),
                 flags => format!("declare -{flags} {name}={quoted}"),
             }
@@ -73,20 +85,16 @@ pub(super) fn scalar(
     })
 }
 
-/// The attribute letters of `name`, in bash's order.
+/// The attribute letters of `name`, in bash's order, read through a nameref.
 pub(super) fn attributes(env: &Environment, name: &str) -> String {
-    let mut flags = String::new();
-    if env.get_array(name).is_some() {
-        flags.push('a');
-    }
-    if env.is_integer(name) {
-        flags.push('i');
-    }
-    if env.is_readonly(name) {
-        flags.push('r');
-    }
-    if env.is_exported(name) {
-        flags.push('x');
+    let target = env.ref_target_name(name);
+    let mut flags = env
+        .variable(&target)
+        .map(|var| var.flag_letters())
+        .unwrap_or_default();
+    if !flags.contains('i') && env.is_integer(&target) {
+        let at = usize::from(flags.starts_with(['a', 'A']));
+        flags.insert(at, 'i');
     }
     flags
 }
@@ -104,7 +112,7 @@ pub(crate) fn quote_reusable(value: &str, utf8: bool) -> String {
 }
 
 /// An array element as `declare -p` writes it: double quotes, or `$'…'` where those cannot say it.
-pub(super) fn quote_element(value: &str, utf8: bool) -> String {
+pub(crate) fn quote_element(value: &str, utf8: bool) -> String {
     if needs_ansi_c(value, utf8) {
         return ansi_c_quote(value, utf8);
     }
@@ -127,12 +135,13 @@ fn printable(ch: char, utf8: bool) -> bool {
     }
 }
 
-fn needs_ansi_c(value: &str, utf8: bool) -> bool {
+/// Whether `value` holds a character the locale cannot show, which only `$'…'` can then say.
+pub(crate) fn needs_ansi_c(value: &str, utf8: bool) -> bool {
     value.chars().any(|ch| !printable(ch, utf8))
 }
 
 /// `$'…'`, escaping what is not printable the way bash's `ansic_quote` does.
-fn ansi_c_quote(value: &str, utf8: bool) -> String {
+pub(crate) fn ansi_c_quote(value: &str, utf8: bool) -> String {
     let mut out = String::from("$'");
     for ch in value.chars() {
         match ch {

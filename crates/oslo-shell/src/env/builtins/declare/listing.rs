@@ -1,7 +1,7 @@
 //! The listing forms of `declare` and `local`: everything, one kind, some names, or functions.
 
 use super::Spec;
-use super::print::{declaration, function_flags, print_matching, set_line};
+use super::print::{declaration, function_flags, print_matching, set_line, utf8};
 use crate::env::Environment;
 use crate::env::scope::value::Attrs;
 
@@ -9,8 +9,9 @@ use crate::env::scope::value::Attrs;
 /// an attribute letter, every matching variable as a `declare` line.
 pub(super) fn variables(env: &Environment, spec: &Spec) {
     if !spec.print && !spec.filters() {
+        let utf8 = utf8(env);
         for (name, var) in env.bindings() {
-            if let Some(line) = set_line(name, var).filter(|_| is_listable(name)) {
+            if let Some(line) = set_line(name, var, utf8).filter(|_| is_listable(name)) {
                 println!("{line}");
             }
         }
@@ -52,7 +53,7 @@ pub(super) fn named(env: &Environment, names: &[String], builtin: &str) -> i32 {
     for operand in names {
         let name = operand.split_once('=').map_or(operand.as_str(), |(n, _)| n);
         match env.variable(name) {
-            Some(var) => println!("{}", declaration(name, var)),
+            Some(var) => println!("{}", declaration(name, var, utf8(env))),
             None if env.special_value(name).is_some() => {
                 println!("{}", super::print::special_declaration(env, name));
             }
@@ -75,7 +76,7 @@ pub(super) fn named(env: &Environment, names: &[String], builtin: &str) -> i32 {
 pub(super) fn locals(env: &Environment, only: Option<&[String]>) {
     for (name, var) in env.local_bindings() {
         if only.is_none_or(|names| names.iter().any(|n| n == name)) {
-            println!("{}", declaration(name, var));
+            println!("{}", declaration(name, var, utf8(env)));
         }
     }
 }

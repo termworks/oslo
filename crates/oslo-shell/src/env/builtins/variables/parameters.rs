@@ -159,10 +159,11 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
             eprintln!("{}set -U -e: needs the name of a variable", origin_now());
             return 2;
         }
+        let utf8 = crate::expand::locale::is_utf8(env);
         for (name, value) in universal::all() {
             println!(
                 "{name}={}",
-                crate::env::builtins::declare::set_style(&value)
+                crate::env::builtins::declare::set_style(&value, utf8)
             );
         }
         return 0;
@@ -215,11 +216,12 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
 /// Names `environ` accepted but no shell can parse — bash's `BASH_FUNC_x%%` entries arrive this
 /// way — are skipped, because the listing's contract is that a shell can read it back.
 fn print_variables(env: &Environment) {
+    let utf8 = crate::expand::locale::is_utf8(env);
     for (name, var) in env.bindings() {
         if !is_valid_identifier(name) {
             continue;
         }
-        if let Some(line) = crate::env::builtins::declare::set_line(name, var) {
+        if let Some(line) = crate::env::builtins::declare::set_line(name, var, utf8) {
             println!("{line}");
         }
     }

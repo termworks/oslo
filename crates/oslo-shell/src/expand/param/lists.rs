@@ -19,7 +19,8 @@ pub(super) struct Listed {
     pub single: bool,
 }
 
-/// `${name[@]@op}` over an array's `indices` and `values`, or `None` when `op` acts on each value.
+/// `${name[@]@op}` over an array's `indices` (an associative array's keys) and `values`, or
+/// `None` when `op` acts on each value. A nameref is read through to the array it names.
 pub(super) fn array(
     env: &Environment,
     name: &str,
@@ -28,29 +29,61 @@ pub(super) fn array(
     values: &[String],
 ) -> Option<Listed> {
     let utf8 = locale::is_utf8(env);
+    let target = env.ref_target_name(name).into_owned();
+    let var = env.variable(&target);
+    let shape = var.map(|v| (v.indexed().is_some(), v.assoc().is_some()));
     let pairs = || indices.iter().zip(values);
-    Some(match op {
-        'A' if env.get_array(name).is_none() => Listed {
+    let none = || Listed {
+        words: Vec::new(),
+        single: false,
+    };
+    Some(match (op, shape) {
+        ('A', Some((false, false)) | None) => Listed {
             words: values
                 .iter()
-                .map(|value| format!("{name}={}", quote_reusable(value, utf8)))
+                .map(|value| match attributes(env, &target) {
+                    flags if flags.is_empty() => {
+                        format!("{target}={}", quote_reusable(value, utf8))
+                    }
+                    flags => format!("declare -{flags} {target}={}", quote_reusable(value, utf8)),
+                })
                 .collect(),
             single: false,
         },
-        'A' => {
-            let body: Vec<String> = pairs()
-                .map(|(index, value)| format!("[{index}]={}", quote_element(value, utf8)))
-                .collect();
+        ('A', Some(_)) => {
+            let var = var?;
+            let rest = match crate::env::builtins::declare::assignment(var, utf8) {
+                Some(body) => format!("{target}={body}"),
+                None => target.clone(),
+            };
             Listed {
                 words: vec![
                     "declare".to_string(),
-                    format!("-{}", attributes(env, name)),
-                    format!("{name}=({})", body.join(" ")),
+                    format!("-{}", attributes(env, &target)),
+                    rest,
                 ],
                 single: false,
             }
         }
-        'K' => Listed {
+        ('K', _) if values.is_empty() => none(),
+        // A scalar is not an array, so it has no keys to show: its value, quoted.
+        ('K', Some((false, false)) | None) => Listed {
+            words: values.iter().map(|v| quote_reusable(v, utf8)).collect(),
+            single: false,
+        },
+        // An associative array quotes its keys and ends every pair with a space, as bash does.
+        ('K', Some((_, true))) => Listed {
+            words: vec![
+                pairs()
+                    .map(|(key, value)| {
+                        let key = crate::env::builtins::declare::quote_key(key, utf8);
+                        format!("{key} {} ", quote_element(value, utf8))
+                    })
+                    .collect(),
+            ],
+            single: true,
+        },
+        ('K', _) => Listed {
             words: vec![
                 pairs()
                     .map(|(index, value)| format!("{index} {}", quote_element(value, utf8)))
@@ -59,14 +92,19 @@ pub(super) fn array(
             ],
             single: true,
         },
-        'k' => Listed {
+        ('k', _) => Listed {
             words: pairs()
                 .flat_map(|(index, value)| [index.clone(), value.clone()])
                 .collect(),
             single: false,
         },
-        'a' => Listed {
-            words: values.iter().map(|_| attributes(env, name)).collect(),
+        // A declared array with no value still answers its attributes, once.
+        ('a', _) if values.is_empty() && var.is_some_and(|v| !v.is_set()) => Listed {
+            words: vec![attributes(env, &target)],
+            single: false,
+        },
+        ('a', _) => Listed {
+            words: values.iter().map(|_| attributes(env, &target)).collect(),
             single: false,
         },
         _ => return None,
