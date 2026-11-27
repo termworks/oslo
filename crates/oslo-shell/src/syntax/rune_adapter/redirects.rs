@@ -33,6 +33,8 @@ pub(super) fn merge_stderr(command: &mut oslo_ast::Command) {
         target: oslo_ast::Word::from_literal("1"),
         heredoc_content: None,
         here_string: false,
+        fd_var: None,
+        ambiguous: false,
     };
     match command {
         oslo_ast::Command::Simple(simple) => simple.redirections.push(redirection),
