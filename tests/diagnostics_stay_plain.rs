@@ -300,8 +300,8 @@ const PLAIN: &[Plain] = &[
         stderr: "oslo: declare: NOPE: not found",
     },
     Plain {
-        script: "declare -A x",
-        stderr: "oslo: declare: -A: associative arrays are not supported",
+        script: "declare -a x; declare -A x",
+        stderr: "oslo: declare: x: cannot convert indexed to associative array",
     },
     // A name the shell was *given* rather than one written in the script. It reaches stderr, and
     // an escape sequence in it is not text a terminal shows but an instruction it obeys — so what
@@ -388,11 +388,11 @@ const PLAIN: &[Plain] = &[
     },
     Plain {
         script: "readonly R=1; R=2",
-        stderr: "oslo: R: is read only",
+        stderr: "oslo: R: readonly variable",
     },
     Plain {
         script: "readonly R=1; export R=2",
-        stderr: "oslo: R: is read only",
+        stderr: "oslo: R: readonly variable",
     },
     Plain {
         script: "export -f nosuchfn",

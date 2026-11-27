@@ -187,7 +187,8 @@ fn local_without_a_value_still_scopes() {
 
 #[test]
 fn readonly_is_enforced() {
-    let r = run("readonly R=1; R=2; echo $R");
+    // The refused assignment abandons its own line, as bash does, so the check is on the next.
+    let r = run("readonly R=1; R=2\necho $R");
     assert_eq!(r.out(), "1");
 }
 

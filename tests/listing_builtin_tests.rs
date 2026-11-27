@@ -89,7 +89,7 @@ fn set_listing_includes_function_definitions() {
 fn export_p_lists_and_declares_nothing() {
     let r = run("export EV='a b'; export -p");
     assert!(
-        r.stdout.contains("export EV='a b'"),
+        r.stdout.contains("declare -x EV=\"a b\""),
         "stdout tail: {}",
         r.stdout
     );
@@ -118,7 +118,7 @@ fn unset_cannot_empty_a_readonly_variable() {
 fn readonly_listing_shows_values() {
     let r = run("readonly RO='a b'; readonly");
     assert!(
-        r.stdout.contains("readonly RO='a b'"),
+        r.stdout.contains("declare -r RO=\"a b\""),
         "stdout: {}",
         r.stdout
     );
@@ -129,9 +129,9 @@ fn readonly_listing_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let r = run_in(
         dir.path(),
-        "readonly RO='x y'; readonly -p > saved; grep '^readonly RO=' saved",
+        "readonly RO='x y'; readonly -p > saved; grep ' RO=' saved",
     );
-    assert_eq!(r.out(), "readonly RO='x y'", "stderr: {}", r.stderr);
+    assert_eq!(r.out(), "declare -r RO=\"x y\"", "stderr: {}", r.stderr);
 }
 
 /// The acceptance test named in the plan: `alias > f; . f` must reproduce the table.
