@@ -2,7 +2,6 @@
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
-use crate::exec::eval_command_list;
 use oslo_base::error::{Result, ShellError};
 use std::fs;
 
@@ -85,7 +84,7 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
         match crate::syntax::parse_with_aliases(&content, !env.get_aliases().is_empty(), &|n| {
             env.get_alias(n).map(str::to_string)
         }) {
-            Ok(ast) => eval_command_list(env, &ast),
+            Ok(ast) => crate::exec::eval_command_unit(env, &ast),
             // As with `eval`: the sourced file failing to parse leaves `source` with status 2 and
             // the calling script still running.
             Err(e) => {
@@ -118,6 +117,6 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     // `return` ends a sourced script early and supplies its status.
     match result {
         Err(ShellError::Return(code)) => Ok(code),
-        other => crate::exec::absorb_abandoned(env, other),
+        other => other,
     }
 }

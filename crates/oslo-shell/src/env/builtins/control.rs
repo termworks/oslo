@@ -24,7 +24,6 @@ pub use unparse::{format_function, format_word};
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
-use crate::exec::eval_command_list;
 use oslo_base::error::{Result, ShellError};
 
 /// Parse a builtin's numeric operand the way bash's `legal_number` does.
@@ -332,7 +331,7 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
             Ok(ast) => {
                 let outer = env.number_lines_from_here();
                 let _traced = crate::exec::simple::trace::Nested::enter();
-                let status = eval_command_list(env, &ast);
+                let status = crate::exec::eval_command_unit(env, &ast);
                 env.set_line_offset(outer);
                 status
             }
@@ -353,7 +352,7 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     if !super::process::in_trap() {
         env.set_bash_command(command);
     }
-    crate::exec::absorb_abandoned(env, result)
+    result
 }
 
 #[cfg(test)]

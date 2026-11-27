@@ -103,19 +103,6 @@ pub(crate) fn announce_death(env: &Environment, of: Option<Pid>, command: impl F
     }
 }
 
-/// End `eval` or `source` with status 1 where a refused assignment or a `failglob` miss abandoned
-/// the text it was running, as bash does, rather than letting the abandonment reach the caller.
-pub fn absorb_abandoned(env: &Environment, result: Result<i32>) -> Result<i32> {
-    match result {
-        Err(ShellError::Abandoned) => Ok(1),
-        Err(e @ ShellError::NoMatch(_)) => {
-            eprintln!("{}{e}", env.origin());
-            Ok(1)
-        }
-        other => other,
-    }
-}
-
 /// Reap `pid` and turn its wait status into the number a shell reports for it.
 ///
 /// One `waitpid` call per iteration, then a `match` on the bound result. Asking twice — once per

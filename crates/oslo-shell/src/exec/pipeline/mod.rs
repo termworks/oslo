@@ -48,8 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod waiting;
 pub(crate) use waiting::{announce_death, forget_death, note_death, quiet_deaths, wait_for_child};
 pub use waiting::{
-    absorb_abandoned, is_interactive, report_error_status, set_interactive, status_of,
-    wait_for_status,
+    is_interactive, report_error_status, set_interactive, status_of, wait_for_status,
 };
 
 /// Run a command list, and absorb an interrupt that unwound all the way out of it.
@@ -64,14 +63,27 @@ pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Resul
     // on how deep the input may be, which says nothing about how much stack running it costs. This
     // is where `{ … }`, `( … )`, a loop body and a branch all re-enter, so it is where the question
     // is asked. See `oslo_base::stack`.
+    let unit = UNIT.with(|unit| unit.replace(false));
     if oslo_base::stack::exhausted() {
         return Err(ShellError::ExecutionError(
             "maximum nesting level exceeded".to_string(),
         ));
     }
     let frame = ListFrame::enter();
-    let outermost = frame.is_outermost();
+    let outermost = frame.is_outermost() || unit;
     frame.absorb(run_list_items(env, cmd_list, outermost))
+}
+
+thread_local! {
+    /// Set for the one list [`eval_command_unit`] is about to run.
+    static UNIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run the text an `eval` or a `source` parsed as a program of its own: a line a refused
+/// assignment or a `failglob` miss abandons is abandoned inside it, and the next line still runs.
+pub fn eval_command_unit(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> {
+    UNIT.with(|unit| unit.set(true));
+    eval_command_list(env, cmd_list)
 }
 
 fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool) -> Result<i32> {

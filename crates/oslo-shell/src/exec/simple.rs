@@ -257,9 +257,7 @@ fn heredocs_expanded(
 /// traces it.
 ///
 /// An assignment that the environment *refused* — a read-only name, or one `environ` cannot hold
-/// — is a failed command. This used to answer `Ok(0)` regardless: `set_var` printed
-/// `r: is read only`, returned `false`, and the `false` was dropped on the floor, so `r=2; echo
-/// $?` said the assignment had worked (PLAN C3).
+/// — abandons the rest of the top-level command, as bash does; see `posix::assignment_failure`.
 fn apply_assignments_only(env: &mut Environment, simple: &SimpleCommand) -> Result<i32> {
     let mut refused: Option<String> = None;
     for assign in &simple.assignments {
