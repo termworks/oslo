@@ -146,6 +146,14 @@ impl Printer {
                 self.put(" )");
             }
             Kind::Function { name, body } => self.function_def(name, body),
+            Kind::Coproc { name, body } => {
+                self.put("coproc ");
+                if let Some(name) = name {
+                    self.put(&format!("{name} "));
+                }
+                self.skip += 1;
+                self.command(Some(body));
+            }
         }
         if !cmd.redirects.is_empty() {
             self.put(" ");

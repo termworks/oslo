@@ -13,7 +13,6 @@ pub mod scanner;
 mod tilde;
 pub mod token;
 
-pub use ansi_c::decode as decode_ansi_c;
 pub use quoting::parse_heredoc_body;
 pub use scanner::{Lexer, TildeMode};
 pub use token::Token;

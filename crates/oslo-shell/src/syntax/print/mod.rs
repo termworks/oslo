@@ -58,6 +58,11 @@ enum Kind {
         name: String,
         body: Box<Cmd>,
     },
+    /// `coproc [NAME] command`; bash names a compound body `COPROC` when the source does not.
+    Coproc {
+        name: Option<String>,
+        body: Box<Cmd>,
+    },
 }
 
 #[derive(Debug)]

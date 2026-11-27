@@ -230,6 +230,18 @@ impl<'t> Builder<'t> {
                 Kind::Arith(command.expression(self.tree.source()).to_string())
             }
             Command::Conditional(_) => Kind::Cond(self.conditional(node)),
+            Command::Coproc(coproc) => {
+                let body = coproc.command();
+                let compound = body.is_some_and(|body| !matches!(body, Command::Simple(_)));
+                Kind::Coproc {
+                    name: match coproc.name() {
+                        Some(word) => Some(self.text(word.syntax()).to_string()),
+                        None if compound => Some("COPROC".to_string()),
+                        None => None,
+                    },
+                    body: Box::new(body.map(|body| self.command(body)).unwrap_or_default()),
+                }
+            }
             Command::Function(function) => Kind::Function {
                 name: function
                     .name()
@@ -246,7 +258,7 @@ impl<'t> Builder<'t> {
         let redirects = node
             .nodes()
             .filter(|child| child.kind() == SyntaxKind::Redirect)
-            .map(|child| self.redirect(child, None))
+            .map(|child| self.redirect(child))
             .collect();
         Cmd {
             kind,
@@ -258,25 +270,11 @@ impl<'t> Builder<'t> {
     fn simple(&self, node: &Node) -> Cmd {
         let mut parts = Vec::new();
         let mut redirects = Vec::new();
-        let children: Vec<&Node> = node.nodes().collect();
-        let mut at = 0;
-        while let Some(child) = children.get(at) {
-            at += 1;
+        for child in node.nodes() {
             match child.kind() {
                 SyntaxKind::Assignment => parts.push(words::assignment(self, child)),
-                // `{fd}>file` names the descriptor it opens in the word before the operator.
-                SyntaxKind::Word
-                    if is_descriptor_name(self.text(child))
-                        && children.get(at).is_some_and(|next| {
-                            next.kind() == SyntaxKind::Redirect
-                                && next.span().start == child.span().end
-                        }) =>
-                {
-                    redirects.push(self.redirect(children[at], Some(self.text(child))));
-                    at += 1;
-                }
                 SyntaxKind::Word => parts.push(words::word(self, child)),
-                SyntaxKind::Redirect => redirects.push(self.redirect(child, None)),
+                SyntaxKind::Redirect => redirects.push(self.redirect(child)),
                 _ => {}
             }
         }
@@ -288,8 +286,8 @@ impl<'t> Builder<'t> {
     }
 
     /// One redirection, in bash's spelling of it; `named` is a `{name}` written before it.
-    fn redirect(&self, node: &Node, named: Option<&str>) -> Redir {
-        let mut fd = named.unwrap_or_default().to_string();
+    fn redirect(&self, node: &Node) -> Redir {
+        let mut fd = String::new();
         let mut op = None;
         for token in node.tokens() {
             match token.kind() {
@@ -416,13 +414,6 @@ fn connect(first: Cmd, connector: Connector, second: Option<Cmd>) -> Cmd {
         kind: Kind::Connection(Box::new(first), connector, second.map(Box::new)),
         ..Cmd::default()
     }
-}
-
-/// Whether a word is `{name}`, the descriptor variable of a redirection.
-fn is_descriptor_name(text: &str) -> bool {
-    text.strip_prefix('{')
-        .and_then(|rest| rest.strip_suffix('}'))
-        .is_some_and(crate::env::scope::is_valid_identifier)
 }
 
 /// `time -p` parses as `time` before a command whose first word is `-p`.
