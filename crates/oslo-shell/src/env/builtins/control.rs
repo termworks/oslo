@@ -17,6 +17,8 @@ pub use resolve::is_keyword;
 pub use resolve::{Kind, ways};
 /// Render a function definition as shell source; also what `set` and `declare -f` need to print.
 pub use unparse::{format_function, format_word};
+/// A simple command as source text, for `$BASH_COMMAND`.
+pub(crate) use unparse::format_simple;
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
@@ -104,6 +106,16 @@ fn out_of_a_loop(builtin: &str) {
     );
 }
 
+thread_local! {
+    /// The status the loop a `break` leaves reports: 1 after `break 0`, 0 otherwise.
+    static BREAK_STATUS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Take the status the last `break` or `continue` left for its loop, resetting it to 0.
+pub(crate) fn take_break_status() -> i32 {
+    BREAK_STATUS.with(|s| s.replace(0))
+}
+
 /// `break [n]` — leave the innermost `n` enclosing loops.
 ///
 /// Signalled as an error so it unwinds through nested command lists; the loop evaluators in
@@ -121,8 +133,11 @@ pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
     match asked {
         Depth::NotANumber => bad_operand(),
-        // Every loop, because `break 0` names none and bash leaves the whole nest.
-        Depth::OutOfRange => Err(ShellError::Break(env.loops().max(1))),
+        // Every loop, because `break 0` names none and bash leaves the whole nest, with status 1.
+        Depth::OutOfRange => {
+            BREAK_STATUS.with(|s| s.set(1));
+            Err(ShellError::Break(env.loops().max(1)))
+        }
         // **Clamped to the loops that are actually there.** POSIX: when `n` is greater than the
         // number of enclosing loops, the outermost one is exited. Re-raised undecremented past the
         // last loop it would instead escape the script — `for i in 1 2; do break 2; done; echo after`
@@ -142,7 +157,10 @@ pub fn builtin_continue(env: &mut Environment, args: &[String]) -> Result<i32> {
     match asked {
         Depth::NotANumber => bad_operand(),
         // `continue 0` leaves the nest rather than continuing it, which is bash's answer too.
-        Depth::OutOfRange => Err(ShellError::Break(env.loops().max(1))),
+        Depth::OutOfRange => {
+            BREAK_STATUS.with(|s| s.set(1));
+            Err(ShellError::Break(env.loops().max(1)))
+        }
         // The same clamp, and the same reason — see `builtin_break`.
         Depth::Leave(n) => Err(ShellError::Continue(n.min(env.loops()))),
     }
@@ -166,8 +184,12 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
         // Bare `return` yields the status of the last command, as in bash.
         None => env.last_status,
         // A bad operand still returns — bash unwinds the function with status 2 rather than
-        // carrying on with the commands after the `return`.
-        Some(raw) => numeric_operand::<i32>("return", raw).unwrap_or(2),
+        // carrying on with the commands after the `return` — and POSIX mode ends the shell.
+        Some(raw) => match numeric_operand::<i32>("return", raw) {
+            Ok(n) => n,
+            Err(()) if env.posix() => return Err(ShellError::utility_error("return", 2)),
+            Err(()) => 2,
+        },
     };
     Err(ShellError::Return(exit_status(code)))
 }
@@ -197,12 +219,17 @@ pub fn builtin_exit(env: &mut Environment, args: &[String]) -> Result<i32> {
         // a successful run into exit 1. bash and dash both report 0. An explicit operand still
         // wins, so `trap 'exit 7' 0` leaves with 7.
         None => super::process::exit_trap_status().unwrap_or(env.last_status),
+        // A bad operand is a usage error: the shell carries on with status 2, and only POSIX
+        // mode ends over it.
         Some(raw) => match numeric_operand::<i64>("exit", raw) {
             Ok(n) => n as i32,
-            Err(()) => return Err(ShellError::Exit(2)),
+            Err(()) => return Err(ShellError::utility_error("exit", 2)),
         },
     };
-    Err(ShellError::Exit(exit_status(code)))
+    // The EXIT trap runs here, before the unwind, so it sees the locals, `$FUNCNAME` and the
+    // positional parameters of the function that called `exit`.
+    let code = super::process::run_exit_trap(env, exit_status(code));
+    Err(ShellError::Exit(code))
 }
 
 /// Whether this `exit` should be refused because there are stopped jobs, and say so if it is.
@@ -262,6 +289,11 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     // keybinding it installs answered `oslo: --: command not found`.
     let operands = match args.get(1).map(String::as_str) {
         Some("--") => &args[2..],
+        Some(flag) if flag.len() > 1 && flag.starts_with('-') => {
+            eprintln!("{}eval: {flag}: invalid option", origin_now());
+            eprintln!("eval: usage: eval [arg ...]");
+            return Err(ShellError::utility_error("eval", 2));
+        }
         _ => &args[1..],
     };
     if operands.is_empty() {
@@ -273,6 +305,7 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     // `x='eval "$x"'; eval "$x"` recurses through the parser and the evaluator with no function
     // call to bound it, so `eval` carries the same nesting counter `source` does.
     env.enter_nested_script()?;
+    let command = env.get_var("BASH_COMMAND").unwrap_or_default().to_string();
     let result =
         match crate::syntax::parse_with_aliases(&code, !env.get_aliases().is_empty(), &|n| {
             env.get_alias(n).map(str::to_string)
@@ -298,7 +331,28 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
             }
         };
     env.exit_nested_script();
+    if !super::process::in_trap() {
+        env.set_bash_command(command);
+    }
     result
+}
+
+/// The file `. name` reads: `name` itself when it holds a `/`, otherwise the first regular file
+/// of that name on `$PATH` (with `sourcepath`, the default), and failing that the current
+/// directory — except in POSIX mode, where a name not on `$PATH` is not found at all.
+fn sourced_path(env: &Environment, name: &str) -> Option<String> {
+    if name.contains('/') || !super::shopt::on("sourcepath") {
+        return Some(name.to_string());
+    }
+    let path = env.get_var("PATH").unwrap_or_default();
+    for dir in path.split(':') {
+        let dir = if dir.is_empty() { "." } else { dir };
+        let candidate = format!("{dir}/{name}");
+        if std::path::Path::new(&candidate).is_file() {
+            return Some(candidate);
+        }
+    }
+    (!env.posix()).then(|| name.to_string())
 }
 
 pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
@@ -307,7 +361,11 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
         return Ok(1);
     }
 
-    let file_path = &args[1];
+    let Some(found) = sourced_path(env, &args[1]) else {
+        eprintln!("{}.: {}: file not found", origin_now(), args[1]);
+        return Err(oslo_base::error::ShellError::utility_error("source", 1));
+    };
+    let file_path = &found;
     let content = match fs::read_to_string(oslo_base::lossless::to_os(file_path)) {
         Ok(c) => c,
         Err(e) => {
@@ -343,29 +401,47 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     // place — that is POSIX, and what bash does; swapping an empty list in would have blanked `$@`
     // for every file sourced without arguments, which is nearly all of them.
     let outer = (args.len() > 2).then(|| env.swap_positional(args[2..].to_vec()));
+    let set_before = super::variables::positional_sets();
+    // `$BASH_COMMAND` names the `.` again once the file is done, as it does after `eval`.
+    let command = env.get_var("BASH_COMMAND").unwrap_or_default().to_string();
+    let traps = env.enter_source_traps();
     // `$FUNCNAME`'s outermost entry, as bash spells it: a function called from a sourced file
     // reads `f source`. `eval` gets none, and bash gives it none either.
     env.enter_script_frame("source");
     // And the file itself, so a failure inside it names it rather than the script that sourced it.
     env.enter_source_file(file_path);
     let traced = crate::exec::simple::trace::Nested::enter();
-    let result =
-        match crate::syntax::parse_with_aliases(&content, !env.get_aliases().is_empty(), &|n| {
-            env.get_alias(n).map(str::to_string)
-        }) {
-            Ok(ast) => eval_command_list(env, &ast),
-            // As with `eval`: the sourced file failing to parse leaves `source` with status 2 and
-            // the calling script still running.
-            Err(e) => {
-                eprintln!("{}{}: {}", origin_now(), file_path, e);
-                Ok(2)
-            }
-        };
+    let mut result = match crate::syntax::parse_with_aliases(
+        &content,
+        !env.get_aliases().is_empty(),
+        &|n| env.get_alias(n).map(str::to_string),
+    ) {
+        Ok(ast) => eval_command_list(env, &ast),
+        // As with `eval`: the sourced file failing to parse leaves `source` with status 2 and
+        // the calling script still running.
+        Err(e) => {
+            eprintln!("{}{}: {}", origin_now(), file_path, e);
+            Ok(2)
+        }
+    };
     drop(traced);
+    if matches!(result, Ok(_) | Err(ShellError::Return(_)))
+        && let Err(e) = super::process::run_return_trap(env)
+    {
+        result = Err(e);
+    }
+    if !super::process::in_trap() {
+        env.set_bash_command(command);
+    }
     env.exit_source_file();
     env.exit_script_frame();
-    // Before the status is looked at, so a `return` from inside the file restores them too.
-    if let Some(outer) = outer {
+    env.leave_trap_frame(traps);
+    // Before the status is looked at, so a `return` from inside the file restores them too —
+    // unless the file ran `set` to replace them at the top level, which bash keeps.
+    let replaced = super::variables::positional_sets() != set_before && !env.in_function();
+    if let Some(outer) = outer
+        && !replaced
+    {
         env.set_positional(outer);
     }
     env.exit_nested_script();
@@ -392,10 +468,13 @@ mod tests {
     #[test]
     fn a_non_numeric_operand_is_refused_by_every_control_builtin() {
         let mut env = Environment::new();
-        assert!(matches!(
-            builtin_exit(&mut env, &argv(&["exit", "abc"])),
-            Err(ShellError::Exit(2))
-        ));
+        // A usage error, which bash survives with status 2 outside POSIX mode.
+        assert_eq!(
+            builtin_exit(&mut env, &argv(&["exit", "abc"]))
+                .unwrap_err()
+                .survivable_utility_status(),
+            Some(2)
+        );
         // Inside a function, because `return` outside one is refused before the operand is ever
         // looked at — which is bash's order too, and what the guard in `builtin_return` is for.
         env.enter_function()
@@ -422,10 +501,12 @@ mod tests {
     #[test]
     fn a_partly_numeric_operand_is_not_a_number() {
         let mut env = Environment::new();
-        assert!(matches!(
-            builtin_exit(&mut env, &argv(&["exit", "1x"])),
-            Err(ShellError::Exit(2))
-        ));
+        assert_eq!(
+            builtin_exit(&mut env, &argv(&["exit", "1x"]))
+                .unwrap_err()
+                .survivable_utility_status(),
+            Some(2)
+        );
     }
 
     #[test]
