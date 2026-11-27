@@ -419,13 +419,15 @@ fn assign_value(
     if spec.on.has(Attrs::NAMEREF) {
         return Ok(env.set_reference(name, value));
     }
+    // A literal that names no element abandons the line, as the same literal written as an
+    // assignment does.
     if let Some(body) = array_literal_body(value) {
         let items = literal_items(env, body)?;
         return match assign_literal(env, name, items, append) {
             Ok(done) => Ok(done),
             Err(e) => {
                 eprintln!("{}{e}", crate::env::origin_now());
-                Ok(false)
+                Err(oslo_base::error::ShellError::Abandoned)
             }
         };
     }
