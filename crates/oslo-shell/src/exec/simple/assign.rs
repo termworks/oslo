@@ -256,7 +256,9 @@ mod tests {
             value: AssignmentValue::Scalar(Word::from_literal(value)),
             append: false,
         };
-        let quoted = vec![WordPart::DoubleQuoted(vec![WordPart::Literal("c d".into())])];
+        let quoted = vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+            "c d".into(),
+        )])];
         let variable = vec![WordPart::Variable {
             name: "oslo_k".into(),
             expansion_type: oslo_base::ast::ParamExpansion::Normal,
