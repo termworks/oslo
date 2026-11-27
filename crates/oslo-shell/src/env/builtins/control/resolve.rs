@@ -35,6 +35,8 @@ pub enum Kind {
     Function(Command),
     Builtin,
     File(PathBuf),
+    /// A file the shell has already found and remembered with `hash`.
+    Hashed(PathBuf),
     /// A function in the macro database — looked up only once `$PATH` has failed, as dispatch does.
     Stored,
     /// A name the shell runs that no file on `$PATH` accounts for: a structured verb, a registered
@@ -50,7 +52,7 @@ impl Kind {
     /// The file this resolves to, for a caller that wants a path and nothing else.
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
-            Kind::File(path) => Some(path),
+            Kind::File(path) | Kind::Hashed(path) => Some(path),
             _ => None,
         }
     }
@@ -63,7 +65,7 @@ impl Kind {
             Kind::Keyword => "shell reserved word",
             Kind::Function(_) => "shell function",
             Kind::Builtin => "shell built-in command",
-            Kind::File(_) => "",
+            Kind::File(_) | Kind::Hashed(_) => "",
             Kind::Stored => "stored function",
             Kind::Vocabulary(kind) => kind,
         }
@@ -87,7 +89,7 @@ impl Kind {
             Kind::Keyword => "keyword",
             Kind::Function(_) => "function",
             Kind::Builtin => "builtin",
-            Kind::File(_) => "file",
+            Kind::File(_) | Kind::Hashed(_) => "file",
             Kind::Stored => "function",
             // The word for how it *behaves*, the rule the stored kinds already follow: an
             // autoloadable runs like a function, a verb or a tool like a builtin.
@@ -105,6 +107,7 @@ impl Kind {
             }
             Kind::Builtin => format!("{name} is a shell builtin"),
             Kind::File(path) => format!("{name} is {}", path.display()),
+            Kind::Hashed(path) => format!("{name} is hashed ({})", path.display()),
             Kind::Stored => format!("{name} is a stored function"),
             Kind::Vocabulary(kind) => format!("{name} is a shell {kind}"),
         }
@@ -175,6 +178,13 @@ fn path_matches(name: &str, all: bool) -> Vec<PathBuf> {
     if oslo_base::command::hidden(name) {
         return Vec::new();
     }
+    // A name with a slash is not searched for: it is reported as written, if it can be run.
+    if name.contains('/') {
+        return executable(name)
+            .then(|| PathBuf::from(name))
+            .into_iter()
+            .collect();
+    }
     let found = which::which_all(name)
         .into_iter()
         .flatten()
@@ -183,6 +193,13 @@ fn path_matches(name: &str, all: bool) -> Vec<PathBuf> {
         true => found.collect(),
         false => found.take(1).collect(),
     }
+}
+
+/// Whether `path` names a regular file someone may execute.
+fn executable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(oslo_base::lossless::to_os(path))
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 fn resolve(env: &Environment, name: &str, opts: &Options) -> Vec<Kind> {
@@ -206,6 +223,13 @@ fn resolve(env: &Environment, name: &str, opts: &Options) -> Vec<Kind> {
     }
     if env.is_builtin(name) {
         kinds.push(Kind::Builtin);
+    }
+    // A name already found and remembered is reported as such, as bash's `type` does without `-a`.
+    if !opts.all
+        && kinds.is_empty()
+        && let Some(path) = crate::env::builtins::hash_recall(name)
+    {
+        kinds.push(Kind::Hashed(path));
     }
     // Without `-a` a single earlier match settles it, and a `$PATH` walk would be wasted work.
     if opts.all || kinds.is_empty() {
@@ -283,7 +307,7 @@ pub fn builtin_type(env: &mut Environment, args: &[String]) -> Result<i32> {
                 println!("{}", kind.terse());
             } else if opts.path || opts.force_path {
                 // `-p` prints nothing for a name that is not a file; it is not an error.
-                if let Kind::File(path) = kind {
+                if let Some(path) = kind.path() {
                     println!("{}", path.display());
                 }
             } else {

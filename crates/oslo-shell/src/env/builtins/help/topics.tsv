@@ -1,0 +1,77 @@
+!	! PIPELINE	Execute PIPELINE, which can be a simple command, and negate PIPELINE's
+%	job_spec [&]	Resume job in foreground.
+(( ... ))	(( expression ))	Evaluate arithmetic expression.
+.	. [-p path] filename [arguments]	Execute commands from a file in the current shell.
+:	:	Null command.
+[	[ arg... ]	Evaluate conditional expression.
+[[ ... ]]	[[ expression ]]	Execute conditional command.
+alias	alias [-p] [name[=value] ... ]	Define or display aliases.
+bg	bg [job_spec ...]	Move jobs to the background.
+bind	bind [-lpsvPSVX] [-m keymap] [-f filename] [-q name] [-u name] [-r keyseq] [-x keyseq:shell-command] [keyseq:readline-function or readline-command]	Set Readline key bindings and variables.
+break	break [n]	Exit for, while, or until loops.
+builtin	builtin [shell-builtin [arg ...]]	Execute shell builtins.
+caller	caller [expr]	Return the context of the current subroutine call.
+case	case WORD in [PATTERN [| PATTERN]...) COMMANDS ;;]... esac	Execute commands based on pattern matching.
+cd	cd [-L|[-P [-e]]] [-@] [dir]	Change the shell working directory.
+command	command [-pVv] command [arg ...]	Execute a simple command or display information about commands.
+compgen	compgen [-V varname] [-abcdefgjksuv] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [word]	Display possible completions depending on the options.
+complete	complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]	Specify how arguments are to be completed by Readline.
+compopt	compopt [-o|+o option] [-DEI] [name ...]	Modify or display completion options.
+continue	continue [n]	Resume for, while, or until loops.
+coproc	coproc [NAME] command [redirections]	Create a coprocess named NAME.
+declare	declare [-aAfFgiIlnrtux] [name[=value] ...] or declare -p [-aAfFilnrtux] [name ...]	Set variable values and attributes.
+dirs	dirs [-clpv] [+N] [-N]	Display directory stack.
+disown	disown [-h] [-ar] [jobspec ... | pid ...]	Remove jobs from current shell.
+echo	echo [-neE] [arg ...]	Write arguments to the standard output.
+enable	enable [-a] [-dnps] [-f filename] [name ...]	Enable and disable shell builtins.
+eval	eval [arg ...]	Execute arguments as a shell command.
+exec	exec [-cl] [-a name] [command [argument ...]] [redirection ...]	Replace the shell with the given command.
+exit	exit [n]	Exit the shell.
+export	export [-fn] [name[=value] ...] or export -p [-f]	Set export attribute for shell variables.
+false	false	Return an unsuccessful result.
+fc	fc [-e ename] [-lnr] [first] [last] or fc -s [pat=rep] [command]	Display or execute commands from the history list.
+fg	fg [job_spec]	Move job to the foreground.
+for	for NAME [in WORDS ... ] ; do COMMANDS; done	Execute commands for each member in a list.
+for ((	for (( exp1; exp2; exp3 )); do COMMANDS; done	Arithmetic for loop.
+function	function name { COMMANDS ; } or name () { COMMANDS ; }	Define shell function.
+getopts	getopts optstring name [arg ...]	Parse option arguments.
+hash	hash [-lr] [-p pathname] [-dt] [name ...]	Remember or display program locations.
+help	help [-dms] [pattern ...]	Display information about builtin commands.
+history	history [-c] [-d offset] [n] or history -anrw [filename] or history -ps arg [arg...]	Display or manipulate the history list.
+if	if COMMANDS; then COMMANDS; [ elif COMMANDS; then COMMANDS; ]... [ else COMMANDS; ] fi	Execute commands based on conditional.
+jobs	jobs [-lnprs] [jobspec ...] or jobs -x command [args]	Display status of jobs.
+kill	kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]	Send a signal to a job.
+let	let arg [arg ...]	Evaluate arithmetic expressions.
+local	local [option] name[=value] ...	Define local variables.
+logout	logout [n]	Exit a login shell.
+mapfile	mapfile [-d delim] [-n count] [-O origin] [-s count] [-t] [-u fd] [-C callback] [-c quantum] [array]	Read lines from the standard input into an indexed array variable.
+popd	popd [-n] [+N | -N]	Remove directories from stack.
+printf	printf [-v var] format [arguments]	Formats and prints ARGUMENTS under control of the FORMAT.
+pushd	pushd [-n] [+N | -N | dir]	Add directories to stack.
+pwd	pwd [-LP]	Print the name of the current working directory.
+read	read [-Eers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] [-p prompt] [-t timeout] [-u fd] [name ...]	Read a line from the standard input and split it into fields.
+readarray	readarray [-d delim] [-n count] [-O origin] [-s count] [-t] [-u fd] [-C callback] [-c quantum] [array]	Read lines from a file into an array variable.
+readonly	readonly [-aAf] [name[=value] ...] or readonly -p	Mark shell variables as unchangeable.
+return	return [n]	Return from a shell function.
+select	select NAME [in WORDS ... ;] do COMMANDS; done	Select words from a list and execute commands.
+set	set [-abefhkmnptuvxBCEHPT] [-o option-name] [--] [-] [arg ...]	Set or unset values of shell options and positional parameters.
+shift	shift [n]	Shift positional parameters.
+shopt	shopt [-pqsu] [-o] [optname ...]	Set and unset shell options.
+source	source [-p path] filename [arguments]	Execute commands from a file in the current shell.
+suspend	suspend [-f]	Suspend shell execution.
+test	test [expr]	Evaluate conditional expression.
+time	time [-p] pipeline	Report time consumed by pipeline's execution.
+times	times	Display process times.
+trap	trap [-Plp] [[action] signal_spec ...]	Trap signals and other events.
+true	true	Return a successful result.
+type	type [-afptP] name [name ...]	Display information about command type.
+typeset	typeset [-aAfFgiIlnrtux] name[=value] ... or typeset -p [-aAfFilnrtux] [name ...]	Set variable values and attributes.
+ulimit	ulimit [-SHabcdefiklmnpqrstuvxPRT] [limit]	Modify shell resource limits.
+umask	umask [-p] [-S] [mode]	Display or set file mode mask.
+unalias	unalias [-a] name [name ...]	Remove each NAME from the list of defined aliases.
+unset	unset [-f] [-v] [-n] [name ...]	Unset values and attributes of shell variables and functions.
+until	until COMMANDS; do COMMANDS-2; done	Execute commands as long as a test does not succeed.
+variables	variables - Names and meanings of some shell variables	Common shell variable names and usage.
+wait	wait [-fn] [-p var] [id ...]	Wait for job completion and return exit status.
+while	while COMMANDS; do COMMANDS-2; done	Execute commands as long as a test succeeds.
+{ ... }	{ COMMANDS ; }	Group commands as a unit.

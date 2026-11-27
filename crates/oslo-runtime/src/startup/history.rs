@@ -157,13 +157,21 @@ pub fn take_clear_request() -> bool {
     CLEAR_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
-/// Make `history` a builtin of this shell.
+/// The history as the builtins see it, oldest first.
+pub(super) fn entries() -> Vec<String> {
+    SNAPSHOT.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Make `history` and `fc` builtins of this shell.
 ///
 /// Registered for non-interactive shells too, so that `type history` and completion agree with
-/// what the shell can actually run; there it reports an empty history, exactly as bash does.
+/// what the shell can actually run; there they see an empty history, exactly as bash does.
 pub fn register(env: &mut Environment) {
     env.register_custom_builtin("history", builtin_history);
+    env.register_custom_builtin("fc", fc::builtin_fc);
 }
+
+mod fc;
 
 /// The variable that puts `-c` commands into the history too.
 pub const ALLHIST: &str = "OSLO_ALLHIST";

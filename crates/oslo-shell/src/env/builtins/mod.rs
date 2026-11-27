@@ -13,12 +13,14 @@
 
 mod abbr;
 pub(crate) mod arrays;
+mod bind;
 mod builtin;
 mod caller;
 mod chain;
 mod colon;
 mod command;
 mod compgen;
+mod complete;
 mod conditionals;
 mod control;
 mod copy;
@@ -28,15 +30,18 @@ mod directories;
 mod direnv;
 mod edit;
 mod emit;
+mod enable;
 mod exec;
 mod getopts;
 mod glob;
 mod hash;
+mod help;
 mod io;
 mod jobs;
 mod keep;
 mod r#let;
 mod locate;
+mod logout;
 #[cfg(feature = "make")]
 mod make;
 mod mapfile;
@@ -246,8 +251,15 @@ pub fn register_default_builtins(env: &mut Environment) {
     env.register_custom_builtin("rm", remove::builtin_rm);
 
     env.register_custom_builtin("shopt", builtin_shopt);
-    // `compgen` — `-G`, `-W`, `-f` and `-d`, for scripts and completion functions that call it.
+    // bash's programmable-completion builtins. The specs are stored and printed for scripts;
+    // the line editor completes through its own providers.
     env.register_custom_builtin("compgen", compgen::builtin_compgen);
+    env.register_custom_builtin("complete", complete::builtin_complete);
+    env.register_custom_builtin("compopt", complete::builtin_compopt);
+    env.register_custom_builtin("bind", bind::builtin_bind);
+    env.register_custom_builtin("enable", enable::builtin_enable);
+    env.register_custom_builtin("help", help::builtin_help);
+    env.register_custom_builtin("logout", logout::builtin_logout);
     // `glob` — pathname expansion as a command, with the prompt's qualifiers and regex.
     env.register_custom_builtin("glob", glob::builtin_glob);
     env.register_custom_builtin("caller", builtin_caller);

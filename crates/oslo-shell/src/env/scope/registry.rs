@@ -10,7 +10,7 @@
 
 use crate::env::scope::Environment;
 use oslo_base::error::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub type BuiltinFn = fn(&mut Environment, &[String]) -> Result<i32>;
@@ -61,6 +61,8 @@ pub fn is_special_builtin(name: &str) -> bool {
 #[derive(Default)]
 pub struct BuiltinRegistry {
     table: HashMap<String, Builtin>,
+    /// Names `enable -n` turned off: still registered, invisible to dispatch until re-enabled.
+    disabled: HashSet<String>,
 }
 
 impl BuiltinRegistry {
@@ -117,10 +119,32 @@ impl BuiltinRegistry {
     /// `direnv` feature off in an `.envrc` directory gets the real binary there and oslo's builtin
     /// everywhere else. See `oslo.feature.when`.
     fn entry(&self, name: &str) -> Option<&Builtin> {
-        if oslo_base::feature::builtin_is_off(name) {
+        if oslo_base::feature::builtin_is_off(name) || self.disabled.contains(name.trim()) {
             return None;
         }
         self.table.get(name.trim())
+    }
+
+    /// `enable name` / `enable -n name`; `false` when `name` was never registered.
+    pub fn set_enabled(&mut self, name: &str, on: bool) -> bool {
+        let name = name.trim();
+        if !self.table.contains_key(name) || oslo_base::feature::builtin_is_off(name) {
+            return false;
+        }
+        match on {
+            true => self.disabled.remove(name),
+            false => self.disabled.insert(name.to_string()),
+        };
+        true
+    }
+
+    /// Every registered name a feature has not turned off, with whether `enable` left it on.
+    pub fn states(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.table
+            .keys()
+            .map(String::as_str)
+            .filter(|name| !oslo_base::feature::builtin_is_off(name))
+            .map(|name| (name, !self.disabled.contains(name)))
     }
 
     fn dynamic(&self, name: &str) -> Option<DynBuiltin> {

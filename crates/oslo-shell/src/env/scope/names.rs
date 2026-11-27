@@ -120,4 +120,20 @@ impl Environment {
     pub fn is_builtin(&self, name: &str) -> bool {
         self.builtins.contains(name)
     }
+
+    /// Turn a registered builtin on or off, as `enable` does; `false` if there is no such builtin.
+    pub fn set_builtin_enabled(&mut self, name: &str, on: bool) -> bool {
+        self.builtins.set_enabled(name, on)
+    }
+
+    /// Every builtin name, sorted bytewise, with whether it is enabled — `enable`'s listing.
+    pub fn builtin_states(&self) -> Vec<(String, bool)> {
+        let mut states: Vec<(String, bool)> = self
+            .builtins
+            .states()
+            .map(|(name, on)| (name.to_string(), on))
+            .collect();
+        states.sort();
+        states
+    }
 }

@@ -122,6 +122,11 @@ fn record(index: usize, on: bool) {
     }
 }
 
+/// Every option name, for `compgen -A shopt`.
+pub fn option_names() -> impl Iterator<Item = &'static str> {
+    OPTIONS.iter().map(|o| o.name)
+}
+
 /// The state of one option, for callers that are not the builtin — `oslo.shopt` in Lua.
 pub fn option_state(name: &str) -> Option<bool> {
     OPTIONS.iter().position(|o| o.name == name).map(state_of)
