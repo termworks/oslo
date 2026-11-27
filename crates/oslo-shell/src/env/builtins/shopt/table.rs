@@ -28,6 +28,15 @@ const fn hook(name: &'static str, apply: fn(bool)) -> ShoptOption {
     }
 }
 
+/// A hook whose option starts on; the module it drives starts in the matching state.
+const fn hook_on(name: &'static str, apply: fn(bool)) -> ShoptOption {
+    ShoptOption {
+        name,
+        support: Support::Hook(apply),
+        default: true,
+    }
+}
+
 const fn stored(name: &'static str, default: bool) -> ShoptOption {
     ShoptOption {
         name,
@@ -84,7 +93,7 @@ pub(super) const OPTIONS: &[ShoptOption] = &[
     hook("failglob", crate::expand::glob::set_failglob),
     stored("force_fignore", true),
     stored("globasciiranges", true),
-    stored("globskipdots", true),
+    hook_on("globskipdots", crate::expand::glob::set_globskipdots),
     hook("globstar", crate::expand::glob::set_globstar),
     stored("gnu_errfmt", false),
     stored("histappend", false),

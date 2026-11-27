@@ -39,6 +39,8 @@ pub struct Options {
     pub collate: bool,
     /// Match names case-insensitively: `nocaseglob`.
     pub nocase: bool,
+    /// A pattern starting with `.` also matches `.` and `..`: `shopt -u globskipdots`.
+    pub dots: bool,
     /// The most directory entries one expansion may read, for callers on a keystroke. `None` —
     /// the shell's own — reads everything.
     pub budget: Option<usize>,
@@ -66,6 +68,12 @@ static NULLGLOB: AtomicBool = AtomicBool::new(false);
 static FAILGLOB: AtomicBool = AtomicBool::new(false);
 static NOCASEMATCH: AtomicBool = AtomicBool::new(false);
 static EXTGLOB: AtomicBool = AtomicBool::new(false);
+static DOTS: AtomicBool = AtomicBool::new(false);
+
+/// `shopt -s globskipdots` (the default) / `shopt -u globskipdots`.
+pub fn set_globskipdots(on: bool) {
+    DOTS.store(!on, Ordering::Relaxed);
+}
 
 /// `shopt -s extglob`: `@(a|b)` and the other groups are patterns, not text.
 pub fn set_extglob(on: bool) {
@@ -125,6 +133,7 @@ pub fn shell_options() -> Options {
         dotglob: DOTGLOB.load(Ordering::Relaxed),
         collate: super::collate::locale_collates(),
         nocase: NOCASEGLOB.load(Ordering::Relaxed),
+        dots: DOTS.load(Ordering::Relaxed),
         budget: None,
     }
 }
@@ -348,7 +357,14 @@ fn walk(
                     }
                 }
                 Component::Pattern(items) => {
-                    for entry in dirs.list(&base.path).iter() {
+                    let listed = dirs.list(&base.path);
+                    let dots = options.dots && items.first() == Some(&Item::Ch('.'));
+                    let extra = [".", ".."].map(|name| Entry {
+                        name: name.to_string(),
+                        kind: Kind::Dir,
+                    });
+                    let extra = if dots { &extra[..] } else { &[] };
+                    for entry in extra.iter().chain(listed.iter()) {
                         if !name_matches(items, &entry.name, options) {
                             continue;
                         }

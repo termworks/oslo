@@ -10,8 +10,8 @@ use oslo_base::glob::walk;
 
 pub use oslo_base::glob::ShellPattern;
 pub use oslo_base::glob::walk::{
-    set_dotglob, set_extglob, set_failglob, set_globstar, set_nocaseglob, set_nocasematch,
-    set_nullglob,
+    set_dotglob, set_extglob, set_failglob, set_globskipdots, set_globstar, set_nocaseglob,
+    set_nocasematch, set_nullglob,
 };
 
 /// A pattern that matched nothing while `failglob` is on, as the text it was written as.

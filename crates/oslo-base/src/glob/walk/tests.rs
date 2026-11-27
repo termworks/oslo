@@ -9,6 +9,7 @@ const GLOBSTAR: Options = Options {
     dotglob: false,
     collate: false,
     nocase: false,
+    dots: false,
     budget: None,
 };
 
@@ -188,6 +189,7 @@ fn dotglob_opens_hidden_entries_at_every_depth() {
         dotglob: true,
         collate: false,
         nocase: false,
+        dots: false,
         budget: None,
     };
     assert_eq!(

@@ -16,6 +16,11 @@ echo "checkhash: $?"
 shopt -s cdable_vars
 target=$d
 cd target > /dev/null && [ "$PWD" = "$d" ] && echo "cdable_vars"
+touch .hidden
+echo .*
+shopt -u globskipdots
+echo .*
+shopt -s globskipdots
 cd /
 f() { local x; echo "[${x-unset}]"; }
 x=global
