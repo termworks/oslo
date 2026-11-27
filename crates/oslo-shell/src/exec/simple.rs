@@ -61,7 +61,13 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // declaration builtin's `name=value` operands are assignments and must not be field-split or
     // globbed. See `declare` for what that cost when they were.
     let mut words = Vec::new();
-    let mut rest = simple.words.iter();
+    let mut keyword_assignments = Vec::new();
+    // `set +B` runs the words as they were written, braces and all.
+    let written = match &simple.unbraced {
+        Some(unbraced) if !env.braceexpand() => unbraced,
+        _ => &simple.words,
+    };
+    let mut rest = written.iter();
     // Read from the word's *shape*, before expansion turns it into a string and the backslash
     // stops being visible. See `escape`, which is also where the interactive gate lives.
     let mut escape = escape::Escape::None;
@@ -90,11 +96,18 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
         }
     } else {
         let declaring = is_declaration_builtin(words[0].trim());
+        // `set -k`: an assignment anywhere among the arguments belongs to the command's environment.
+        let keyword = env.option(crate::env::options::ShellOption::Keyword);
         for w in rest {
             if testing {
                 words.push(crate::expand::word::expand_word_to_test_string(env, w)?);
             } else if declaring && looks_like_an_assignment(w) {
                 words.push(crate::expand::expand_word_to_string(env, w)?);
+            } else if keyword && looks_like_an_assignment(w) {
+                let text = crate::expand::expand_word_to_string(env, w)?;
+                if let Some((name, value)) = text.split_once('=') {
+                    keyword_assignments.push((name.to_string(), value.to_string()));
+                }
             } else {
                 words.extend(expand_word(env, w)?);
             }
@@ -136,6 +149,7 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
             prefix_assignments.push((name.clone(), val_str));
         }
     }
+    prefix_assignments.extend(keyword_assignments);
 
     let traced: Vec<String> = prefix_assignments
         .iter()

@@ -359,8 +359,14 @@ pub(crate) fn eval_compound_command(
         CompoundCommand::For {
             var_name,
             items,
+            unbraced,
             body,
         } => {
+            // `set +B` runs the list as it was written.
+            let items = match unbraced {
+                Some(written) if !env.braceexpand() => Some(written),
+                _ => items.as_ref(),
+            };
             let item_words = if let Some(it) = items {
                 let mut vec = Vec::new();
                 for w in it {
@@ -436,7 +442,12 @@ pub(crate) fn eval_compound_command(
                         // still prints once and not twice.
                         std::process::exit(run_exit_trap(env, res));
                     }
-                    Ok(ForkResult::Parent { child }) => Ok(wait_for_status(child)),
+                    Ok(ForkResult::Parent { child }) => {
+                        crate::exec::pipeline::forget_death();
+                        let status = wait_for_status(child);
+                        crate::exec::pipeline::announce_death(env, None, || "( … )".to_string());
+                        Ok(status)
+                    }
                     Err(e) => Err(ShellError::ExecutionError(format!(
                         "Subshell fork failed: {}",
                         e

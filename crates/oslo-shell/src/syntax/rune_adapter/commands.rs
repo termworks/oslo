@@ -35,6 +35,44 @@ pub(super) fn words_of(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast::Word>> 
     Ok(vec![process_substitution_word(tree, node)?])
 }
 
+/// A list of words being converted, with the unbraced form kept once brace expansion changes one.
+#[derive(Default)]
+struct WordList {
+    words: Vec<oslo_ast::Word>,
+    unbraced: Option<Vec<oslo_ast::Word>>,
+}
+
+impl WordList {
+    /// Add the words a `Word` node stands for.
+    fn push_node(&mut self, tree: &Tree, node: &Node) -> Result<()> {
+        let expanded = words_of(tree, node)?;
+        let text = text_of(tree, node);
+        if text.contains('{') && !holds_a_process_substitution(node) {
+            let plain = convert_words_from_str(text)?;
+            if plain != expanded {
+                if self.unbraced.is_none() {
+                    self.unbraced = Some(self.words.clone());
+                }
+                if let Some(unbraced) = &mut self.unbraced {
+                    unbraced.extend(plain);
+                }
+                self.words.extend(expanded);
+                return Ok(());
+            }
+        }
+        self.push(expanded)
+    }
+
+    /// Add words that brace expansion has no part in.
+    fn push(&mut self, words: Vec<oslo_ast::Word>) -> Result<()> {
+        if let Some(unbraced) = &mut self.unbraced {
+            unbraced.extend(words.iter().cloned());
+        }
+        self.words.extend(words);
+        Ok(())
+    }
+}
+
 /// One word, for the positions that take exactly one — a redirect target, a `case` word.
 ///
 /// Brace expansion does not apply in those places, so this is the un-braced counterpart of
@@ -252,14 +290,14 @@ fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::Compoun
         .syntax()
         .tokens()
         .any(|token| token.kind() == SyntaxKind::In);
-    let items = match has_in {
-        false => None,
+    let (items, unbraced) = match has_in {
+        false => (None, None),
         true => {
-            let mut converted = Vec::new();
+            let mut converted = WordList::default();
             for word in looping.items() {
-                converted.extend(words_of(tree, word.syntax())?);
+                converted.push_node(tree, word.syntax())?;
             }
-            Some(converted)
+            (Some(converted.words), converted.unbraced)
         }
     };
     if looping.kind() == SyntaxKind::SelectCommand {
@@ -272,6 +310,7 @@ fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::Compoun
     Ok(oslo_ast::CompoundCommand::For {
         var_name,
         items,
+        unbraced,
         body,
     })
 }
@@ -305,7 +344,7 @@ fn list_at(tree: &Tree, list: Option<CommandList<'_>>) -> Result<oslo_ast::Comma
 
 fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::SimpleCommand> {
     let mut assignments = Vec::new();
-    let mut words = Vec::new();
+    let mut words = WordList::default();
     let mut redirections = Vec::new();
 
     for child in simple.syntax().nodes() {
@@ -318,12 +357,10 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
             // The word is built from the assignment's own source text rather than by rejoining a
             // name and a value: the rejoined text would be a bare literal, so its quotes would
             // survive expansion and the value would then be field-split on its own spaces.
-            SyntaxKind::Assignment if words.is_empty() => {
+            SyntaxKind::Assignment if words.words.is_empty() => {
                 assignments.push(convert_assignment(tree, child)?);
             }
-            SyntaxKind::Assignment => {
-                words.extend(words_of(tree, child)?);
-            }
+            SyntaxKind::Assignment | SyntaxKind::Word => words.push_node(tree, child)?,
             SyntaxKind::Redirect => {
                 // A `{name}` prefix belongs to the redirection; any other non-numeric one is a word.
                 let variable = rune::ast::Redirect::cast(child)
@@ -333,19 +370,19 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
                         .token(SyntaxKind::Text)
                         .filter(|token| token.text(tree.source()).parse::<i32>().is_err())
                 {
-                    words.extend(convert_words_from_str(prefix.text(tree.source()))?);
+                    words.push(convert_words_from_str(prefix.text(tree.source()))?)?;
                 }
                 redirections.extend(super::redirects::convert_redirect(tree, child)?);
             }
-            SyntaxKind::Word => words.extend(words_of(tree, child)?),
             _ => {}
         }
     }
 
     Ok(oslo_ast::SimpleCommand {
         assignments,
-        words,
+        words: words.words,
         redirections,
+        unbraced: words.unbraced,
     })
 }
 

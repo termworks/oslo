@@ -270,6 +270,9 @@ pub struct SimpleCommand {
     pub assignments: Vec<Assignment>,
     pub words: Vec<Word>,
     pub redirections: Vec<Redirection>,
+    /// The words before brace expansion, kept only when brace expansion changed them: what runs
+    /// under `set +B`.
+    pub unbraced: Option<Vec<Word>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,6 +322,8 @@ pub enum CompoundCommand {
     For {
         var_name: String,
         items: Option<Vec<Word>>,
+        /// The items before brace expansion, when it changed them; see [`SimpleCommand::unbraced`].
+        unbraced: Option<Vec<Word>>,
         body: CommandList,
     },
     /// `select name [in words]; do … done`: a numbered menu on stderr, one line of stdin per turn.

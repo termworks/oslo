@@ -281,6 +281,7 @@ fn simple(words: &[&str]) -> Command {
         assignments: Vec::new(),
         words: words.iter().map(|w| literal(w)).collect(),
         redirections: Vec::new(),
+        unbraced: None,
     })
 }
 
@@ -362,5 +363,6 @@ fn assigned(value: AssignmentValue) -> Command {
         }],
         words: Vec::new(),
         redirections: Vec::new(),
+        unbraced: None,
     })
 }

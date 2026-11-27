@@ -199,6 +199,7 @@ fn bracket_and_or(args: Vec<oslo_ast::Word>) -> oslo_ast::AndOrList {
                 assignments: Vec::new(),
                 words,
                 redirections: Vec::new(),
+                unbraced: None,
             })],
         },
         rest: Vec::new(),

@@ -24,8 +24,16 @@ const PWD_USAGE: &str = "pwd: usage: pwd [-LP]";
 /// physical `cd`.
 ///
 /// `cd` also accepts `-e`, which changes nothing here.
+#[cfg(test)]
 fn parse_mode(args: &[String]) -> std::result::Result<(PathMode, &[String]), String> {
-    let mut mode = PathMode::Logical;
+    parse_mode_from(args, PathMode::Logical)
+}
+
+/// [`parse_mode`] with `mode` as the answer when no flag is given: physical under `set -P`.
+fn parse_mode_from(
+    args: &[String],
+    mut mode: PathMode,
+) -> std::result::Result<(PathMode, &[String]), String> {
     let mut index = 1;
     while index < args.len() {
         let arg = args[index].as_str();
@@ -54,8 +62,16 @@ fn parse_mode(args: &[String]) -> std::result::Result<(PathMode, &[String]), Str
     Ok((mode, &args[index..]))
 }
 
+/// The mode `cd` and `pwd` use when no flag picks one.
+fn default_mode(env: &Environment) -> PathMode {
+    match env.physical() {
+        true => PathMode::Physical,
+        false => PathMode::Logical,
+    }
+}
+
 pub fn builtin_cd(env: &mut Environment, args: &[String]) -> Result<i32> {
-    let (mode, operands) = match parse_mode(args) {
+    let (mode, operands) = match parse_mode_from(args, default_mode(env)) {
         Ok(parsed) => parsed,
         Err(flag) => {
             crate::env::complain_with_usage(
@@ -161,7 +177,7 @@ pub fn builtin_cd(env: &mut Environment, args: &[String]) -> Result<i32> {
 }
 
 pub fn builtin_pwd(env: &mut Environment, args: &[String]) -> Result<i32> {
-    let (mode, _operands) = match parse_mode(args) {
+    let (mode, _operands) = match parse_mode_from(args, default_mode(env)) {
         // Operands are ignored: `pwd` has none, and bash does not complain about extras.
         Ok(parsed) => parsed,
         Err(flag) => {

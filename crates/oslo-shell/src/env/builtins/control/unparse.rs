@@ -179,6 +179,7 @@ fn format_compound(kind: &CompoundCommand, depth: usize) -> Vec<String> {
             var_name,
             items,
             body,
+            ..
         } => {
             // `for x` with no word list iterates the positionals; bash prints it without `in`.
             match items {
@@ -286,7 +287,9 @@ pub(crate) fn format_simple(simple: &SimpleCommand) -> String {
     for a in &simple.assignments {
         parts.push(format_assignment(a));
     }
-    parts.extend(simple.words.iter().map(format_word));
+    // The words as written: the braces of `echo {a,b}` are source, not its expansion.
+    let words = simple.unbraced.as_ref().unwrap_or(&simple.words);
+    parts.extend(words.iter().map(format_word));
     parts.extend(simple.redirections.iter().map(format_redirect));
     parts.join(" ")
 }

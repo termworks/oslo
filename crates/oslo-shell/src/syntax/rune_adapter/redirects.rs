@@ -25,6 +25,22 @@ pub(super) fn convert_redirects(
     Ok(out)
 }
 
+/// Append `2>&1` to a command, which is what `|&` after it means.
+pub(super) fn merge_stderr(command: &mut oslo_ast::Command) {
+    let redirection = oslo_ast::Redirection {
+        fd: Some(2),
+        kind: oslo_ast::RedirectKind::DupOutput,
+        target: oslo_ast::Word::from_literal("1"),
+        heredoc_content: None,
+        here_string: false,
+    };
+    match command {
+        oslo_ast::Command::Simple(simple) => simple.redirections.push(redirection),
+        oslo_ast::Command::Compound { redirections, .. } => redirections.push(redirection),
+        oslo_ast::Command::FunctionDef { .. } => {}
+    }
+}
+
 /// Convert one redirection.
 ///
 /// Returns a `Vec` because `&>file` expands to two oslo redirections — there is no single node

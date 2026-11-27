@@ -317,6 +317,7 @@ mod tests {
             assignments: Vec::new(),
             words: Vec::new(),
             redirections: Vec::new(),
+            unbraced: None,
         })
     }
 

@@ -345,8 +345,21 @@ fn pipeline_around(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Pipeli
 
 fn convert_pipeline_node(tree: &Tree, pipeline: Pipeline<'_>) -> Result<oslo_ast::Pipeline> {
     let mut converted = Vec::new();
-    for command in pipeline.commands() {
-        converted.push(commands::convert_command(tree, command)?);
+    for child in pipeline.syntax().children() {
+        match child {
+            rune::Element::Node(node) => {
+                if let Some(command) = Command::cast(node) {
+                    converted.push(commands::convert_command(tree, command)?);
+                }
+            }
+            // `a |& b` is `a 2>&1 | b`, the duplication made after `a`'s own redirections.
+            rune::Element::Token(token) if token.kind() == SyntaxKind::PipeAmp => {
+                if let Some(previous) = converted.last_mut() {
+                    redirects::merge_stderr(previous);
+                }
+            }
+            rune::Element::Token(_) => {}
+        }
     }
     Ok(oslo_ast::Pipeline {
         negated: pipeline.is_negated(),
