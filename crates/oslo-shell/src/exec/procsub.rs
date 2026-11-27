@@ -89,6 +89,7 @@ pub fn open(
             env.enter_subshell();
             env.number_lines_from_here();
             crate::exec::simple::trace::nest();
+            crate::exec::pipeline::quiet_deaths();
             let status = status_of(run(env, &ast));
             flush_stdout();
             std::process::exit(crate::env::builtins::run_exit_trap(env, status));

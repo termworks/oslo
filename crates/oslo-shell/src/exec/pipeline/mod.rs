@@ -46,7 +46,7 @@ use oslo_base::error::{Result, ShellError};
 use std::sync::atomic::{AtomicBool, Ordering};
 /// Waiting on a child, and turning what came back into a status.
 mod waiting;
-pub(crate) use waiting::wait_for_child;
+pub(crate) use waiting::{announce_death, forget_death, note_death, quiet_deaths, wait_for_child};
 pub use waiting::{
     is_interactive, report_error_status, set_interactive, status_of, wait_for_status,
 };
@@ -304,6 +304,9 @@ pub fn eval_pipeline(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> 
         return run_pipeline(env, pipeline);
     }
 
+    // `time -p` reaches here as a first word `-p`: the POSIX report, whatever `TIMEFORMAT` says.
+    let posix = timing::without_posix_flag(pipeline);
+    let pipeline = posix.as_ref().unwrap_or(pipeline);
     let timer = timing::Timer::start();
     let result = run_pipeline(env, pipeline);
     // Stopped on the error path too: bash prints the three lines for `time exit 3` and *then*
@@ -312,7 +315,11 @@ pub fn eval_pipeline(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> 
     // The flush is not cosmetic. stdout is buffered and stderr is not, so `time echo hi >f 2>&1`
     // would otherwise record the timing above the output it timed.
     flush_stdout();
-    timer.report();
+    let format = match posix {
+        Some(_) => Some(timing::POSIX_FORMAT.to_string()),
+        None => env.get_var("TIMEFORMAT").map(str::to_string),
+    };
+    timer.report(format.as_deref());
     result
 }
 

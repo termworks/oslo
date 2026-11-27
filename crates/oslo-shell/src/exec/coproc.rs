@@ -45,6 +45,7 @@ pub(crate) fn start(env: &mut Environment, name: &str, body: &Command) -> Result
             job::join_group_in_child(None);
             job::reset_signals_for_child();
             env.enter_subshell();
+            crate::exec::pipeline::quiet_deaths();
             let _ = dup2(in_read, 0);
             let _ = dup2(out_write, 1);
             for fd in [out_read, out_write, in_read, in_write] {

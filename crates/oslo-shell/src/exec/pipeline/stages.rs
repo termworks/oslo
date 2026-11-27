@@ -59,6 +59,9 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
                     close_all(&pipes);
                     let counted = super::stage::stage_is_nested(env, cmd);
                     env.enter_pipeline_stage(counted);
+                    if idx + 1 < num_cmds {
+                        super::quiet_deaths();
+                    }
                     if traced {
                         crate::env::builtins::skip_next_debug_trap();
                     }
@@ -96,10 +99,15 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
     // `pipefail` to read.
     let mut stage_statuses = Vec::with_capacity(num_cmds);
     let mut stopped = false;
+    super::forget_death();
     for pid in &pids {
         let (status, was_stopped) = wait_for_child(*pid);
         stopped |= was_stopped;
         stage_statuses.push(status);
+    }
+    if !last_here {
+        let last_pid = pids.last().copied();
+        super::announce_death(env, last_pid, || super::describe::describe_pipeline(pipeline));
     }
     job::reclaim_terminal(
         !stopped

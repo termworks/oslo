@@ -39,6 +39,7 @@ pub(super) fn spawn_background(env: &mut Environment, and_or: &AndOrList) -> Res
                 // R4.1: a background child is this shell in another process — it keeps
                 // the environment `fork` copied instead of rebuilding one.
                 env.enter_subshell();
+                super::quiet_deaths();
                 detach_stdin();
                 let res = status_of(eval_and_or_list(env, and_or));
                 flush_stdout();
