@@ -26,33 +26,11 @@ impl Lexer<'_> {
     pub(super) fn scan_dollar_expansion(&mut self, in_double_quotes: bool) -> Result<WordPart> {
         self.skip_line_continuations();
         match self.current_char() {
-            Some('{') => {
-                self.advance();
-                self.scan_braced_param(in_double_quotes)
-            }
-            Some('(') => {
-                self.advance();
-                if self.current_char() == Some('(') {
-                    self.advance();
-                    // `$((` is ambiguous: arithmetic, or a substitution whose first command is a
-                    // subshell. Scan one balanced paren group and let the character after it
-                    // decide — `$((1+2))` closes twice in a row, `$((cd /) ; pwd)` does not.
-                    let inner = self.scan_raw_delimited('(', ')', "arithmetic expansion", 0)?;
-                    if self.current_char() == Some(')') {
-                        self.advance();
-                        return Ok(WordPart::Arithmetic(inner));
-                    }
-                    let rest = self.scan_raw_delimited('(', ')', "command substitution", 0)?;
-                    return Ok(WordPart::CommandSubstitution(format!("({inner}){rest}")));
-                }
-                let cmd = self.scan_raw_delimited('(', ')', "command substitution", 0)?;
-                Ok(WordPart::CommandSubstitution(cmd))
-            }
+            Some('{' | '(') => self.scan_enclosed(in_double_quotes),
             // `$[expr]` is the old spelling of `$((expr))`.
             Some('[') => {
                 self.advance();
-                let inner = self.scan_raw_delimited('[', ']', "arithmetic expansion", 0)?;
-                Ok(WordPart::Arithmetic(inner))
+                Ok(WordPart::Arithmetic(self.scan_old_arithmetic()?))
             }
             Some('\'') if !in_double_quotes => {
                 self.advance();
@@ -166,16 +144,27 @@ impl Lexer<'_> {
         Err(ShellError::SyntaxError("unterminated $' quote".to_string()))
     }
 
-    fn scan_braced_param(&mut self, in_double_quotes: bool) -> Result<WordPart> {
-        // Depth- and quote-aware, so `${x:-${y}}` keeps its whole payload and `${x:-a}b}` does
-        // not end early on the brace inside the quotes.
-        let content = without_line_continuations(&self.scan_raw_delimited(
-            '{',
-            '}',
-            "parameter expansion",
-            0,
-        )?);
-        // `${ cmd; }` and `${| cmd; }` hold a command, not a parameter.
+    /// The body of `$[ … ]`, the cursor just past the `[`: everything up to the matching `]`.
+    fn scan_old_arithmetic(&mut self) -> Result<String> {
+        let mut depth = 0usize;
+        let mut body = String::new();
+        while let Some(ch) = self.advance() {
+            match ch {
+                '[' => depth += 1,
+                ']' if depth == 0 => return Ok(body),
+                ']' => depth -= 1,
+                _ => {}
+            }
+            body.push(ch);
+        }
+        Err(ShellError::SyntaxError(
+            "unterminated arithmetic expansion".to_string(),
+        ))
+    }
+
+    /// The payload of `${ … }`: a command for `${ cmd; }` and `${| cmd; }`, a parameter otherwise.
+    fn braced_body(&self, raw: &str, in_double_quotes: bool) -> Result<WordPart> {
+        let content = without_line_continuations(raw);
         if content.starts_with([' ', '\t', '\n']) {
             return Ok(WordPart::FunctionSubstitution {
                 body: content,
@@ -195,6 +184,36 @@ impl Lexer<'_> {
             super::TildeMode::Leading
         };
         param::parse_braced_body(&content, in_double_quotes, tilde)
+    }
+
+    /// Scan a `$( … )`, `$(( … ))` or `${ … }`, the cursor on the character after the `$`.
+    ///
+    /// Where it ends is asked of rune, the parser that read the word: a here-document body, a
+    /// `case` pattern, a comment, `$'…'` or a regex group can each hold a closer that closes
+    /// nothing. `$((` is arithmetic when its two parentheses close together, so `$((cd /) ; pwd)`
+    /// is a substitution whose first command is a subshell.
+    fn scan_enclosed(&mut self, in_double_quotes: bool) -> Result<WordPart> {
+        let text = self.rest_from(1);
+        let Some((kind, len)) = rune::lex::enclosed(text) else {
+            let what = match self.current_char() {
+                Some('{') => "parameter expansion",
+                _ => "command substitution",
+            };
+            return Err(ShellError::SyntaxError(format!("unterminated {what}")));
+        };
+        let construct = &text[..len];
+        self.advance_bytes(len - 1);
+        let inner = |open: usize, close: usize| {
+            construct
+                .get(open..len - close)
+                .unwrap_or_default()
+                .to_string()
+        };
+        match kind {
+            rune::SyntaxKind::DollarParenParen => Ok(WordPart::Arithmetic(inner(3, 2))),
+            rune::SyntaxKind::DollarParen => Ok(WordPart::CommandSubstitution(inner(2, 1))),
+            _ => self.braced_body(&inner(2, 1), in_double_quotes),
+        }
     }
 }
 
