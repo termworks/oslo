@@ -71,6 +71,10 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
         );
         return Ok(2);
     };
+    if !crate::env::scope::is_valid_identifier(name) {
+        eprintln!("{}getopts: `{name}': not a valid identifier", origin_now());
+        return Ok(1);
+    }
 
     // With no operands `getopts` parses the positional parameters, which is what every
     // `while getopts "ab:" opt; do` in a script is relying on.
@@ -134,13 +138,16 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
                 // from the previous option would otherwise look like this option's.
                 None => env.unset_var("OPTARG"),
             }
-            report(&opt, name, silent, print_errors && !named, env);
-            Ok(0)
+            // A name that cannot be assigned is the builtin's failure, after the scan moved on.
+            match report(&opt, name, silent, print_errors && !named, env) {
+                true => Ok(0),
+                false => Ok(2),
+            }
         }
         Step::Done => {
-            env.set_var(name, "?", false);
+            let assigned = env.set_var(name, "?", false);
             env.unset_var("OPTARG");
-            Ok(1)
+            Ok(if assigned { 1 } else { 2 })
         }
     }
 }
@@ -151,7 +158,7 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
 /// that needs an argument and did not get one). In silent mode they reach the script through
 /// `name`/`OPTARG` and nothing is printed; otherwise `name` is always `?` and the message is what
 /// the script's user sees.
-fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Environment) {
+fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Environment) -> bool {
     let message = match opt {
         "?" => Some("illegal option"),
         ":" if !silent => Some("option requires an argument"),
@@ -176,7 +183,7 @@ fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Env
         ":" if !silent => "?",
         other => other,
     };
-    env.set_var(name, value, false);
+    env.set_var(name, value, false)
 }
 
 /// Advance `optind`/`offset` over the argument list and classify the next option character.

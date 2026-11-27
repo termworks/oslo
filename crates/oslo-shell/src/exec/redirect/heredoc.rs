@@ -6,17 +6,35 @@ use std::io::{Seek, SeekFrom, Write};
 
 /// Materialise a heredoc or here-string body as a readable fd positioned at byte 0.
 ///
-/// The body must not go into a pipe. Nothing is reading the far end yet — the command that will
-/// read it has not been forked — so a body larger than the kernel's pipe buffer (64 KB by default)
-/// blocks the shell forever. In the REPL the `SA_RESTART` SIGINT handler makes that hang
-/// un-interruptible. A seekable file has no capacity limit, so any body size works.
+/// A body that fits in a pipe's buffer goes into a pipe, as bash does, so that a command opening
+/// `/dev/stdin` again reads on from where its stdin is rather than from the start. A larger one
+/// would block the shell writing it, since nothing reads the far end yet, so it goes into an
+/// anonymous file instead, which has no capacity limit.
 pub(super) fn heredoc_body(content: &str) -> Result<File> {
+    if let Some(pipe) = piped(content.as_bytes()) {
+        return Ok(pipe);
+    }
     let mut file = anonymous_file()?;
     file.write_all(content.as_bytes())
         .map_err(|e| ShellError::ExecutionError(format!("heredoc: {}", reason(&e))))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ShellError::ExecutionError(format!("heredoc: {}", reason(&e))))?;
     Ok(file)
+}
+
+/// The read end of a pipe already holding `bytes`, or `None` when they would not fit in it.
+fn piped(bytes: &[u8]) -> Option<File> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    use std::os::fd::AsRawFd;
+    let (read, write) = nix::unistd::pipe2(OFlag::O_CLOEXEC).ok()?;
+    let capacity = fcntl(write.as_raw_fd(), FcntlArg::F_GETPIPE_SZ).ok()?;
+    if bytes.len() >= usize::try_from(capacity).ok()? {
+        return None;
+    }
+    let mut writer = File::from(write);
+    writer.write_all(bytes).ok()?;
+    drop(writer);
+    Some(File::from(read))
 }
 
 /// An empty read/write file with no name in the filesystem, so nothing has to clean it up.

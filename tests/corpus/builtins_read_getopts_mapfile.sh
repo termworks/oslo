@@ -6,6 +6,13 @@ read -i default x <<< "a b"
 echo "read rc=$? [$x]"
 getopts 'a?' o '-?'
 echo "getopts rc=$? o=[$o] OPTARG=[${OPTARG-unset}]"
+OPTIND=1
+getopts a 1bad -a 2>/dev/null
+echo "bad name rc=$?"
+readonly ro
+OPTIND=1
+getopts a ro -a 2>/dev/null
+echo "readonly rc=$? OPTIND=$OPTIND"
 printf '1\n2\n3\n4\n5\n' | {
     mapfile -t -C 'echo cb' -c 2 arr
     echo "${arr[@]}"
