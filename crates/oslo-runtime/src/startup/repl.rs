@@ -73,6 +73,10 @@ pub fn run_repl(login: bool, no_rc: bool, no_profile: bool) -> ! {
     interactive_env.set_option(ShellOption::StdinInput, true);
     // What tells this shell from `sh -i -s < file`, which reports the same `is`: the line editor.
     interactive_env.set_option(ShellOption::Prompt, true);
+    interactive_env.set_option(ShellOption::History, true);
+    interactive_env.set_option(ShellOption::HistExpand, true);
+    oslo_shell::env::builtins::force_shopt("expand_aliases", true);
+    oslo_shell::env::builtins::force_shopt("login_shell", login);
     history::register(&mut interactive_env);
     // Before the config, so `init.lua` reads a universal variable as a variable rather than having
     // to know where the store is. The loop below picks up every later change; this is the first.

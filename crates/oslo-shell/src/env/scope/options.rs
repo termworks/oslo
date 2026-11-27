@@ -28,6 +28,7 @@ impl Environment {
     /// Replace the whole option set, e.g. when restoring it after a subshell-like construct.
     pub fn set_options(&mut self, options: ShellOptions) {
         self.options = options;
+        self.publish_option_vars();
     }
 
     /// Whether `option` is on.
@@ -37,7 +38,31 @@ impl Environment {
 
     /// Turn `option` on or off. The only writer besides [`Environment::set_options`].
     pub fn set_option(&mut self, option: ShellOption, on: bool) {
+        if self.options.is_set(option) == on {
+            return;
+        }
         self.options.set(option, on);
+        self.publish_option_vars();
+    }
+
+    /// `set -E`: functions, substitutions and subshells inherit the ERR trap.
+    pub fn errtrace(&self) -> bool {
+        self.option(ShellOption::ErrTrace)
+    }
+
+    /// `set -T`: functions, substitutions and subshells inherit the DEBUG and RETURN traps.
+    pub fn functrace(&self) -> bool {
+        self.option(ShellOption::FuncTrace)
+    }
+
+    /// `set -B`: brace expansion.
+    pub fn braceexpand(&self) -> bool {
+        self.option(ShellOption::BraceExpand)
+    }
+
+    /// `set -P`: `cd` and `pwd` resolve symbolic links.
+    pub fn physical(&self) -> bool {
+        self.option(ShellOption::Physical)
     }
 
     /// `set -e`: a command that fails ends the shell.
@@ -149,11 +174,11 @@ mod tests {
     fn options_start_at_their_defaults_and_survive_a_round_trip() {
         let mut env = Environment::new();
         assert!(!env.errexit() && !env.nounset() && !env.pipefail());
-        assert_eq!(env.option_flags(), "h");
+        assert_eq!(env.option_flags(), "hB");
 
         env.set_option(ShellOption::ErrExit, true);
         assert!(env.errexit());
-        assert_eq!(env.option_flags(), "eh");
+        assert_eq!(env.option_flags(), "ehB");
 
         let saved = env.options();
         env.set_option(ShellOption::ErrExit, false);

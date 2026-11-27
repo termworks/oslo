@@ -9,20 +9,36 @@ use oslo::Environment;
 use common::{assert_out, run};
 
 // --- aliases ---
+//
+// A shell that is not interactive expands aliases only once `expand_aliases` is set, as bash's
+// does, so each script below sets it first.
+
+/// The line a script needs before any alias it defines is expanded.
+const EXPAND: &str = "shopt -s expand_aliases\n";
 
 #[test]
 fn multi_word_alias_expands_to_multiple_arguments() {
-    assert_out("alias e='echo one two'\ne", "one two");
+    assert_out(&format!("{EXPAND}alias e='echo one two'\ne"), "one two");
 }
 
 #[test]
 fn alias_arguments_are_appended() {
-    assert_out("alias e='echo prefix'\ne suffix", "prefix suffix");
+    assert_out(
+        &format!("{EXPAND}alias e='echo prefix'\ne suffix"),
+        "prefix suffix",
+    );
 }
 
 #[test]
 fn alias_body_keeps_quoted_grouping() {
-    assert_out("alias e='echo \"a  b\"'\ne", "a  b");
+    assert_out(&format!("{EXPAND}alias e='echo \"a  b\"'\ne"), "a  b");
+}
+
+/// Without the option a script's alias is never expanded.
+#[test]
+fn a_script_does_not_expand_aliases_by_default() {
+    let r = run("alias e='echo hi'\ne");
+    assert_eq!(r.status, 127, "stdout: {}", r.stdout);
 }
 
 /// A definition and its use on the *same* line: bash answers `e: command not found`, because an
@@ -40,7 +56,9 @@ fn an_alias_is_not_available_on_the_line_that_defines_it() {
 #[test]
 fn an_alias_may_open_a_compound_command() {
     assert_out(
-        "alias forever='while :; do'\nn=0\nforever\n  n=$((n+1))\n  [ $n -ge 3 ] && break\ndone\necho $n",
+        &format!(
+            "{EXPAND}alias forever='while :; do'\nn=0\nforever\n  n=$((n+1))\n  [ $n -ge 3 ] && break\ndone\necho $n"
+        ),
         "3",
     );
 }
@@ -51,7 +69,7 @@ fn an_alias_may_open_a_compound_command() {
 /// program literally named `ls -la`, and "command not found".
 #[test]
 fn an_alias_body_becomes_several_words() {
-    let r = run("alias ll='ls -la'\nll >/dev/null");
+    let r = run(&format!("{EXPAND}alias ll='ls -la'\nll >/dev/null"));
     assert_eq!(r.status, 0, "stderr: {}", r.stderr);
 }
 
@@ -291,20 +309,12 @@ fn shlvl_counts_nesting() {
     );
 }
 
-/// An option oslo does not implement is refused when you ask to turn it on, and says why.
-///
-/// Accepting it and doing nothing is the failure mode `shopt`'s fixed states were built to avoid:
-/// a script that sets an option and gets status 0 is entitled to believe it took.
+/// Every option bash's `set -o` has is accepted by a script, as bash accepts it.
 #[test]
-fn an_unimplemented_option_is_refused_rather_than_ignored() {
-    for name in ["notify", "keyword", "onecmd", "verbose", "nolog"] {
+fn every_bash_option_is_accepted_by_a_script() {
+    for name in ["notify", "keyword", "nolog", "vi", "emacs", "errtrace", "physical"] {
         let r = run(&format!("set -o {name}\necho status=$?"));
-        assert!(
-            r.stderr.contains("not supported"),
-            "{name}: stderr was {:?}",
-            r.stderr
-        );
-        assert_eq!(r.out(), "status=1", "{name} reported success");
+        assert_eq!(r.out(), "status=0", "{name}: stderr was {:?}", r.stderr);
     }
     // Turning one off is fine — it is already off, so there is nothing to disagree with.
     let r = run("set +o notify\necho status=$?");

@@ -26,11 +26,6 @@ mod apply;
 pub use apply::{SetArgs, SetError, SetListing, parse_set_args};
 
 /// Every option this shell knows, whether or not it does anything yet.
-///
-/// Listing an option here is a promise about *naming*, not about behaviour: `set -o pipefail`
-/// must be accepted and reported by `$-`/`set -o` even in the release where the pipeline code
-/// has not been taught to read it, because a script that turns an option on and gets "invalid
-/// option" back is broken in a way that a script whose option is a no-op is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellOption {
     AllExport,
@@ -41,17 +36,25 @@ pub enum ShellOption {
     Keyword,
     Monitor,
     NoExec,
+    Privileged,
     OneCmd,
     NoUnset,
     Verbose,
     XTrace,
+    BraceExpand,
     NoClobber,
+    ErrTrace,
+    HistExpand,
+    Physical,
+    FuncTrace,
     IgnoreEof,
     NoLog,
     PipeFail,
     Posix,
     Vi,
     Emacs,
+    History,
+    InteractiveComments,
     /// The shell is talking to a person. Set from the invocation, never by `set`.
     Interactive,
     /// The program came from `-c`. Set from the invocation, never by `set`.
@@ -71,16 +74,8 @@ pub struct OptionSpec {
     /// The `set -o` name. `None` for the three invocation flags, which `set` cannot change.
     pub name: Option<&'static str>,
     /// What turning it on does, in one line, for `--help --details`.
-    ///
-    /// Held here rather than in the help text so that the two cannot drift: an option added to
-    /// this table appears in the reference without anybody remembering to write it down twice.
     pub about: &'static str,
-    /// Why turning this on does nothing, when it does nothing.
-    ///
-    /// **An option that is accepted and ignored is worse than one that is refused.** A script
-    /// writing `set -o notify` and getting status 0 is entitled to believe the shell will report
-    /// finished jobs immediately; it will not. This is the same argument `shopt`'s `Fixed` states
-    /// were built on, applied to the other half of the option namespace.
+    /// Why turning this on is refused at a prompt, when it is.
     pub unsupported: Option<&'static str>,
 }
 
@@ -111,174 +106,58 @@ const fn spec(
     }
 }
 
-/// An option the shell knows the name of and does not implement.
+/// An option an interactive shell refuses to turn on.
 const fn refused(
     option: ShellOption,
-    letter: Option<char>,
-    name: Option<&'static str>,
+    name: &'static str,
     about: &'static str,
     why: &'static str,
 ) -> OptionSpec {
     OptionSpec {
         option,
-        letter,
-        name,
+        letter: None,
+        name: Some(name),
         about,
         unsupported: Some(why),
     }
 }
 
-/// Every option, in the order `$-` and `set -o` report them.
-///
-/// Sorted by letter with the letterless options after the ones that have letters, which is what
-/// bash's own ordering amounts to; the three invocation flags come last because `$-` puts them
-/// there (`bash -c 'echo $-'` prints `hBc`, not `chB`).
+const EDITOR: &str = "the editing mode is `oslo.vi.enabled` or `--no-vi`, fixed when the editor is built";
+
+/// Every option, in the order `$-` reports them: bash's flag table, then `c` and `s`.
+#[rustfmt::skip]
 pub const ALL: &[OptionSpec] = &[
-    spec(
-        ShellOption::AllExport,
-        Some('a'),
-        Some("allexport"),
-        "export every variable an assignment creates",
-    ),
-    refused(
-        ShellOption::Notify,
-        Some('b'),
-        Some("notify"),
-        "report a finished background job as soon as it finishes",
-        "a finished background job is reported at the next prompt, not immediately",
-    ),
-    spec(
-        ShellOption::ErrExit,
-        Some('e'),
-        Some("errexit"),
-        "exit as soon as a command fails",
-    ),
-    spec(
-        ShellOption::NoGlob,
-        Some('f'),
-        Some("noglob"),
-        "leave glob patterns alone instead of expanding them",
-    ),
-    spec(
-        ShellOption::HashAll,
-        Some('h'),
-        Some("hashall"),
-        "remember where a command was found, to skip the next $PATH search",
-    ),
-    refused(
-        ShellOption::Keyword,
-        Some('k'),
-        Some("keyword"),
-        "treat an assignment after the command name as an assignment",
-        "an assignment after the command name is an argument, not an assignment",
-    ),
-    spec(
-        ShellOption::Monitor,
-        Some('m'),
-        Some("monitor"),
-        "job control: each job in its own process group, with fg and bg",
-    ),
-    spec(
-        ShellOption::NoExec,
-        Some('n'),
-        Some("noexec"),
-        "read and parse commands without running them, to check syntax",
-    ),
-    refused(
-        ShellOption::OneCmd,
-        Some('t'),
-        Some("onecmd"),
-        "exit after reading and running one command",
-        "the shell does not exit after one command",
-    ),
-    spec(
-        ShellOption::NoUnset,
-        Some('u'),
-        Some("nounset"),
-        "fail rather than expand an unset variable to nothing",
-    ),
-    refused(
-        ShellOption::Verbose,
-        Some('v'),
-        Some("verbose"),
-        "echo each line of input as it is read",
-        "input is not echoed as it is read; `set -x` traces what runs",
-    ),
-    spec(
-        ShellOption::XTrace,
-        Some('x'),
-        Some("xtrace"),
-        "print each command, expanded, before it runs",
-    ),
-    spec(
-        ShellOption::NoClobber,
-        Some('C'),
-        Some("noclobber"),
-        "refuse to overwrite an existing file with `>`",
-    ),
-    spec(
-        ShellOption::IgnoreEof,
-        None,
-        Some("ignoreeof"),
-        "do not let Ctrl-D end an interactive shell",
-    ),
-    refused(
-        ShellOption::NoLog,
-        None,
-        Some("nolog"),
-        "keep function definitions out of the history",
-        "history records function definitions like anything else",
-    ),
-    spec(
-        ShellOption::PipeFail,
-        None,
-        Some("pipefail"),
-        "a pipeline fails if any command in it failed, not just the last",
-    ),
-    spec(
-        ShellOption::Posix,
-        None,
-        Some("posix"),
-        "follow POSIX in the four places bash's default differs",
-    ),
-    refused(
-        ShellOption::Vi,
-        None,
-        Some("vi"),
-        "vi key bindings while editing a line",
-        "the editing mode is `oslo.vi.enabled` or `--no-vi`, fixed when the editor is built",
-    ),
-    refused(
-        ShellOption::Emacs,
-        None,
-        Some("emacs"),
-        "emacs key bindings while editing a line",
-        "the editing mode is `oslo.vi.enabled` or `--no-vi`, fixed when the editor is built",
-    ),
-    spec(
-        ShellOption::Interactive,
-        Some('i'),
-        None,
-        "the shell is interactive (from the invocation; `set` cannot change it)",
-    ),
-    spec(
-        ShellOption::CommandString,
-        Some('c'),
-        None,
-        "the commands came from `-c` (from the invocation)",
-    ),
-    spec(
-        ShellOption::StdinInput,
-        Some('s'),
-        None,
-        "commands are read from standard input (from the invocation)",
-    ),
-    spec(
-        ShellOption::Prompt,
-        None,
-        None,
-        "oslo's line editor is reading the commands (set by the prompt itself)",
-    ),
+    spec(ShellOption::AllExport, Some('a'), Some("allexport"), "export every variable an assignment creates"),
+    spec(ShellOption::Notify, Some('b'), Some("notify"), "report a finished background job as soon as it finishes"),
+    spec(ShellOption::ErrExit, Some('e'), Some("errexit"), "exit as soon as a command fails"),
+    spec(ShellOption::NoGlob, Some('f'), Some("noglob"), "leave glob patterns alone instead of expanding them"),
+    spec(ShellOption::HashAll, Some('h'), Some("hashall"), "remember where a command was found, to skip the next $PATH search"),
+    spec(ShellOption::Interactive, Some('i'), None, "the shell is interactive (from the invocation; `set` cannot change it)"),
+    spec(ShellOption::Keyword, Some('k'), Some("keyword"), "treat an assignment after the command name as an assignment"),
+    spec(ShellOption::Monitor, Some('m'), Some("monitor"), "job control: each job in its own process group, with fg and bg"),
+    spec(ShellOption::NoExec, Some('n'), Some("noexec"), "read and parse commands without running them, to check syntax"),
+    spec(ShellOption::Privileged, Some('p'), Some("privileged"), "keep the effective user and group ids the shell started with"),
+    spec(ShellOption::OneCmd, Some('t'), Some("onecmd"), "exit after reading and running one command"),
+    spec(ShellOption::NoUnset, Some('u'), Some("nounset"), "fail rather than expand an unset variable to nothing"),
+    spec(ShellOption::Verbose, Some('v'), Some("verbose"), "echo each line of input as it is read"),
+    spec(ShellOption::XTrace, Some('x'), Some("xtrace"), "print each command, expanded, before it runs"),
+    spec(ShellOption::BraceExpand, Some('B'), Some("braceexpand"), "expand `{a,b}` and `{1..3}` brace patterns"),
+    spec(ShellOption::NoClobber, Some('C'), Some("noclobber"), "refuse to overwrite an existing file with `>`"),
+    spec(ShellOption::ErrTrace, Some('E'), Some("errtrace"), "functions, substitutions and subshells inherit the ERR trap"),
+    spec(ShellOption::HistExpand, Some('H'), Some("histexpand"), "expand `!` history references in typed lines"),
+    spec(ShellOption::Physical, Some('P'), Some("physical"), "resolve symbolic links in `cd` and `pwd`"),
+    spec(ShellOption::FuncTrace, Some('T'), Some("functrace"), "functions, substitutions and subshells inherit DEBUG and RETURN"),
+    spec(ShellOption::IgnoreEof, None, Some("ignoreeof"), "do not let Ctrl-D end an interactive shell"),
+    spec(ShellOption::NoLog, None, Some("nolog"), "keep function definitions out of the history"),
+    spec(ShellOption::PipeFail, None, Some("pipefail"), "a pipeline fails if any command in it failed, not just the last"),
+    spec(ShellOption::Posix, None, Some("posix"), "follow POSIX in the places bash's default differs"),
+    refused(ShellOption::Vi, "vi", "vi key bindings while editing a line", EDITOR),
+    refused(ShellOption::Emacs, "emacs", "emacs key bindings while editing a line", EDITOR),
+    spec(ShellOption::History, None, Some("history"), "record typed commands in the history"),
+    spec(ShellOption::InteractiveComments, None, Some("interactive-comments"), "`#` starts a comment in a typed line"),
+    spec(ShellOption::CommandString, Some('c'), None, "the commands came from `-c` (from the invocation)"),
+    spec(ShellOption::StdinInput, Some('s'), None, "commands are read from standard input (from the invocation)"),
+    spec(ShellOption::Prompt, None, None, "oslo's line editor is reading the commands (set by the prompt itself)"),
 ];
 
 impl ShellOption {
@@ -327,16 +206,17 @@ impl ShellOption {
 /// [`Environment`]: crate::env::scope::Environment
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShellOptions {
-    bits: u32,
+    bits: u64,
 }
 
-/// **Not all-zero.** `hashall` is on in every shell that has it — bash reports `h` in `$-` from the
-/// first command — so the default state has to say so, or `set +o hashall` would be turning off
-/// something the listing already claimed was off while the shell went on hashing.
+/// bash's defaults for a non-interactive shell: `hashall`, `braceexpand` and
+/// `interactive-comments` on, everything else off.
 impl Default for ShellOptions {
     fn default() -> Self {
         let mut options = ShellOptions { bits: 0 };
         options.set(ShellOption::HashAll, true);
+        options.set(ShellOption::BraceExpand, true);
+        options.set(ShellOption::InteractiveComments, true);
         options
     }
 }
@@ -355,9 +235,6 @@ impl ShellOptions {
     }
 
     /// The value of `$-`: the letter of every set option that has one, in [`ALL`] order.
-    ///
-    /// Options with no letter (`pipefail`, `posix`, …) are invisible here — that is what `$-`
-    /// means, and it is why `set -o` exists.
     pub fn flag_string(self) -> String {
         ALL.iter()
             .filter(|s| self.is_set(s.option))
@@ -373,16 +250,32 @@ impl ShellOptions {
     }
 
     /// `set +o`: the same states written as the commands that would restore them.
-    ///
-    /// This is the form POSIX requires to be re-inputtable, so `save=$(set +o)` … `eval "$save"`
-    /// round-trips.
     pub fn reinputtable_listing(self) -> String {
         self.listing(|name, on| format!("set {}o {}\n", if on { '-' } else { '+' }, name))
     }
 
-    fn listing(self, line: impl Fn(&str, bool) -> String) -> String {
-        ALL.iter()
+    /// `$SHELLOPTS`: the names of the options that are on, sorted and colon-separated.
+    pub fn shellopts(self) -> String {
+        self.sorted()
+            .into_iter()
+            .filter(|(_, on)| *on)
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    fn sorted(self) -> Vec<(&'static str, bool)> {
+        let mut names: Vec<(&'static str, bool)> = ALL
+            .iter()
             .filter_map(|s| s.name.map(|name| (name, self.is_set(s.option))))
+            .collect();
+        names.sort_by_key(|(name, _)| *name);
+        names
+    }
+
+    fn listing(self, line: impl Fn(&str, bool) -> String) -> String {
+        self.sorted()
+            .into_iter()
             .map(|(name, on)| line(name, on))
             .collect()
     }
@@ -403,7 +296,7 @@ mod tests {
                 spec.option
             );
         }
-        assert!(ALL.len() <= 32, "the bitset is a u32");
+        assert!(ALL.len() <= 64, "the bitset is a u64");
     }
 
     #[test]
@@ -445,6 +338,7 @@ mod tests {
         assert_eq!(ShellOption::from_letter('c'), None);
         assert_eq!(ShellOption::from_name("interactive"), None);
         assert_eq!(ShellOption::from_letter('e'), Some(ShellOption::ErrExit));
+        assert_eq!(ShellOption::from_letter('E'), Some(ShellOption::ErrTrace));
         assert_eq!(
             ShellOption::from_name("pipefail"),
             Some(ShellOption::PipeFail)
@@ -457,12 +351,10 @@ mod tests {
         opts.set(ShellOption::XTrace, true);
         opts.set(ShellOption::ErrExit, true);
         opts.set(ShellOption::NoClobber, true);
-        // pipefail has no letter, so it cannot show up in `$-`.
         opts.set(ShellOption::PipeFail, true);
         opts.set(ShellOption::CommandString, true);
-        // `h` is in the default set, so it is here without being asked for — see
-        // `scope::options::tests::options_start_at_their_defaults_and_survive_a_round_trip`.
-        assert_eq!(opts.flag_string(), "ehxCc");
+        opts.set(ShellOption::Interactive, true);
+        assert_eq!(opts.flag_string(), "ehixBCc");
     }
 
     #[test]
@@ -472,16 +364,25 @@ mod tests {
         let listing = opts.reinputtable_listing();
         assert!(listing.contains("set -o nounset\n"));
         assert!(listing.contains("set +o errexit\n"));
-        assert!(!listing.contains("interactive"));
+        assert!(!listing.contains("interactive\n"));
     }
 
     #[test]
-    fn long_listing_names_every_settable_option() {
+    fn long_listing_names_every_settable_option_in_name_order() {
         let listing = ShellOptions::default().long_listing();
         assert_eq!(
             listing.lines().count(),
             ALL.iter().filter(|s| s.settable()).count()
         );
         assert!(listing.contains("errexit        \toff"));
+        assert!(listing.starts_with("allexport      \toff\nbraceexpand    \ton\n"));
+    }
+
+    #[test]
+    fn shellopts_lists_the_defaults() {
+        assert_eq!(
+            ShellOptions::default().shellopts(),
+            "braceexpand:hashall:interactive-comments"
+        );
     }
 }

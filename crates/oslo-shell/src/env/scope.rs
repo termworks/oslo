@@ -4,6 +4,7 @@ mod environ;
 mod frames;
 mod names;
 mod options;
+mod optvars;
 pub mod origin;
 mod record;
 mod registry;
@@ -29,6 +30,7 @@ use std::sync::Arc;
 pub use array::{ShellArray, array_literal_body};
 pub use calls::{CallFrame, FrameKind};
 pub use registry::{BuiltinFn, is_special_builtin};
+pub use traps::TrapFrame;
 
 /// One running process substitution: the descriptor the caller was given, and the child feeding it.
 ///
@@ -80,6 +82,8 @@ pub struct Environment {
     pipeline_status: Vec<i32>,
     /// Exit status of the last command substitution, until something consumes it.
     substitution_status: Option<i32>,
+    /// `$BASH_COMMAND`: the text of the command running, or about to run.
+    bash_command: String,
     /// How many lines of the file come *before* the chunk now running.
     ///
     /// **Nearly always zero.** A script that parses is evaluated whole, and every line number in
@@ -212,6 +216,7 @@ impl Environment {
             current_pid: pid,
             pipeline_status: vec![0],
             substitution_status: None,
+            bash_command: String::new(),
             published_line: 0,
             line_offset: 0,
             aliases,
@@ -249,6 +254,7 @@ impl Environment {
         env_struct.seed_option_index();
         env_struct.seed_compatibility_vars();
         env_struct.seed_special_vars();
+        env_struct.seed_option_vars();
         env_struct
     }
 
@@ -280,6 +286,19 @@ impl Environment {
         // able to report them. See [`Self::inherited_traps`].
         self.inherited_traps = std::mem::take(&mut self.signal_traps);
         self.refresh_subshell_vars(counted);
+        // `-E` keeps the ERR trap running in the child, and `-T` keeps DEBUG and RETURN.
+        let mut kept: Vec<&str> = Vec::new();
+        if self.errtrace() {
+            kept.push("ERR");
+        }
+        if self.functrace() {
+            kept.extend(["DEBUG", "RETURN"]);
+        }
+        for key in kept {
+            if let Some(action) = self.inherited_traps.remove(key) {
+                self.signal_traps.insert(key.to_string(), action);
+            }
+        }
     }
 
     /// This process's real pid, as opposed to `$$`. See [`Self::enter_subshell`].
@@ -306,6 +325,16 @@ impl Environment {
     /// Whether a `break` or `continue` has a loop to act on.
     pub fn in_loop(&self) -> bool {
         self.loop_depth > 0
+    }
+
+    /// Close every open loop for a function body, which `break` cannot leave; answers how many.
+    pub fn take_loops(&mut self) -> usize {
+        std::mem::take(&mut self.loop_depth)
+    }
+
+    /// Reopen the loops [`Self::take_loops`] closed.
+    pub fn restore_loops(&mut self, loops: usize) {
+        self.loop_depth = loops;
     }
 
     /// Begin a nested `source` or `eval`; `Err` once the chain is too deep to be safe.

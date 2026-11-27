@@ -36,7 +36,7 @@ mod scoped;
 
 pub use aliases::{builtin_alias, builtin_unalias};
 pub use exporting::{builtin_export, builtin_unset};
-pub use parameters::{builtin_set, builtin_shift};
+pub use parameters::{builtin_set, builtin_shift, positional_sets};
 pub use scoped::{builtin_local, builtin_readonly};
 
 /// Complain about `word` the way bash does for a name that is not `[A-Za-z_][A-Za-z0-9_]*`.

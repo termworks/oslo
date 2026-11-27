@@ -524,7 +524,10 @@ fn apply_invocation_options(env: &mut Environment, invocation: &Invocation) {
     }
     if invocation.force_interactive {
         env.set_option(ShellOption::Interactive, true);
+        oslo::env::builtins::force_shopt("expand_aliases", true);
     }
+    oslo::env::builtins::force_shopt("login_shell", invocation.login);
+    env.publish_option_vars();
 }
 
 /// The status a non-interactive shell ends with after it could not finish its script.

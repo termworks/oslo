@@ -22,7 +22,7 @@ mod command;
 mod compgen;
 mod complete;
 mod conditionals;
-mod control;
+pub(crate) mod control;
 mod copy;
 mod declare;
 mod directories;
@@ -54,7 +54,7 @@ mod process;
 mod remove;
 #[cfg(feature = "scratch")]
 mod scratch;
-mod shopt;
+pub(crate) mod shopt;
 pub(crate) mod spawn;
 mod status;
 mod suspend;
@@ -93,10 +93,11 @@ pub use make::builtin_make;
 pub use mapfile::builtin_mapfile;
 pub use messages::builtin_messages;
 pub use process::{
-    builtin_kill, builtin_trap, builtin_umask, pending_signal, run_debug_trap, run_err_trap,
-    run_exit_trap, run_pending_traps,
+    builtin_kill, builtin_trap, builtin_umask, in_debug_trap, in_trap, pending_signal,
+    run_debug_trap, run_err_trap, run_exit_trap, run_pending_traps, run_return_trap,
+    skip_next_debug_trap,
 };
-pub use shopt::{builtin_shopt, option_state, set_option};
+pub use shopt::{builtin_shopt, force as force_shopt, option_state, set_option};
 pub use status::builtin_status;
 pub use suspend::builtin_suspend;
 pub use times::builtin_times;
