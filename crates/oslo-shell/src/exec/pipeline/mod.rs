@@ -349,7 +349,8 @@ fn run_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
     // that reads its upstream by coordinate cannot start until that upstream has finished, so the
     // whole pipeline runs one stage at a time. A pipeline with no coordinate in it — which is
     // nearly all of them — answers `false` here and forks concurrently as it always has.
-    if coordinates::uses_coordinates(pipeline) {
+    // Coordinates are prompt syntax: a script reads `{1..}` and `{0:0}` as bash does.
+    if env.interactive() && coordinates::uses_coordinates(pipeline) {
         return coordinates::run(env, pipeline);
     }
     run_byte_stages(env, pipeline)

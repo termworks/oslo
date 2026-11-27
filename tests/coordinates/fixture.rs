@@ -7,7 +7,9 @@
 use crate::common::oslo_bin;
 use std::process::Command;
 
-/// Run `line` through `-c` in a directory holding a small fixture.
+/// Run `line` through `-i -c` in a directory holding a small fixture.
+///
+/// Interactive, because coordinates are prompt syntax and a script reads them as bash does.
 #[track_caller]
 pub fn shell(line: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -19,6 +21,7 @@ pub fn shell(line: &str) -> String {
     std::fs::write(dir.path().join("spaced.txt"), "my file.txt  100\n").expect("fixture");
     std::fs::write(dir.path().join("glob.txt"), "*.txt\n").expect("fixture");
     let out = Command::new(oslo_bin())
+        .arg("-i")
         .arg("-c")
         .arg(line)
         .current_dir(dir.path())
