@@ -361,17 +361,18 @@ impl<'t> Builder<'t> {
                 .first()
                 .map(|inner| self.cond_node(inner, !invert, true))
                 .unwrap_or_default(),
-            SyntaxKind::CondAnd | SyntaxKind::CondOr if children.len() == 2 => {
+            // rune keeps a chain of one operator as one node with every operand under it.
+            SyntaxKind::CondAnd | SyntaxKind::CondOr if children.len() >= 2 => {
                 let op = if node.kind() == SyntaxKind::CondAnd {
-                    "&&"
+                    " && "
                 } else {
-                    "||"
+                    " || "
                 };
-                format!(
-                    "{not}{} {op} {}",
-                    self.cond_node(children[0], false, true),
-                    self.cond_node(children[1], false, true)
-                )
+                let operands: Vec<String> = children
+                    .iter()
+                    .map(|child| self.cond_node(child, false, true))
+                    .collect();
+                format!("{not}{}", operands.join(op))
             }
             SyntaxKind::CondGroup => {
                 let inner = children

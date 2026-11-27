@@ -33,4 +33,6 @@ g8() { echo a \
 g9() { ! a | b; time ! c; time -p d; a | b | c; a |& b |& c; }
 h1() { x=$(case $y in a) echo 1;; b|c) echo 2;; esac; echo z); }
 h3() { x=$(for i in 1 2; do echo $i; done); y=$(while :; do break; done); z=$({ a; b; }); }
-declare -f f7 f8 f9 f10 f11 f17 g1 g2 g3 g4 g5 g6 g8 g9 h1 h3
+h4() { [[ -n $a &&
+    $b && c -lt 1 || ! -z $d ]]; exec {fd}>out; exec {fd}>&-; }
+declare -f f7 f8 f9 f10 f11 f17 g1 g2 g3 g4 g5 g6 g8 g9 h1 h3 h4

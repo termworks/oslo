@@ -142,11 +142,8 @@ pub struct Environment {
     call_stack: Vec<String>,
     /// How the code now running was reached: `main` for a script file, `source` for a sourced one.
     ///
-    /// **Kept apart from [`Self::call_stack`] on purpose.** bash puts these in `$FUNCNAME` — a
-    /// function called from a script file sees `f main` — but they are not function frames, and
-    /// `caller` decides "am I inside a function at all" by asking whether that stack is empty. A
-    /// sentinel pushed there would make `caller` answer yes at the top level of every script, and
-    /// the `while caller $i` idiom depends on it answering no.
+    /// Decides whether a diagnostic names a file and whether `return` is allowed outside a
+    /// function; the call stack itself is [`Self::frames`].
     script_frames: Vec<String>,
     /// The files whose commands are running, innermost last — for a diagnostic's location only.
     /// See [`Environment::enter_source_file`].
