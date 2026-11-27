@@ -320,14 +320,13 @@ fn print_functions(env: &Environment, names: &[String], bodies: bool) -> i32 {
 
     let mut status = 0;
     for name in selected {
-        let Some(body) = env.get_function(&name) else {
+        let Some(definition) = env.function_definition(&name) else {
             status = 1;
             continue;
         };
         match (bodies, asked) {
-            // `-f`: the whole definition, in the shape `type` already prints and the differential
-            // suite already compares against bash byte for byte.
-            (true, _) => println!("{}", super::control::format_function(&name, body)),
+            // `-f`: the whole definition, in the shape `type` prints.
+            (true, _) => println!("{definition}"),
             (false, true) => println!("{name}"),
             (false, false) => println!("declare -f {name}"),
         }

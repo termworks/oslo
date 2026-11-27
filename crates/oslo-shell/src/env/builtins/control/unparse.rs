@@ -126,7 +126,7 @@ fn format_command(cmd: &Command, depth: usize) -> Vec<String> {
     let pad = INDENT.repeat(depth);
     match cmd {
         Command::Simple(simple) => vec![format!("{pad}{}", format_simple(simple))],
-        Command::FunctionDef { name, body } => format_function(name, body)
+        Command::FunctionDef { name, body, .. } => format_function(name, body)
             .lines()
             .map(|l| format!("{pad}{l}"))
             .collect(),
@@ -484,7 +484,7 @@ mod tests {
         let list = crate::syntax::parse_bash_script(src).expect("parses");
         for item in &list.items {
             for cmd in &item.and_or.first.commands {
-                if let Command::FunctionDef { name, body } = cmd {
+                if let Command::FunctionDef { name, body, .. } = cmd {
                     return format_function(name, body);
                 }
             }

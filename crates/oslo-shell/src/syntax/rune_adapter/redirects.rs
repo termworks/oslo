@@ -213,6 +213,35 @@ fn heredoc_body(tree: &Tree, node: &Node) -> String {
     }
 }
 
+/// Where `node`'s text ends once the bodies of the here-documents it opens are counted: a body
+/// may follow the line the node ends on.
+pub(super) fn extent_with_heredocs(tree: &Tree, node: &Node) -> u32 {
+    let mut inside = Vec::new();
+    collect_openers(node, &mut inside);
+    if inside.is_empty() {
+        return node.span().end;
+    }
+    let mut bodies = Vec::new();
+    collect_bodies(tree.root(), &mut bodies);
+    let mut openers = Vec::new();
+    collect_openers(tree.root(), &mut openers);
+    let span = node.span();
+    let text = tree.source().text();
+    // A body is followed by its delimiter line, which belongs to it too.
+    let through_delimiter = |end: u32| {
+        let at = end as usize;
+        text.get(at..)
+            .and_then(|rest| rest.find('\n'))
+            .map_or(text.len() as u32, |newline| (at + newline + 1) as u32)
+    };
+    openers
+        .iter()
+        .zip(&bodies)
+        .filter(|(opener, _)| span.contains(opener.start))
+        .map(|(_, body)| through_delimiter(body.end))
+        .fold(span.end, u32::max)
+}
+
 fn collect_openers(node: &Node, out: &mut Vec<rune::Span>) {
     for child in node.nodes() {
         if child.kind() == SyntaxKind::Redirect

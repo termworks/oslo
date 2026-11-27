@@ -30,3 +30,8 @@ use oslo_base::error::Result;
 pub fn parse_single_word(source: &str) -> Result<Word> {
     quoting::parse_word_source(source)
 }
+
+/// The text the body of a `$'…'` string stands for.
+pub fn decode_ansi_c(body: &str) -> String {
+    ansi_c::decode(body)
+}

@@ -54,6 +54,32 @@ impl Environment {
         self.functions.insert(name.to_string(), Arc::new(body));
         let file = self.defining_file();
         self.function_files.insert(name.to_string(), file);
+        self.function_sources.remove(name);
+    }
+
+    /// Remember the text `name` was defined with, for printing it back as bash does.
+    pub fn set_function_source(&mut self, name: &str, source: Option<Arc<str>>) {
+        match source {
+            Some(text) => self.function_sources.insert(name.to_string(), text),
+            None => self.function_sources.remove(name),
+        };
+    }
+
+    /// The definition of `name` as `declare -f` prints it: bash's layout from the source text
+    /// when it is known, else rebuilt from the tree.
+    pub fn function_definition(&self, name: &str) -> Option<String> {
+        let body = self.get_function(name)?;
+        let printed = self
+            .function_sources
+            .get(name)
+            .and_then(|text| crate::syntax::print::function_text(text, name, true));
+        Some(printed.unwrap_or_else(|| crate::env::builtins::format_function(name, body)))
+    }
+
+    /// The body of `name` as bash exports it in `BASH_FUNC_name%%`: `() { …}` on few lines.
+    pub fn function_export_text(&self, name: &str) -> Option<String> {
+        let text = self.function_sources.get(name)?;
+        crate::syntax::print::function_text(text, "", false)
     }
 
     /// Forget the function `name`; `true` if there was one.
@@ -64,6 +90,7 @@ impl Environment {
     /// is what a caller that needs to know would ask for.
     pub fn remove_function(&mut self, name: &str) -> bool {
         self.function_files.remove(name);
+        self.function_sources.remove(name);
         self.functions.remove(name).is_some()
     }
 

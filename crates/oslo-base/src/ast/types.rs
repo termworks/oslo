@@ -282,7 +282,22 @@ pub enum Command {
     FunctionDef {
         name: String,
         body: Box<Command>,
+        /// The definition as written, for reprinting it the way bash does.
+        source: FunctionSource,
     },
+}
+
+/// The source text of a function definition, from its name to the end of its last here-document.
+///
+/// Equality ignores it, as [`ListItem`] equality ignores the line: two definitions that run the
+/// same commands are the same definition however they were spelled.
+#[derive(Debug, Clone, Default, Eq)]
+pub struct FunctionSource(pub Option<std::sync::Arc<str>>);
+
+impl PartialEq for FunctionSource {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

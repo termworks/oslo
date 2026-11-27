@@ -68,9 +68,15 @@ impl Environment {
     }
 
     /// Drop the innermost frame if it is of `kind`, and republish the arrays.
+    ///
+    /// The caller's line is current again, so `$LINENO` names the line the frame was entered from
+    /// until the next command publishes its own.
     fn pop_frame(&mut self, kind: FrameKind) {
-        if self.frames.last().is_some_and(|frame| frame.kind == kind) {
-            self.frames.pop();
+        if self.frames.last().is_some_and(|frame| frame.kind == kind)
+            && let Some(frame) = self.frames.pop()
+            && kind != FrameKind::Main
+        {
+            self.resume_line(frame.line);
         }
         self.publish_call_stack();
     }

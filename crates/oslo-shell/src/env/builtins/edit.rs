@@ -58,8 +58,8 @@ pub fn builtin_funced(env: &mut Environment, args: &[String]) -> Result<i32> {
 
     // An unknown name opens an empty definition rather than refusing: writing a new function is
     // the same act as changing an old one, and refusing would send you to a file to start it in.
-    let source = match env.get_function(&name) {
-        Some(body) => super::control::format_function(&name, body),
+    let source = match env.function_definition(&name) {
+        Some(definition) => definition,
         None => format!("{name}() {{\n    \n}}\n"),
     };
 

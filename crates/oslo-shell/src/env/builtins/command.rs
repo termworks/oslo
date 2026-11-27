@@ -197,9 +197,8 @@ fn verbose_description(env: &Environment, name: &str, default_path: bool) -> Opt
     if is_keyword(name) {
         return Some(format!("{} is a shell keyword", name));
     }
-    if let Some(body) = env.get_function(name) {
-        let text = crate::env::builtins::control::format_function(name, body);
-        return Some(format!("{name} is a function\n{text}"));
+    if let Some(definition) = env.function_definition(name) {
+        return Some(format!("{name} is a function\n{definition}"));
     }
     if env.is_builtin(name) {
         return Some(format!("{} is a shell builtin", name));

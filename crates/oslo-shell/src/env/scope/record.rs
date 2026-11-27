@@ -45,6 +45,20 @@ impl Environment {
         std::mem::replace(&mut self.line_offset, lines)
     }
 
+    /// The line of the command now running, counted from the top of its file.
+    pub fn current_line(&self) -> u32 {
+        self.current_line
+    }
+
+    /// Make `line`, already counted from the top of its file, the current one again.
+    pub fn resume_line(&mut self, line: u32) {
+        self.current_line = line;
+        if line != self.published_line {
+            self.set_var("LINENO", &line.to_string(), false);
+            self.published_line = line;
+        }
+    }
+
     /// Number the lines of text about to be parsed and run from the line of the command now
     /// running, as bash numbers `eval` and `$(…)` bodies. Answers the previous offset.
     pub fn number_lines_from_here(&mut self) -> u32 {

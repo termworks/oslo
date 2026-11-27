@@ -4,9 +4,7 @@
 //! `type` that disagrees with what the shell actually runs is worse than no `type` at all, so
 //! this list is the one place to change if dispatch changes.
 
-use super::format_function;
 use crate::env::scope::Environment;
-use oslo_base::ast::Command;
 use oslo_base::error::Result;
 use std::path::PathBuf;
 
@@ -32,7 +30,8 @@ pub fn is_keyword(name: &str) -> bool {
 pub enum Kind {
     Alias(String),
     Keyword,
-    Function(Command),
+    /// A shell function, with its definition as `declare -f` prints it.
+    Function(String),
     Builtin,
     File(PathBuf),
     /// A file the shell has already found and remembered with `hash`.
@@ -102,9 +101,7 @@ impl Kind {
         match self {
             Kind::Alias(value) => format!("{name} is aliased to `{value}'"),
             Kind::Keyword => format!("{name} is a shell keyword"),
-            Kind::Function(body) => {
-                format!("{name} is a function\n{}", format_function(name, body))
-            }
+            Kind::Function(definition) => format!("{name} is a function\n{definition}"),
             Kind::Builtin => format!("{name} is a shell builtin"),
             Kind::File(path) => format!("{name} is {}", path.display()),
             Kind::Hashed(path) => format!("{name} is hashed ({})", path.display()),
@@ -217,9 +214,9 @@ fn resolve(env: &Environment, name: &str, opts: &Options) -> Vec<Kind> {
         kinds.push(Kind::Keyword);
     }
     if !opts.no_functions
-        && let Some(body) = env.get_function(name)
+        && let Some(definition) = env.function_definition(name)
     {
-        kinds.push(Kind::Function(body.clone()));
+        kinds.push(Kind::Function(definition));
     }
     if env.is_builtin(name) {
         kinds.push(Kind::Builtin);

@@ -185,7 +185,12 @@ fn drain(env: &mut Environment) -> Result<()> {
 fn run_handler(env: &mut Environment, action: &str) -> Result<i32> {
     let saved = env.last_status;
     let traced = crate::exec::simple::trace::Nested::enter();
+    // The action's lines count from the line it interrupted, as bash reports `$LINENO` there.
+    let line = env.current_line();
+    let outer = env.number_lines_from_here();
     let result = parse_and_run(env, action);
+    env.set_line_offset(outer);
+    env.resume_line(line);
     drop(traced);
     env.last_status = saved;
     result

@@ -157,6 +157,8 @@ pub struct Environment {
     frames: Vec<CallFrame>,
     /// The file each function was defined in, for its `BASH_SOURCE` entry.
     function_files: HashMap<String, String>,
+    /// The text each function was defined with, for `declare -f`.
+    function_sources: HashMap<String, Arc<str>>,
     /// The line of the command now running, whatever `$LINENO` has been assigned since.
     current_line: u32,
     /// Whether the command just before this one was an `exit` refused over stopped jobs.
@@ -235,6 +237,7 @@ impl Environment {
             source_offsets: Vec::new(),
             frames: Vec::new(),
             function_files: HashMap::new(),
+            function_sources: HashMap::new(),
             current_line: 0,
             exit_warned: false,
             script_depth: DepthGuard::new(MAX_SCRIPT_DEPTH),

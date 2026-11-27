@@ -8,6 +8,7 @@
 //! guesses.
 pub mod alias;
 pub mod lower;
+pub mod print;
 pub mod rune_adapter;
 
 pub use rune_adapter::{array_literal, parse_bash_script};

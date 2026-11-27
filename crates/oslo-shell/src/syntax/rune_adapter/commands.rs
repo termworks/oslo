@@ -117,9 +117,17 @@ pub(super) fn convert_command(tree: &Tree, command: Command<'_>) -> Result<oslo_
                     )));
                 }
             };
+            let start = function.span().start as usize;
+            let end = super::redirects::extent_with_heredocs(tree, function.syntax()) as usize;
+            let source = tree
+                .source()
+                .text()
+                .get(start..end)
+                .map(std::sync::Arc::from);
             Ok(oslo_ast::Command::FunctionDef {
                 name,
                 body: Box::new(body),
+                source: oslo_ast::FunctionSource(source),
             })
         }
         Command::Conditional(conditional) => {

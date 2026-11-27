@@ -503,8 +503,9 @@ pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {
             crate::exec::procsub::finish_from(env, opened_before);
             result
         }
-        Command::FunctionDef { name, body } => {
+        Command::FunctionDef { name, body, source } => {
             env.set_function(name, *body.clone());
+            env.set_function_source(name, source.0.clone());
             Ok(0)
         }
     }
