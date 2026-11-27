@@ -12,6 +12,7 @@ mod operand;
 mod parser;
 
 pub use eval::eval_arithmetic;
+pub use operand::expand_expression;
 
 #[cfg(test)]
 mod tests {

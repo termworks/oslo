@@ -75,7 +75,7 @@ pub use command::builtin_command;
 pub use conditionals::{builtin_extended_test, builtin_test};
 pub use control::{
     builtin_break, builtin_continue, builtin_eval, builtin_exit, builtin_return, builtin_source,
-    builtin_type,
+    builtin_type, format_word,
 };
 pub use declare::builtin_declare;
 pub use directories::{builtin_cd, builtin_dirs, builtin_popd, builtin_pushd, builtin_pwd};

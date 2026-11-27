@@ -164,8 +164,7 @@ fn access(path: &std::path::Path, mode: nix::unistd::AccessFlags) -> bool {
 
 pub(super) fn eval_binary(mode: Mode, left: &str, op: &str, right: &str) -> TestResult<bool> {
     Ok(match op {
-        "=" => left == right,
-        "==" => pattern_or_literal(mode, left, right),
+        "=" | "==" => pattern_or_literal(mode, left, right),
         "!=" => !pattern_or_literal(mode, left, right),
         // Byte-order comparison, as bash's `test` does; no locale collation.
         "<" => left < right,
@@ -190,9 +189,8 @@ pub(super) fn eval_binary(mode: Mode, left: &str, op: &str, right: &str) -> Test
 
 /// `[[ left == right ]]`, where `right` is a pattern, against `[ left = right ]`, where it is not.
 ///
-/// A fully quoted operand never gets here as a pattern — the adapter emits the POSIX operator for
-/// `[[ $x == "$y" ]]`. A *partly* quoted one arrives with its quoted runs between the adapter's
-/// marks, and each character keeps whether it was quoted.
+/// The operand's quoted runs arrive between the adapter's marks, and each character keeps whether
+/// it was quoted.
 fn pattern_or_literal(mode: Mode, left: &str, right: &str) -> bool {
     match mode {
         Mode::Posix => left == right,

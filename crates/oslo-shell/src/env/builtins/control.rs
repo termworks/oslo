@@ -16,7 +16,7 @@ pub use resolve::is_keyword;
 /// has two dispatch tables and one of them is wrong. There is one, and it is [`resolve::ways`].
 pub use resolve::{Kind, ways};
 /// Render a function definition as shell source; also what `set` and `declare -f` need to print.
-pub use unparse::format_function;
+pub use unparse::{format_function, format_word};
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
@@ -279,6 +279,7 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
         }) {
             Ok(ast) => {
                 let outer = env.number_lines_from_here();
+                let _traced = crate::exec::simple::trace::Nested::enter();
                 let status = eval_command_list(env, &ast);
                 env.set_line_offset(outer);
                 status
@@ -347,6 +348,7 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     env.enter_script_frame("source");
     // And the file itself, so a failure inside it names it rather than the script that sourced it.
     env.enter_source_file(file_path);
+    let traced = crate::exec::simple::trace::Nested::enter();
     let result =
         match crate::syntax::parse_with_aliases(&content, !env.get_aliases().is_empty(), &|n| {
             env.get_alias(n).map(str::to_string)
@@ -359,6 +361,7 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
                 Ok(2)
             }
         };
+    drop(traced);
     env.exit_source_file();
     env.exit_script_frame();
     // Before the status is looked at, so a `return` from inside the file restores them too.

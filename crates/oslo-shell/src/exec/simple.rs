@@ -16,7 +16,7 @@ mod declare;
 mod escape;
 mod external;
 mod posix;
-mod trace;
+pub(crate) mod trace;
 
 pub(crate) use assign::build_array;
 pub use autocd::set_autocd;
@@ -126,7 +126,11 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
         }
     }
 
-    trace::trace_command(env, &prefix_assignments, &words);
+    let traced: Vec<String> = prefix_assignments
+        .iter()
+        .map(|(name, value)| trace::assignment_text(name, false, value))
+        .collect();
+    trace::trace_command(env, &traced, &words);
 
     // `FOO=bar cmd` exports FOO for the duration of `cmd` only.
     //
@@ -229,21 +233,18 @@ fn heredocs_expanded(
 /// `r: is read only`, returned `false`, and the `false` was dropped on the floor, so `r=2; echo
 /// $?` said the assignment had worked (PLAN C3).
 fn apply_assignments_only(env: &mut Environment, simple: &SimpleCommand) -> Result<i32> {
-    let mut assignments = Vec::with_capacity(simple.assignments.len());
     let mut refused: Option<String> = None;
     for assign in &simple.assignments {
         // Applied before the next one is expanded, not batched at the end: POSIX 2.9.1 evaluates
         // assignments left to right and makes each visible to the next, so `a=1 b=${a}2` sets
         // `b` to `12`. What each shape means is `assign`'s business.
+        // Each is traced as it is made, as bash does; see `assign`.
         let outcome = assign::apply_assignment(env, assign)?;
         if !outcome.assigned && refused.is_none() {
             refused = Some(assign.name().to_string());
         }
-        assignments.push((assign.name().to_string(), outcome.trace));
     }
-    // Traced first: `set -x` shows what the shell tried to do, and the refusal is on stderr
-    // beside it. The first name to fail is the one reported, as bash reports the first.
-    trace::trace_command(env, &assignments, &[]);
+    // The first name to fail is the one reported, as bash reports the first.
     if let Some(name) = refused {
         return posix::assignment_failure(env, &name);
     }

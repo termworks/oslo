@@ -8,8 +8,10 @@
 //! that aborted the shell when it answered "no" would make `set -e` unusable.
 
 use crate::env::Environment;
+use crate::env::builtins::format_word;
 use crate::env::builtins::run_exit_trap;
 use crate::exec::pipeline::{eval_command_list, status_of, suspend_errexit, wait_for_status};
+use crate::exec::simple::trace;
 use crate::expand::expand_word;
 use crate::expand::word::{expand_word_to_pattern, expand_word_to_test_string};
 use nix::unistd::{ForkResult, fork};
@@ -164,6 +166,7 @@ fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) 
 /// The status is that of the last body actually run, so a `;;&` chain whose later patterns all
 /// fail still reports what the branch that did match returned.
 fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i32> {
+    trace::trace_header(env, &format!("case {} in", format_word(word)));
     let subject = expand_word_to_test_string(env, word)?;
 
     let mut status = 0;
@@ -192,7 +195,22 @@ fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i
 /// `None` means "already reported"; callers turn it into status 1 and stop. An unset name under
 /// `set -u` is the exception, and unwinds as it would from a word.
 fn eval_arith(env: &mut Environment, expr: &str) -> Result<Option<i64>> {
-    match crate::expand::arithmetic::eval_arithmetic(env, expr) {
+    // Expanded once, so the trace shows what is evaluated and a substitution runs once.
+    let expr: String = match env.xtrace() {
+        true => match crate::expand::arithmetic::expand_expression(env, expr) {
+            Ok(expanded) => {
+                trace::trace_arithmetic(env, &expanded);
+                expanded
+            }
+            Err(e @ ShellError::UnsetParameter(_)) => return Err(e),
+            Err(e) => {
+                eprintln!("oslo: ((: {}", e);
+                return Ok(None);
+            }
+        },
+        false => expr.to_string(),
+    };
+    match crate::expand::arithmetic::eval_arithmetic(env, &expr) {
         Ok(value) => Ok(Some(value)),
         Err(e @ ShellError::UnsetParameter(_)) => Err(e),
         Err(e) => {
@@ -226,6 +244,16 @@ fn eval_arithmetic_for(
     step: Option<&str>,
     body: &CommandList,
 ) -> Result<i32> {
+    // bash reads an empty section as `1`, and traces it so.
+    let init = init.map(str::trim_start);
+    let cond = cond.map(str::trim_start);
+    let step = step.map(str::trim_start);
+    let empty = |env: &mut Environment, section: Option<&str>| {
+        if section.is_none() {
+            trace::trace_arithmetic(env, "1");
+        }
+    };
+    empty(env, init);
     if let Some(expr) = init
         && eval_arith(env, expr)?.is_none()
     {
@@ -238,6 +266,7 @@ fn eval_arithmetic_for(
     let result = loop {
         // An absent condition is true, which is why this is not `unwrap_or(1)` on a value: there
         // is nothing to evaluate, so nothing can fail either.
+        empty(env, cond);
         if let Some(expr) = cond {
             match eval_arith(env, expr) {
                 Ok(Some(0)) => break Ok(status),
@@ -253,6 +282,7 @@ fn eval_arithmetic_for(
             LoopStep::Unwind(e) => break Err(e),
         }
 
+        empty(env, step);
         if let Some(expr) = step {
             match eval_arith(env, expr) {
                 Ok(Some(_)) => {}
@@ -316,10 +346,18 @@ pub(crate) fn eval_compound_command(
                 env.get_positional().to_vec()
             };
 
+            let header = match items {
+                Some(words) => {
+                    let words: Vec<String> = words.iter().map(format_word).collect();
+                    format!("for {var_name} in {}", words.join(" "))
+                }
+                None => format!("for {var_name} in \"$@\""),
+            };
             let mut status = 0;
             env.enter_loop();
             let result = 'items: {
                 for item in item_words {
+                    trace::trace_header(env, &header);
                     env.set_var(var_name, &item, false);
                     match run_loop_body(env, body, &mut status) {
                         LoopStep::Next => {}

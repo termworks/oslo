@@ -54,6 +54,11 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
     if expr.last().map(String::as_str) == Some("]]") {
         expr = &expr[..expr.len() - 1];
     }
+    let mut negated = false;
+    while expr.len() > 1 && expr[0] == crate::syntax::lower::cond::NEGATION {
+        negated = !negated;
+        expr = &expr[1..];
+    }
 
     let outcome: TestResult<bool> = match expr.len() {
         0 => Ok(false),
@@ -73,7 +78,7 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
         _ => Err(TestError::new("too many arguments")),
     };
 
-    report("[[", outcome)
+    report("[[", outcome.map(|truth| truth != negated))
 }
 
 /// One place that turns an evaluation into an exit status, so `test`, `[` and `[[` cannot drift

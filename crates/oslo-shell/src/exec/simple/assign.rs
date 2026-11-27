@@ -10,8 +10,10 @@
 //!   many fields as it wants, so `a=($list)` and `a=(*.c)` are how a script builds an array;
 //! * a subscript is arithmetic, evaluated when the assignment runs.
 
+use super::trace::{assignment_text, list_assignment_text, trace_assignment};
 use crate::env::Environment;
 use crate::env::announce::{Change, Scope, Source};
+use crate::env::builtins::format_word;
 use crate::env::scope::ShellArray;
 use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::{expand_word, expand_word_to_string};
@@ -26,19 +28,13 @@ use oslo_base::error::{Result, ShellError};
 /// the diagnostic and then claimed success (PLAN C3). Returning it makes the caller decide, which
 /// it must, because in POSIX mode the answer is that the shell stops.
 pub(super) struct Outcome {
-    /// What `set -x` traces; an array literal traces as the elements it expanded to, which is the
-    /// information a reader of the trace actually wants.
-    pub trace: String,
     /// Whether the variable now holds the value.
     pub assigned: bool,
 }
 
 impl Outcome {
-    fn new(trace: impl Into<String>, assigned: bool) -> Self {
-        Outcome {
-            trace: trace.into(),
-            assigned,
-        }
+    fn new(assigned: bool) -> Self {
+        Outcome { assigned }
     }
 }
 
@@ -75,12 +71,14 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
     match (&assign.target, &assign.value) {
         (AssignmentTarget::Name(name), AssignmentValue::Scalar(word)) => {
             let value = expand_word_to_string(env, word)?;
+            // Traced once expanded and before it is made, as bash traces it.
+            trace_assignment(env, &assignment_text(name, assign.append, &value));
             if assign.append {
                 // `x+=b` on an *array* appends an element, as bash does; on a scalar it
                 // concatenates. Which one it is depends on what the name already holds.
                 if env.get_array(name).is_some() {
                     let ok = env.append_array_element(name, &value);
-                    return Ok(Outcome::new(value, ok));
+                    return Ok(Outcome::new(ok));
                 }
                 // **On an integer name `+=` adds.** `declare -i q=6; q+=4` is 10, not the string
                 // `64` — and concatenating first would not merely look wrong, it would then be
@@ -89,37 +87,45 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
                     let existing = or_zero(env.get_var(name).unwrap_or_default());
                     let sum = format!("({existing})+({})", or_zero(&value));
                     let ok = env.set_var(name, &sum, false);
-                    let stored = env.get_var(name).unwrap_or_default().to_string();
-                    return Ok(Outcome::new(stored, ok));
+                    return Ok(Outcome::new(ok));
                 }
                 let value = format!("{}{}", env.get_var(name).unwrap_or_default(), value);
                 let ok = env.set_var(name, &value, false);
-                return Ok(Outcome::new(value, ok));
+                return Ok(Outcome::new(ok));
             }
             let ok = env.set_var(name, &value, false);
-            Ok(Outcome::new(value, ok))
+            Ok(Outcome::new(ok))
         }
 
         (AssignmentTarget::Element { name, index }, AssignmentValue::Scalar(word)) => {
+            let lhs = format!("{name}[{}]", format_word(index));
             let index = eval_subscript(env, index)?;
             let mut value = expand_word_to_string(env, word)?;
+            trace_assignment(env, &assignment_text(&lhs, assign.append, &value));
             if assign.append {
                 let existing = env.get_array(name).and_then(|a| a.get(index)).unwrap_or("");
                 value = format!("{existing}{value}");
             }
             let ok = env.set_array_element(name, index, &value);
-            Ok(Outcome::new(value, ok))
+            Ok(Outcome::new(ok))
         }
 
         (AssignmentTarget::Name(name), AssignmentValue::Array(elements)) => {
+            // Traced as the list was written, as bash traces it.
+            let written: Vec<String> = elements
+                .iter()
+                .map(|e| match &e.index {
+                    Some(index) => format!("[{}]={}", format_word(index), format_word(&e.value)),
+                    None => format_word(&e.value),
+                })
+                .collect();
             let array = build_array(env, name, elements, assign.append)?;
-            // Parenthesised for the `set -x` trace: `+ a=(1 2)` reads as a list, where the bare
-            // `1 2` would look like a scalar holding a space.
-            let joined = format!("({})", array.joined(" "));
+            let list = written.join(" ");
+            trace_assignment(env, &list_assignment_text(name, assign.append, &list));
             // Inside a function `a=(…)` is still global unless `local`/`declare` said otherwise,
             // which is what `set_array` does; `set_local_array` is the declaration builtins' path.
             let ok = env.set_array(name, array);
-            Ok(Outcome::new(joined, ok))
+            Ok(Outcome::new(ok))
         }
 
         // `a[0]=(1 2)` — bash rejects this too ("cannot assign list to array member"). Refusing is

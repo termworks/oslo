@@ -184,7 +184,9 @@ fn drain(env: &mut Environment) -> Result<()> {
 /// 1, not whatever the handler's last command returned.
 fn run_handler(env: &mut Environment, action: &str) -> Result<i32> {
     let saved = env.last_status;
+    let traced = crate::exec::simple::trace::Nested::enter();
     let result = parse_and_run(env, action);
+    drop(traced);
     env.last_status = saved;
     result
 }

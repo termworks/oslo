@@ -211,7 +211,7 @@ fn posix_grammar_matches_bash() {
     }
 }
 
-/// The one operator whose meaning depends on the form: `==` globs only inside `[[ ]]`.
+/// `=` and `==` glob only inside `[[ ]]`, and the two are the same operator there.
 #[test]
 fn double_equals_is_a_pattern_only_in_the_extended_form() {
     assert_eq!(bracket(&["abc", "==", "a*"]), 1);
@@ -220,9 +220,8 @@ fn double_equals_is_a_pattern_only_in_the_extended_form() {
     assert_eq!(bracket(&["abc", "==", "abc"]), 0);
     assert_eq!(double_bracket(&["abc", "==", "abc"]), 0);
 
-    // `=` is literal in both.
     assert_eq!(bracket(&["abc", "=", "a*"]), 1);
-    assert_eq!(double_bracket(&["abc", "=", "a*"]), 1);
+    assert_eq!(double_bracket(&["abc", "=", "a*"]), 0);
 }
 
 #[test]

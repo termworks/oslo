@@ -27,13 +27,28 @@ pub(crate) fn join(
     left
 }
 
+/// The word a negated predicate carries after `[[`, as `[[ ! -n x ]]` is traced.
+pub const NEGATION: &str = "\u{1}!\u{2}";
+
 /// `! a`.
 ///
-/// Negation applies to the leading pipeline; a compound expression is grouped first so
-/// `! (a && b)` does not silently become `(! a) && b`.
+/// A single predicate is negated inside its own call, which toggles a [`NEGATION`] word; a
+/// compound expression is grouped first so `! (a && b)` does not silently become `(! a) && b`.
 pub(crate) fn negate(list: oslo_ast::AndOrList) -> oslo_ast::AndOrList {
     if list.rest.is_empty() {
         let mut list = list;
+        if let [oslo_ast::Command::Simple(simple)] = list.first.commands.as_mut_slice()
+            && !list.first.negated
+        {
+            let marked = simple.words.get(1) == Some(&oslo_ast::Word::from_literal(NEGATION));
+            match marked {
+                true => drop(simple.words.remove(1)),
+                false => simple
+                    .words
+                    .insert(1, oslo_ast::Word::from_literal(NEGATION)),
+            }
+            return list;
+        }
         list.first.negated = !list.first.negated;
         return list;
     }
@@ -59,76 +74,33 @@ pub(crate) fn negate(list: oslo_ast::AndOrList) -> oslo_ast::AndOrList {
 
 /// `-f x` — an operator and one operand.
 pub(crate) fn unary(op: &str, operand_text: &str) -> Result<oslo_ast::AndOrList> {
-    Ok(bracket_and_or(
-        vec![
-            oslo_ast::Word::from_literal(op),
-            operand(operand_text, Coordinates::Substituted)?,
-        ],
-        false,
-    ))
+    Ok(bracket_and_or(vec![
+        oslo_ast::Word::from_literal(op),
+        operand(operand_text, Coordinates::Substituted)?,
+    ]))
 }
 
-/// `x == y` — two operands with an operator between them.
+/// `x == y` — two operands with an operator between them, the operator as written.
+///
+/// The right operand of a pattern or regex operator is where a *part* of a word can be quoted and
+/// mean something different from the rest of it: `[[ abc == "a*"c ]]` is false, because only the
+/// `c` is a pattern. See [`mark_quoted_runs`].
 pub(crate) fn binary(left: &str, op: &str, right: &str) -> Result<oslo_ast::AndOrList> {
-    let (op, negate) = binary_op(op, right);
-    // The right operand of an unquoted `=~` or `==` is where a *part* of a word can be quoted and
-    // mean something different from the rest of it: `[[ abc == "a*"c ]]` is false, because only
-    // the `c` is a pattern. See [`mark_quoted_runs`].
     let right = match op {
         "=~" => marked_operand(right, Coordinates::Literal)?,
-        "==" => marked_operand(right, Coordinates::Substituted)?,
+        "==" | "=" | "!=" => marked_operand(right, Coordinates::Substituted)?,
         _ => operand(right, Coordinates::Substituted)?,
     };
-    Ok(bracket_and_or(
-        vec![
-            operand(left, Coordinates::Substituted)?,
-            oslo_ast::Word::from_literal(op),
-            right,
-        ],
-        negate,
-    ))
+    Ok(bracket_and_or(vec![
+        operand(left, Coordinates::Substituted)?,
+        oslo_ast::Word::from_literal(op),
+        right,
+    ]))
 }
 
 /// `[[ $x ]]` — a word on its own, which is true when it is not empty.
 pub(crate) fn bare(text: &str) -> Result<oslo_ast::AndOrList> {
     unary("-n", text)
-}
-
-/// Map a binary operator to `(operator, negate)`.
-///
-/// In `[[ ]]`, `=` and `==` are *pattern* matches, not string equality — `[[ abc == a* ]]` is
-/// true. Quoting the right-hand side turns off pattern matching, and the parser preserves the
-/// quotes in the word's raw text, so that is what decides between the two operators here.
-///
-/// `negate` is how the negative comparisons are expressed: it becomes the pipeline's `!`, so the
-/// builtin only has to implement the positive ones.
-fn binary_op(op: &str, rhs: &str) -> (&'static str, bool) {
-    let pattern_op = if is_quoted(rhs) { "=" } else { "==" };
-    match op {
-        // A single `=` is a pattern match inside `[[ ]]` exactly like `==`; only `test` and `[`
-        // compare strings with it.
-        "==" | "=" => (pattern_op, false),
-        "!=" => (pattern_op, true),
-        "<" => ("<", false),
-        ">" => (">", false),
-        // Quoting the right operand of `=~` makes it literal text, exactly as it does for `==`.
-        // The builtin spells the literal form `=~lit`; see
-        // `env::builtins::conditionals::matching`.
-        "=~" if is_quoted(rhs) => ("=~lit", false),
-        "=~" => ("=~", false),
-        "-eq" => ("-eq", false),
-        "-ne" => ("-ne", false),
-        "-lt" => ("-lt", false),
-        "-le" => ("-le", false),
-        "-gt" => ("-gt", false),
-        "-ge" => ("-ge", false),
-        "-nt" => ("-nt", false),
-        "-ot" => ("-ot", false),
-        "-ef" => ("-ef", false),
-        // A comparison nobody implements is better
-        // refused by the builtin than silently read as equality here.
-        other => (Box::leak(other.to_string().into_boxed_str()), false),
-    }
 }
 
 /// Whether a bare stream coordinate in this operand is left for the substitution to find.
@@ -161,8 +133,7 @@ enum Coordinates {
 ///
 /// Wrapping the whole word in double quotes says exactly that, and reuses the expansion rules
 /// already written rather than adding a second set. It does not make the `==` right-hand side
-/// literal: pattern-versus-text is decided from the *source* quoting by [`binary_op`], before this
-/// runs, and is carried in the operator word.
+/// literal: which parts of a pattern were quoted is carried by [`marked_operand`].
 fn operand(word: &str, coordinates: Coordinates) -> Result<oslo_ast::Word> {
     if let Some(substitution) = process_substitution(word) {
         return Ok(substitution);
@@ -215,17 +186,14 @@ fn process_substitution(word: &str) -> Option<oslo_ast::Word> {
 }
 
 /// Build a `[[ <args> ]]` invocation as a one-pipeline and-or list.
-///
-/// `negate` sets the pipeline's `!`, which is how the negative predicates (`!=`) are expressed —
-/// so the builtin only has to implement the positive comparisons.
-fn bracket_and_or(args: Vec<oslo_ast::Word>, negate: bool) -> oslo_ast::AndOrList {
+fn bracket_and_or(args: Vec<oslo_ast::Word>) -> oslo_ast::AndOrList {
     let mut words = vec![oslo_ast::Word::from_literal("[[")];
     words.extend(args);
     words.push(oslo_ast::Word::from_literal("]]"));
 
     oslo_ast::AndOrList {
         first: oslo_ast::Pipeline {
-            negated: negate,
+            negated: false,
             timed: false,
             commands: vec![oslo_ast::Command::Simple(oslo_ast::SimpleCommand {
                 assignments: Vec::new(),
@@ -348,11 +316,4 @@ fn relex_inside_quotes(raw: &str, lexed: &oslo_ast::Word) -> Option<oslo_ast::Wo
         1 => Some(words.remove(0)),
         _ => None,
     }
-}
-
-/// Whether a word's raw source text is fully wrapped in quotes.
-fn is_quoted(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() >= 2
-        && ((b[0] == b'"' && b[b.len() - 1] == b'"') || (b[0] == b'\'' && b[b.len() - 1] == b'\''))
 }
