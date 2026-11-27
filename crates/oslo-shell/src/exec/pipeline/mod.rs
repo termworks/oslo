@@ -39,6 +39,7 @@ use crate::exec::job;
 use crate::exec::redirect::RedirectGuard;
 use crate::exec::simple::{eval_simple_command, report_redirect_failure};
 use interrupt::ListFrame;
+pub use interrupt::eval_command_unit;
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
 use oslo_base::ast::*;
@@ -63,27 +64,14 @@ pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Resul
     // on how deep the input may be, which says nothing about how much stack running it costs. This
     // is where `{ … }`, `( … )`, a loop body and a branch all re-enter, so it is where the question
     // is asked. See `oslo_base::stack`.
-    let unit = UNIT.with(|unit| unit.replace(false));
     if oslo_base::stack::exhausted() {
         return Err(ShellError::ExecutionError(
             "maximum nesting level exceeded".to_string(),
         ));
     }
     let frame = ListFrame::enter();
-    let outermost = frame.is_outermost() || unit;
+    let outermost = frame.catches_abandoned();
     frame.absorb(run_list_items(env, cmd_list, outermost))
-}
-
-thread_local! {
-    /// Set for the one list [`eval_command_unit`] is about to run.
-    static UNIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run the text an `eval` or a `source` parsed as a program of its own: a line a refused
-/// assignment or a `failglob` miss abandons is abandoned inside it, and the next line still runs.
-pub fn eval_command_unit(env: &mut Environment, cmd_list: &CommandList) -> Result<i32> {
-    UNIT.with(|unit| unit.set(true));
-    eval_command_list(env, cmd_list)
 }
 
 fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool) -> Result<i32> {
@@ -145,12 +133,6 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
                 // rest of that line — the whole `if` around the miss, the function it was in —
                 // reports it with status 1, and carries on with the next line. Only the outermost
                 // list catches it; everywhere below, it unwinds like any other error.
-                Err(e @ ShellError::NoMatch(_)) if outermost => {
-                    eprintln!("{}{e}", env.origin());
-                    abandoned = Some(item.line);
-                    env.last_status = 1;
-                    1
-                }
                 // `exit 1 2` abandons the rest of a `-c` program, or the rest of a script's line.
                 Err(e @ ShellError::Discard(_)) if outermost => {
                     eprintln!("{}{e}", env.origin());
@@ -162,8 +144,11 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
                     env.last_status = 2;
                     2
                 }
-                // A refused assignment abandons the line the same way; its reason is printed.
-                Err(ShellError::Abandoned) if outermost => {
+                // A refused assignment abandons the line too, its reason already printed.
+                Err(e @ (ShellError::NoMatch(_) | ShellError::Abandoned)) if outermost => {
+                    if let ShellError::NoMatch(_) = e {
+                        eprintln!("{}{e}", env.origin());
+                    }
                     abandoned = Some(item.line);
                     env.last_status = 1;
                     1
@@ -435,13 +420,7 @@ pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {
             result
         }
         Command::FunctionDef { name, body, source } => {
-            if env.is_function_readonly(name) {
-                eprintln!("{}{name}: readonly function", env.origin());
-                return Ok(1);
-            }
-            env.set_function(name, *body.clone());
-            env.set_function_source(name, source.0.clone());
-            Ok(0)
+            Ok(i32::from(!env.define_function(name, body, source)))
         }
     }
 }

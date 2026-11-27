@@ -93,6 +93,17 @@ impl Environment {
         self.readonly_functions.contains(name)
     }
 
+    /// `name() { … }` as a command: define it, unless `readonly -f` froze it. `false` if refused.
+    pub fn define_function(&mut self, name: &str, body: &Command, source: &FunctionSource) -> bool {
+        if self.is_function_readonly(name) {
+            eprintln!("{}{name}: readonly function", self.origin());
+            return false;
+        }
+        self.set_function(name, body.clone());
+        self.set_function_source(name, source.0.clone());
+        true
+    }
+
     /// Write the current definition of an exported function into the environment.
     pub(super) fn publish_function(&self, name: &str) {
         if !self.exported_functions.contains(name) {
