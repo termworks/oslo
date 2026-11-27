@@ -417,6 +417,103 @@ document recorded, measured the same way.
 The benchmarks live in `bench/lua/`. The `_noos` variants time themselves from outside rather than
 with `os.clock()`, which is how these figures include process start.
 
+### The JIT build
+
+luna has an experimental native tier: cranelift compiles a Lua function to machine code once it
+has run hot. oslo can be built with it, and is not by default:
+
+```console
+$ oslo make build --type jit
+```
+
+That is every feature `--type full` has, plus `oslo-luavm/jit`. The feature is on `oslo-luavm`
+alone and the root crate does not forward it, so `--all-features` (a release, the flake, `make
+build`) never turns it on.
+
+Even a JIT build compiles nothing until a script asks, in its shebang or on the command line:
+
+```lua
+#!/usr/bin/env -S oslo --jit
+local s = 0
+for i = 1, 3e7 do s = s + i end
+print(s)
+```
+
+That run's VM is then in `JitMode::Auto`: nothing is compiled up front, and a function that stays
+hot is compiled during `Lua::finish`. The prompt, the config and every script without the flag
+stay interpreted. A build without the tier takes the flag and runs the script interpreted, with
+the same results. It speeds up Lua only. A shell script, `#!/usr/bin/env bash` included, never
+reaches the VM.
+
+Plain `env` passes one word, so the flag needs `env -S`. A shebang that names oslo by path,
+`#!/usr/local/bin/oslo --func --jit`, reaches oslo as the single word `--func --jit`, and oslo
+reads that too.
+
+The tier needs rustc 1.96, which cranelift 0.136 asks for. The devshell's 1.97.1 has it. The MSRV of
+1.90 still holds for every feature the root crate offers.
+
+Static musl release builds, x86-64, median of five, wall clock including process start:
+
+| What | interpreted | JIT | |
+| --- | --- | --- | --- |
+| 30,000,000 float adds in a numeric `for` | 541 ms | **227 ms** | 2.4× faster |
+| 3,000,000 table stores, then 15,000,000 reads | 396 ms | **274 ms** | 1.4× faster |
+| `fib(30)`, recursive | **323 ms** | 697 ms | 2.2× slower |
+| 300,000 `string.format`, a `table.concat`, a `gmatch` | **683 ms** | 852 ms | 1.2× slower |
+| 200,000 `{ x, y }` records, scanned ten times | **710 ms** | 788 ms | 1.1× slower |
+| `oslo -c true` | 7 ms | 6 ms | |
+| binary size | 5,289,632 B | 7,370,400 B | +2.0 MB |
+
+Native code covers scalar arithmetic, comparisons, numeric loops and plain table access. A call, a
+return or a metamethod leaves it through an interpreter exit, so call-heavy code pays for the round
+trip and gets slower. luna's own `JIT.md` says the same: its performance gates have not passed yet.
+It also measures interpreted code running 8–25% slower in some cases when the tier is compiled in
+and switched off. That is why it is a separate build, not part of the release.
+
+## Pure scripts: `--func`
+
+A script whose shebang says `--func` runs on luna's functional state rather than the shell's VM.
+Same inputs, same output, and nothing else touched:
+
+```lua
+#!/usr/bin/env -S oslo --func
+local name = ...
+local shared = import("shared")
+return { name = name, region = shared.region, ports = { 80, 443 } }
+```
+
+```console
+$ ./config web
+{"name":"web","ports":[80,443],"region":"eu"}
+```
+
+What a pure script cannot do, and what happens instead:
+
+| What | Happens |
+| --- | --- |
+| reach the world: `oslo.*`, `io`, `os`, `print`, `require`, `dofile`, `math.random` | not there: indexing one is `could not index into a nil value` |
+| change a library, `string.upper = nil` | an error: globals and library tables are frozen |
+| assign a captured local, `local n = 0 local function f() n = n + 1 end` | a compile error, so nothing runs |
+| depend on hash layout | `pairs` visits booleans, numbers, then strings by bytes |
+| load a binary chunk | refused |
+
+A chunk may build and change the tables it makes itself. When it returns, its results and its
+globals are frozen.
+
+**What it returns is what it prints**, one value to a line. A string prints as it is, a number or a
+boolean as `tostring` writes it, and `nil` prints nothing. A table prints as JSON with its keys
+sorted in that same canonical order, so the bytes are the same on every run. The JSON is indented on
+a terminal and compact anywhere else. A function has no printed form and is an error.
+
+**Inputs are the arguments and files.** `...` holds the command-line arguments. `import("name")`
+evaluates `name`, or `name.lua`, from the script's directory. A name is evaluated once and its
+result frozen, and an import cycle is an error. Nothing else reaches in: no environment variables,
+no clock, no working directory.
+
+`--func` also works on the command line, `oslo --func file` or `… | oslo --func`, and makes any
+file Lua whatever its name. It is refused with `-c`, which is always shell. It combines with
+`--jit`, and luna's own tests check that native code keeps every guarantee above.
+
 ## What it cannot do yet
 
 The standard library is complete enough that oslo's own tests no longer notice its edges: `os`,
@@ -468,6 +565,9 @@ searching the working directory is a script hijack.
 | `crates/oslo-luavm/src/convert.rs` | `into_lua`, `from_lua`, `raise` — values, metatables, functions, identity |
 | `crates/oslo-luavm/src/host.rs` | `Host`, `Native`, `CallbackHost`, `run_nested`, the re-entrancy slot |
 | `crates/oslo-luavm/src/globals.rs` | the shell's variables as Lua's global namespace |
+| `crates/oslo-luavm/src/functional.rs` | `run` — a pure chunk on `Lua::functional`, results frozen |
+| `crates/oslo-runtime/src/startup/func.rs` | `run` — printing a pure script's results, `import` beside the script |
+| `crates/oslo-runtime/src/startup/language.rs` | `detect`, `Modes` — `--func` and `--jit` from the shebang |
 | `crates/oslo-base/src/value.rs` | `Value`, `Number`, `Key`, `Table`, `Function` — the shell's own, engine-free |
 | `crates/oslo-base/src/value/error.rs` | `LuaError`, `LuaResult` |
 | `crates/oslo-runtime/src/lua/engine.rs` | `LuaEngine`, `ShellGlobals`, `call_lua_builtin`, `status_from_lua` |

@@ -261,6 +261,12 @@ impl LuaEngine {
         Ok(())
     }
 
+    /// Compile hot functions to machine code, answering whether the JIT is on. See
+    /// [`oslo_luavm::Engine::set_jit`].
+    pub fn set_jit(&self, on: bool) -> bool {
+        self.interp.set_jit(on)
+    }
+
     fn run(&self, source: &str, name: &str) -> Result<()> {
         // Both failures are named here: a chunk that does not parse and one that fails part-way
         // through are equally useless as `Lua error: attempt to call a nil value` with no file.

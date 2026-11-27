@@ -493,3 +493,33 @@ fn an_rcfile_is_still_refused() {
         assert_eq!(err.status, 2, "{flag}");
     }
 }
+
+/// `env -S` hands the modes over one word each; a kernel hands them over as one.
+#[test]
+fn the_modes_arrive_either_way_a_shebang_sends_them() {
+    for argv in [
+        vec!["--func", "--jit", "pure.lua", "a"],
+        vec!["--func --jit", "pure.lua", "a"],
+    ] {
+        let inv = parse_args(&argv).expect("parse");
+        assert_eq!(
+            inv.action,
+            Action::Script("pure.lua".to_string()),
+            "{argv:?}"
+        );
+        assert_eq!(inv.positional, vec!["a".to_string()], "{argv:?}");
+        assert!(inv.modes.func && inv.modes.jit, "{argv:?}");
+    }
+    let err = parse_args(&["--func --nope", "pure.lua"]).expect_err("not all modes");
+    assert!(err.message.contains("invalid option"), "{}", err.message);
+}
+
+#[test]
+fn a_pure_program_cannot_be_dash_c() {
+    let err = parse_args(&["--func", "-c", "return 1"]).expect_err("refused");
+    assert!(err.message.contains("--func"), "{}", err.message);
+    assert!(
+        parse_args(&["--jit", "-c", "true"]).is_ok(),
+        "--jit with -c is harmless"
+    );
+}

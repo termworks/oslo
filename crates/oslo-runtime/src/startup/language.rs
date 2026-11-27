@@ -68,6 +68,10 @@ const SHELL_MARKERS: &[&str] = &[
 /// somebody copies the command line — see [`crate::startup::language`]'s own note on why Lua must
 /// never need an opt-in.
 pub fn detect(path: Option<&str>, text: &str) -> Language {
+    // A pure script is Lua by definition.
+    if Modes::of_shebang(text).func {
+        return Language::Lua;
+    }
     if let Some(language) = from_shebang(text) {
         return language;
     }
@@ -75,6 +79,80 @@ pub fn detect(path: Option<&str>, text: &str) -> Language {
         return language;
     }
     from_text(text)
+}
+
+/// [`detect`], with what the command line asked for: `--func` makes any program Lua.
+pub fn detect_asked(asked: Modes, path: Option<&str>, text: &str) -> Language {
+    match asked.func {
+        true => Language::Lua,
+        false => detect(path, text),
+    }
+}
+
+/// How a Lua program asks to be run, from its shebang or the command line.
+///
+/// ```text
+/// #!/usr/bin/env -S oslo --func --jit
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// `--func`: pure, on luna's functional state. See [`crate::startup::func`].
+    pub func: bool,
+    /// `--jit`: compile hot functions to machine code, in a build that has the JIT.
+    pub jit: bool,
+}
+
+impl Modes {
+    /// Every mode either one asks for.
+    pub fn with(self, other: Modes) -> Modes {
+        Modes {
+            func: self.func || other.func,
+            jit: self.jit || other.jit,
+        }
+    }
+
+    /// Record `word` if it is a mode, answering whether it was.
+    pub fn take(&mut self, word: &str) -> bool {
+        match word {
+            "--func" => self.func = true,
+            "--jit" => self.jit = true,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Record every word of `joined` if each one is a mode, and nothing otherwise.
+    ///
+    /// The kernel hands everything after a shebang's interpreter over as one argument, so
+    /// `#!/usr/bin/oslo --func --jit` arrives as the single word `--func --jit`.
+    pub fn take_joined(&mut self, joined: &str) -> bool {
+        let mut seen = *self;
+        let mut words = joined.split_whitespace().peekable();
+        let all = words.peek().is_some() && words.all(|word| seen.take(word));
+        if all {
+            *self = seen;
+        }
+        all
+    }
+
+    /// The modes a `#!` line hands to oslo. Words after any other interpreter are not oslo's.
+    pub fn of_shebang(text: &str) -> Modes {
+        let mut modes = Modes::default();
+        let Some(line) = text.lines().next().and_then(|l| l.strip_prefix("#!")) else {
+            return modes;
+        };
+        let mut words = line.split_whitespace();
+        let interpreter = words
+            .by_ref()
+            .map(|w| w.rsplit('/').next().unwrap_or(w))
+            .find(|w| *w != "env" && !w.starts_with('-'));
+        if interpreter.is_some_and(|name| name.starts_with("oslo")) {
+            for word in words {
+                modes.take(word);
+            }
+        }
+        modes
+    }
 }
 
 /// The `#!` line, if it names an interpreter this shell recognises.
@@ -218,6 +296,62 @@ mod tests {
         assert_eq!(detect_text("x = 1\n"), Language::Shell);
         // Markers for both: a Lua file that shells out is not evidence enough on its own.
         assert_eq!(detect_text("print(1)\necho hi\n"), Language::Shell);
+    }
+
+    #[test]
+    fn a_shebang_names_its_modes() {
+        let both = Modes {
+            func: true,
+            jit: true,
+        };
+        assert_eq!(
+            Modes::of_shebang("#!/usr/bin/env -S oslo --func --jit\n"),
+            both
+        );
+        assert_eq!(Modes::of_shebang("#!/opt/bin/oslo --func --jit\n"), both);
+        assert_eq!(
+            Modes::of_shebang("#!/usr/bin/env -S oslo --jit\n"),
+            Modes {
+                func: false,
+                jit: true
+            }
+        );
+        // Another interpreter's flags are not oslo's.
+        assert_eq!(
+            Modes::of_shebang("#!/usr/bin/env -S python3 --jit\n"),
+            Modes::default()
+        );
+        assert_eq!(Modes::of_shebang("print(1)\n"), Modes::default());
+    }
+
+    /// `--func` is Lua whatever the name or the text says.
+    #[test]
+    fn a_pure_script_is_lua() {
+        assert_eq!(
+            detect(Some("x.sh"), "#!/usr/bin/env -S oslo --func\nx = 1\n"),
+            Language::Lua
+        );
+        let func = Modes {
+            func: true,
+            jit: false,
+        };
+        assert_eq!(detect_asked(func, Some("x.sh"), "x=1\n"), Language::Lua);
+        assert_eq!(
+            detect_asked(Modes::default(), Some("x.sh"), "x=1\n"),
+            Language::Shell
+        );
+    }
+
+    #[test]
+    fn joined_modes_are_all_modes_or_nothing() {
+        let mut modes = Modes::default();
+        assert!(modes.take_joined("--func --jit"));
+        assert!(modes.func && modes.jit);
+
+        let mut modes = Modes::default();
+        assert!(!modes.take_joined("--func --nope"));
+        assert_eq!(modes, Modes::default(), "a refused word left a mode behind");
+        assert!(!modes.take_joined("   "));
     }
 
     /// Comments are prose. A shell script explaining Lua must not be read as Lua.

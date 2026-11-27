@@ -283,3 +283,53 @@ fn the_shell_and_lua_share_one_namespace() {
         "assigning nil left the shell variable behind"
     );
 }
+
+/// How many instructions ran as machine code while `engine` summed a long loop.
+#[cfg(feature = "jit")]
+fn native_instructions_of_a_hot_loop(engine: &Engine) -> u64 {
+    let sum = engine
+        .eval(
+            "local sum = 0 for i = 1, 1000000 do sum = sum + i end return sum",
+            "=test",
+        )
+        .expect("runs");
+    assert_eq!(
+        format!("{sum:?}"),
+        format!("{:?}", vec![Value::int(500_000_500_000)])
+    );
+    engine.lua.borrow().jit_stats().native_instructions
+}
+
+/// Asked for, a hot loop leaves the interpreter.
+#[cfg(feature = "jit")]
+#[test]
+fn a_hot_loop_runs_as_machine_code_once_asked() {
+    let engine = Engine::new();
+    if !engine.set_jit(true) {
+        return;
+    }
+    assert!(
+        native_instructions_of_a_hot_loop(&engine) > 0,
+        "the loop never left the interpreter"
+    );
+}
+
+/// Not asked for, it never does.
+#[cfg(feature = "jit")]
+#[test]
+fn the_jit_is_off_until_asked() {
+    assert_eq!(
+        native_instructions_of_a_hot_loop(&Engine::new()),
+        0,
+        "the session VM compiled a loop nobody asked it to"
+    );
+}
+
+#[cfg(not(feature = "jit"))]
+#[test]
+fn a_build_without_the_jit_says_so() {
+    assert!(
+        !Engine::new().set_jit(true),
+        "set_jit claimed a JIT that is not there"
+    );
+}

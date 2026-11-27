@@ -159,8 +159,8 @@ make.recipe{ name = "version", desc = "what this checkout calls itself",
 -- listed as a dep would be silently dropped and a full build done instead.
 make.recipe{
   name = "build",
-  desc = "the static release binary, all features (--type minimal for none)",
-  params = { { "--type", desc = "minimal | full", default = "full" } },
+  desc = "the static release binary, all features (--type minimal for none, jit for the native tier)",
+  params = { { "--type", desc = "minimal | full | jit", default = "full" } },
   run = function(a)
     make.run("_release", { "--type", a.type })
     report(BIN)
@@ -174,7 +174,7 @@ make.recipe{
   inputs = SOURCES,
   outputs = { BIN },
   stale = "content",
-  params = { { "--type", desc = "minimal | full", default = "full" } },
+  params = { { "--type", desc = "minimal | full | jit", default = "full" } },
   run = function(a)
     -- A login shell linked against a /nix/store glibc stops existing the day
     -- `nix-collect-garbage` runs, and there is no recovering from that from inside the session it
@@ -198,7 +198,12 @@ make.recipe{
       "RUSTFLAGS",
       "-C target-feature=+crt-static -C link-arg=-Wl,-z,pack-relative-relocs"
     )
-    local features = a.type == "minimal" and {} or { "--all-features" }
+    -- `jit` lives on `oslo-luavm` alone, so `--all-features` never reaches it.
+    local features = ({
+      minimal = {},
+      full = { "--all-features" },
+      jit = { "--all-features", "--features", "oslo-luavm/jit" },
+    })[a.type] or error("--type is minimal, full or jit, not " .. a.type)
     cargo("build", "--release", "--target", TARGET, "--bin", NAME, features)
     -- **Unwinding tables for a binary that cannot unwind.** `panic = "abort"` means no landing pad
     -- is ever reached, and nothing in the tree asks for a backtrace — which `strip = "symbols"`

@@ -246,6 +246,14 @@ const INVOCATION: &[(&str, &str)] = &[
 /// choice that is already made. `--help --details` documents `posix` under the shell options,
 /// where somebody looking for it will find it.
 const LONG: &[(&str, &str)] = &[
+    (
+        "--func",
+        "run a Lua file pure: no oslo.*, io or os; prints what it returns",
+    ),
+    (
+        "--jit",
+        "compile hot Lua functions to machine code, in a JIT build",
+    ),
     ("--details", "with --help: the full option reference"),
     ("--version", "print the version, then exit"),
     ("--help", "print this message, then exit"),

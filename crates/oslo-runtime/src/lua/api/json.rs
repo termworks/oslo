@@ -93,6 +93,16 @@ pub(super) fn from_json(value: &Json) -> Value {
     }
 }
 
+/// `value` as JSON text, as `oslo.json.encode` writes it.
+pub(crate) fn encode(value: &Value, pretty: bool) -> LuaResult<String> {
+    let encoded = to_json(value, 0)?;
+    let text = match pretty {
+        true => serde_json::to_string_pretty(&encoded),
+        false => serde_json::to_string(&encoded),
+    };
+    text.map_err(|e| LuaError::new(format!("oslo.json.encode: {e}")))
+}
+
 /// How deep encoding may go before a cyclic table is reported rather than recursed into.
 const MAX_DEPTH: usize = 100;
 

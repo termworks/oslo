@@ -52,7 +52,7 @@
         # The CI jobs pin the same version by hand in `.github/workflows/*.yml`; bump them together.
         # The MSRV is separate and lower — `rust-version` in `Cargo.toml` says 1.90, and the `msrv`
         # job installs exactly that.
-        rustChannel = "1.94.0";
+        rustChannel = "1.97.1";
         toolchain = pkgs.rust-bin.stable.${rustChannel}.default.override {
           targets = [ rustTarget ];
           extensions = [
@@ -75,7 +75,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "luna-0.5.0" = "sha256-YJsEKm7UykhqNQjhLPBgpmCHQZQhDLFVAENSD43SyAw=";
+                "luna-0.6.1" = "sha256-s9UFDofrLdJGf9h2ovSXBYm9D3dlrVekAlRjiVu/ZsU=";
                 "rune-0.1.5" = "sha256-03yaB4bv+iXYGVStpGDCNdJQzYh/oiB8hRFrIKuMfvU=";
                 "tagdata-0.1.4" = "sha256-L/Fa0gS4hTrbaWvuvBB4NJ85xud8ixv7sSalLKRINQU=";
                 "vista-recall-0.1.2" = "sha256-Zi3pKV0pZNZh/XM8dE+uhHIJuieT977D0bAD91/qrhY=";

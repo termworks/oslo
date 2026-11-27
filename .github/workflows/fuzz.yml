@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Pinned to the same stable release as the `verify` job in tests.yml. Bump both together.
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.97.1
       - uses: actions/cache@v4
         with:
           path: |

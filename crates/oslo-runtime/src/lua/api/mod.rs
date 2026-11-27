@@ -42,7 +42,7 @@ mod git;
 mod glob;
 mod handle;
 mod history;
-mod json;
+pub(crate) mod json;
 /// `oslo.live` — the small surface another program may ask a running shell about.
 pub mod live;
 mod machine;

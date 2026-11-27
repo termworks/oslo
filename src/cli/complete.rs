@@ -67,6 +67,14 @@ fn spec() -> CommandSpec {
                 "skip the configuration".to_string(),
             ),
             OptionSpec::new(
+                vec!["--func".to_string()],
+                "run a Lua file pure".to_string(),
+            ),
+            OptionSpec::new(
+                vec!["--jit".to_string()],
+                "compile hot Lua to machine code".to_string(),
+            ),
+            OptionSpec::new(
                 vec!["-h".to_string(), "--help".to_string()],
                 "the tour, and every tool".to_string(),
             ),
