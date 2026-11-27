@@ -304,8 +304,13 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     let operands = match args.get(1).map(String::as_str) {
         Some("--") => &args[2..],
         Some(flag) if flag.len() > 1 && flag.starts_with('-') => {
-            eprintln!("{}eval: {flag}: invalid option", origin_now());
-            eprintln!("eval: usage: eval [arg ...]");
+            crate::env::complain_with_usage(
+                args,
+                flag,
+                &format!("eval: {flag}: invalid option"),
+                "eval takes no options",
+                "eval: usage: eval [arg ...]",
+            );
             return Err(ShellError::utility_error("eval", 2));
         }
         _ => &args[1..],

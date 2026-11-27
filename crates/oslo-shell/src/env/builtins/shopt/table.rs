@@ -185,7 +185,11 @@ pub fn note_compat(value: &str) {
     let level = digits
         .parse::<u32>()
         .ok()
-        .filter(|level| OPTIONS.iter().any(|o| matches!(o.support, Support::Compat(l) if l == *level)))
+        .filter(|level| {
+            OPTIONS
+                .iter()
+                .any(|o| matches!(o.support, Support::Compat(l) if l == *level))
+        })
         .unwrap_or(CURRENT_LEVEL);
     LEVEL.store(level, Ordering::Relaxed);
 }

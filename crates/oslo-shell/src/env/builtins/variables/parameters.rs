@@ -244,7 +244,13 @@ pub fn builtin_shift(env: &mut Environment, args: &[String]) -> Result<i32> {
     let n = if args.len() > 1 {
         match args[1].trim().parse::<i64>() {
             Ok(num) if num < 0 => {
-                eprintln!("{}shift: {num}: shift count out of range", origin_now());
+                crate::env::complain(
+                    args,
+                    &args[1],
+                    &format!("shift: {num}: shift count out of range"),
+                    "a count cannot be negative",
+                    None,
+                );
                 return Ok(1);
             }
             Ok(num) => usize::try_from(num).unwrap_or(usize::MAX),

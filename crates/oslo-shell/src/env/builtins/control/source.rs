@@ -31,7 +31,13 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
 
     let Some(found) = sourced_path(env, &args[1]) else {
-        eprintln!("{}.: {}: file not found", origin_now(), args[1]);
+        crate::env::complain(
+            args,
+            &args[1],
+            &format!(".: {}: file not found", args[1]),
+            "not on $PATH",
+            Some("POSIX mode does not look in the current directory for a bare name"),
+        );
         return Err(ShellError::utility_error("source", 1));
     };
     let file_path = &found;

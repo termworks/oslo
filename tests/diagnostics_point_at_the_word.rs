@@ -110,6 +110,18 @@ const KEPT: &[(&str, &str)] = &[
         "nav: {program}: {error}",
         "the program is one oslo chose to run, not one you typed",
     ),
+    (
+        "TIMEFORMAT: `{bad}': invalid format character",
+        "a character of a variable's value, read where no command line is in hand",
+    ),
+    (
+        "{pid} {name:<27}{core}{text}",
+        "bash's job report for a command a signal killed, not a diagnostic about a word",
+    ),
+    (
+        "{}: {why}",
+        "an errno from `execve`, printed in the child that tried it",
+    ),
     // ── A value already consumed, or a function with neither the word nor a line to put it in.
     (
         "getopts: {} -- {}",
