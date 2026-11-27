@@ -115,7 +115,14 @@ pub(super) fn functions(
         match (spec.names_only, asked) {
             (true, true) => println!("{name}"),
             (true, false) => println!("declare {} {name}", function_flags(env, &name)),
-            (false, _) => println!("{definition}"),
+            (false, _) => {
+                println!("{definition}");
+                // A listing, or `-p`, follows the body with the attributes beyond `-f`.
+                let flags = function_flags(env, &name);
+                if (!asked || spec.print) && flags != "-f" {
+                    println!("declare {flags} {name}");
+                }
+            }
         }
     }
     status

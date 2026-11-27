@@ -20,6 +20,9 @@ declare -F f2 nosuch
 echo "rc=$?"
 declare -f f2
 declare -fx | grep -c '^f3 ()'
+declare -p -f f3
+declare -f f3
+declare -f | grep -E '^declare'
 x='a b' y=plain z=$'n\nl'
 w=(1 2)
 declare | grep -E '^(x|y|z|w)='
