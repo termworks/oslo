@@ -13,6 +13,10 @@ printf '\177ELF\000\000garbage' > "$d/elf"
 chmod +x "$d/elf"
 "$d/elf" 2>/dev/null
 echo "bad binary: $?"
+printf '#!/nonexistent/interpreter\necho never\n' > "$d/badinterp"
+chmod +x "$d/badinterp"
+"$d/badinterp" 2>/dev/null
+echo "bad interpreter: $?"
 printf 'echo ran as a script\n' > "$d/script"
 chmod +x "$d/script"
 "$d/script"

@@ -162,6 +162,15 @@ pub fn builtin_cd(env: &mut Environment, args: &[String]) -> Result<i32> {
             Ok(0)
         }
         Err(e) => {
+            // `cdable_vars`: a name that is not a directory may be a variable holding one.
+            if named
+                && crate::env::builtins::shopt::on("cdable_vars")
+                && let Some(value) = env.get_var(&target).map(str::to_string)
+                && let Ok(destination) = attempt_directory(env, &value, mode)
+            {
+                println!("{destination}");
+                return Ok(0);
+            }
             // A jump always says where it went, for the same reason `cd -` does: the destination
             // came from something the user cannot see on the line they typed.
             if named && let Some(destination) = super::jump::jump(env, &target, mode) {

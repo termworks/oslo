@@ -116,8 +116,10 @@ impl Replacement {
     /// Read the runs of an expanded replacement word into a template.
     pub fn from_runs(runs: &[Run]) -> Replacement {
         let mut pieces = Vec::new();
+        // `shopt -u patsub_replacement` makes every `&` literal.
+        let splices = crate::env::builtins::shopt::on("patsub_replacement");
         for run in runs {
-            if run.origin == Origin::Quoted {
+            if run.origin == Origin::Quoted || !splices {
                 push_text(&mut pieces, &run.text);
                 continue;
             }

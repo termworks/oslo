@@ -166,6 +166,16 @@ pub(super) fn apply(
                     "{indirect}: invalid variable name"
                 )));
             }
+            // `set -u` reports a plain `${!v}` whose target is unset, naming the pointer.
+            Some(indirect)
+                if env.nounset()
+                    && matches!(**inner, ParamExpansion::Normal)
+                    && env.get_param(&indirect).is_none() =>
+            {
+                return Err(ShellError::UnsetParameter(format!(
+                    "!{name}: unbound variable"
+                )));
+            }
             // **Applied to the second parameter, not the first.** `${!v:-d}` asks whether the
             // thing `v` names is set, so the operator has to run against that one — testing `v`
             // instead would answer about the pointer rather than the target.

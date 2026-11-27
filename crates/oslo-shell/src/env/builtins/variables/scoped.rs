@@ -58,6 +58,14 @@ pub fn builtin_local(env: &mut Environment, args: &[String]) -> Result<i32> {
         if opts.has('i') {
             env.set_integer(name);
         }
+        // `localvar_inherit`: a local with no value starts with the one it shadows.
+        let inherited = match value {
+            None if crate::env::builtins::shopt::on("localvar_inherit") => {
+                env.get_var(name).map(str::to_string)
+            }
+            _ => None,
+        };
+        let value = value.or(inherited.as_deref());
         let assigned = if let Some(body) = value.and_then(array_literal_body) {
             let array = array_elements(env, body)?;
             env.set_local_array(name, array)

@@ -129,13 +129,16 @@ pub(crate) fn run_external(
                 // Including the shell-script fallback for a file with no `#!` line; see there.
                 let failure =
                     crate::env::builtins::spawn::exec_or_interpret(&c_path, &c_args, None);
+                // A file that is there but answers ENOENT names an interpreter that is not.
+                let bad_interpreter = failure == nix::errno::Errno::ENOENT && path.exists();
                 let why = match failure {
                     nix::errno::Errno::ENOEXEC => "cannot execute binary file: Exec format error",
+                    _ if bad_interpreter => "bad interpreter: No such file or directory",
                     other => other.desc(),
                 };
                 eprintln!("{}{}: {why}", env.origin(), cmd_name);
                 std::process::exit(match failure {
-                    nix::errno::Errno::ENOENT => 127,
+                    nix::errno::Errno::ENOENT if !bad_interpreter => 127,
                     _ => 126,
                 });
             }

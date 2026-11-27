@@ -237,9 +237,11 @@ pub fn lookup(name: &str) -> Option<PathBuf> {
         return resolve_program(name);
     }
     if let Some(path) = recall(name) {
-        // A remembered path that has since been removed is worse than no cache at all: re-search
-        // instead, which also drops the dead entry.
-        if path.is_file() {
+        // A script trusts the table as bash does, unless `checkhash` asks for the check. At a
+        // prompt a remembered path that has since been removed is searched for again, which also
+        // drops the dead entry.
+        let trusted = !super::shopt::on("checkhash") && !crate::exec::pipeline::is_interactive();
+        if trusted || path.is_file() {
             return Some(path);
         }
         TABLE.with(|t| t.borrow_mut().remove(name));
