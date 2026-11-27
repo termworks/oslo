@@ -18,6 +18,7 @@ mod external;
 mod posix;
 mod trace;
 
+pub(crate) use assign::build_array;
 pub use autocd::set_autocd;
 
 use crate::env::Environment;

@@ -134,7 +134,7 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
 ///
 /// Unindexed elements go to the next free index, so `a=(x [5]=y z)` puts `z` at 6 — bash's rule,
 /// and the reason the running index is taken from the array rather than from the element count.
-fn build_array(
+pub(crate) fn build_array(
     env: &mut Environment,
     name: &str,
     elements: &[ArrayElement],

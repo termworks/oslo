@@ -183,6 +183,46 @@ fn closed(tree: &Tree, node: &rune::Node) -> bool {
     }
 }
 
+/// The elements of the array literal `(body)`, read exactly as the value of `a=(body)` is.
+///
+/// This is what the declaration builtins receive: `declare -a a=([0]=x [2]=y)` passes them the
+/// text `a=([0]=x [2]=y)` unexpanded, as bash does, and the literal is read here with the same
+/// rules a bare assignment's is — indices, quoting, newlines and comments included.
+pub fn array_literal(body: &str) -> Result<Vec<oslo_ast::ArrayElement>> {
+    let text = format!("a=({body})");
+    let bad = || ShellError::SyntaxError(format!("({body}): bad array value"));
+    let parsed = rune::parse(&text);
+    if !parsed.is_clean() {
+        return Err(bad());
+    }
+    let tree = parsed.tree();
+    let mut items = Script::of(tree).items();
+    let (Some(item), None) = (items.next(), items.next()) else {
+        return Err(bad());
+    };
+    let Some(Command::Simple(simple)) = item.command() else {
+        return Err(bad());
+    };
+    let mut children = simple.syntax().nodes();
+    let (Some(assignment), None) = (children.next(), children.next()) else {
+        return Err(bad());
+    };
+    let Some(array) = assignment
+        .node(SyntaxKind::ArrayValue)
+        .filter(|array| array.span().end as usize == text.len())
+    else {
+        return Err(bad());
+    };
+    let mut elements = Vec::new();
+    for element in array.nodes().filter(|node| node.kind() == SyntaxKind::Word) {
+        elements.extend(commands::convert_array_element(
+            tree,
+            tree.source().slice(element.span()),
+        )?);
+    }
+    Ok(elements)
+}
+
 fn convert_script(tree: &Tree) -> Result<oslo_ast::CommandList> {
     match Script::of(tree).commands() {
         Some(list) => convert_command_list(tree, list),

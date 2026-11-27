@@ -11,49 +11,16 @@
 use crate::env::Environment;
 use crate::env::scope::{ShellArray, is_valid_identifier};
 use crate::expand::arithmetic::eval_arithmetic;
-use crate::expand::expand_word;
-use crate::lexer::{Lexer, Token};
-use oslo_base::ast::WordPart;
 use oslo_base::error::{Result, ShellError};
 
 /// Expand the body of an array literal into the elements it denotes.
 ///
-/// Each element is expanded in *list* context, so `declare -a a=($list)` and `a=(*.c)` produce one
-/// element per resulting field — the same rule an `a=(…)` assignment follows.
+/// The body is read as the value of `a=(…)` is, so `declare -a a=([0]=x [2]=y)` places its
+/// elements and a literal may span lines. An unindexed element is expanded in *list* context:
+/// `declare -a a=($list)` and `a=(*.c)` produce one element per resulting field.
 pub fn array_elements(env: &mut Environment, body: &str) -> Result<ShellArray> {
-    // Brace expansion is a pass over the *text* of each word, ahead of the lexer, so a body that
-    // oslo lexes itself has to run it itself: `declare -a a='(x{1,2})'` is two elements.
-    let body = oslo_base::brace::expand_braces_in_line(body);
-    let mut lexer = Lexer::with_tilde(&body, crate::lexer::TildeMode::Element);
-    let mut elements = Vec::new();
-
-    loop {
-        match lexer.next() {
-            Ok(Token::Word(word)) => {
-                // `([2]=x)` is a real bash literal that oslo does not implement here. Left as a
-                // literal element it would silently become the *string* `[2]=x`.
-                if let Some(WordPart::Literal(text)) = word.parts.first()
-                    && text.starts_with('[')
-                    && text.contains("]=")
-                {
-                    return Err(ShellError::SyntaxError(
-                        "an explicit [index]= inside a declared array literal is not supported yet"
-                            .to_string(),
-                    ));
-                }
-                elements.extend(expand_word(env, &word)?);
-            }
-            Ok(Token::Eof) => break,
-            // An operator inside the parentheses means this was never an array literal.
-            Ok(_) | Err(_) => {
-                return Err(ShellError::SyntaxError(format!(
-                    "({body}): bad array value"
-                )));
-            }
-        }
-    }
-
-    Ok(ShellArray::from_values(elements))
+    let elements = crate::syntax::array_literal(body)?;
+    crate::exec::simple::build_array(env, "", &elements, false)
 }
 
 /// Drop one element if `operand` names one — `unset 'a[1]'`.
@@ -107,11 +74,16 @@ mod tests {
         assert_eq!(array_elements(&mut env, "$oslo_al c").unwrap().len(), 3);
     }
 
-    /// The form that is not implemented says so instead of becoming a literal element.
+    /// An explicit index places its element, and a literal may span lines.
     #[test]
-    fn an_explicit_index_is_rejected_rather_than_stored() {
+    fn an_explicit_index_places_its_element() {
         let mut env = Environment::new();
-        assert!(array_elements(&mut env, "[2]=x").is_err());
+        let array = array_elements(&mut env, "[2]=x y").unwrap();
+        assert_eq!(array.indices().collect::<Vec<_>>(), vec![2, 3]);
+        let array = array_elements(&mut env, "\n  [1]=''\n  [3]=b # note\n").unwrap();
+        assert_eq!(array.indices().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(array.get(3), Some("b"));
+        assert!(array_elements(&mut env, "a ) ; b (").is_err());
     }
 
     /// Unsetting an element leaves a hole rather than shifting what follows it down.

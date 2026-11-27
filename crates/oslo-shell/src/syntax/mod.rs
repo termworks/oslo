@@ -10,7 +10,7 @@ pub mod alias;
 pub mod lower;
 pub mod rune_adapter;
 
-pub use rune_adapter::parse_bash_script;
+pub use rune_adapter::{array_literal, parse_bash_script};
 
 /// Parse `source` after substituting the aliases `lookup` knows about.
 ///
