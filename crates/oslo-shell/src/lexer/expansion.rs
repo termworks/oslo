@@ -16,6 +16,7 @@ impl Lexer<'_> {
     /// bash prints `$'a\tb'` for `echo "$'a\tb'"`, so inside a double-quoted run the `$` has to
     /// stay the literal it always was.
     pub(super) fn scan_dollar_expansion(&mut self, in_double_quotes: bool) -> Result<WordPart> {
+        self.skip_line_continuations();
         match self.current_char() {
             Some('{') => {
                 self.advance();
@@ -65,12 +66,15 @@ impl Lexer<'_> {
                     name.push(ch);
                     self.advance();
                 } else {
-                    while let Some(c) = self.current_char() {
-                        if is_var_name_char(c) {
-                            name.push(c);
-                            self.advance();
-                        } else {
-                            break;
+                    // A line continuation inside the name joins its halves: `$fo\⏎o` is `$foo`.
+                    loop {
+                        self.skip_line_continuations();
+                        match self.current_char() {
+                            Some(c) if is_var_name_char(c) => {
+                                name.push(c);
+                                self.advance();
+                            }
+                            _ => break,
                         }
                     }
                 }
@@ -89,7 +93,9 @@ impl Lexer<'_> {
     /// live in both. The body is *not* the raw source: inside backquotes only `` \` ``, `\\` and
     /// `\$` are escapes, and the shell strips those backslashes before parsing what is left.
     /// Every other backslash is data, which is why this cannot reuse the raw `$( )` scanner.
-    pub(super) fn scan_backquote_substitution(&mut self) -> Result<WordPart> {
+    ///
+    /// Inside double quotes `\"` is an escape too: ``"`echo \"q\"`"`` runs `echo "q"`.
+    pub(super) fn scan_backquote_substitution(&mut self, in_double_quotes: bool) -> Result<WordPart> {
         self.advance();
         let mut cmd = String::new();
 
@@ -99,7 +105,9 @@ impl Lexer<'_> {
                     self.advance();
                     return Ok(WordPart::CommandSubstitution(cmd));
                 }
-                '\\' if matches!(self.peek_char(), Some('`') | Some('\\') | Some('$')) => {
+                '\\' if matches!(self.peek_char(), Some('`' | '\\' | '$'))
+                    || (in_double_quotes && self.peek_char() == Some('"')) =>
+                {
                     self.advance();
                     if let Some(escaped) = self.advance() {
                         cmd.push(escaped);
@@ -150,7 +158,12 @@ impl Lexer<'_> {
     fn scan_braced_param(&mut self, in_double_quotes: bool) -> Result<WordPart> {
         // Depth- and quote-aware, so `${x:-${y}}` keeps its whole payload and `${x:-a}b}` does
         // not end early on the brace inside the quotes.
-        let content = self.scan_raw_delimited('{', '}', "parameter expansion", 0)?;
+        let content = without_line_continuations(&self.scan_raw_delimited(
+            '{',
+            '}',
+            "parameter expansion",
+            0,
+        )?);
         // `${ cmd; }` and `${| cmd; }` hold a command, not a parameter.
         if content.starts_with([' ', '\t', '\n']) {
             return Ok(WordPart::FunctionSubstitution {
@@ -172,6 +185,33 @@ impl Lexer<'_> {
         };
         param::parse_braced_body(&content, in_double_quotes, tilde)
     }
+}
+
+/// `text` with every `\` + newline outside single quotes removed, as bash reads its input.
+fn without_line_continuations(text: &str) -> String {
+    if !text.contains("\\\n") {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut single = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => single = !single,
+            '\\' if !single && chars.peek() == Some(&'\n') => {
+                chars.next();
+                continue;
+            }
+            '\\' if !single => {
+                out.push(ch);
+                out.extend(chars.next());
+                continue;
+            }
+            _ => {}
+        }
+        out.push(ch);
+    }
+    out
 }
 
 #[cfg(test)]

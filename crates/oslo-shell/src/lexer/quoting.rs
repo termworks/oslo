@@ -125,10 +125,11 @@ impl Lexer<'_> {
             }
 
             match ch {
-                // Inside double quotes a backslash escapes only these four; before anything else it
-                // is a character in its own right, which is why `"${x:-a\ b}"` keeps it.
+                // Inside double quotes a backslash escapes only these, and `}` in a payload; before
+                // anything else it is a character in its own right, which is why `"${x:-a\ b}"`
+                // keeps it.
                 '\\' if inside_quotes
-                    && !matches!(self.peek_char(), Some('$' | '`' | '\\' | '"')) =>
+                    && !matches!(self.peek_char(), Some('$' | '`' | '\\' | '"' | '}' | '\n')) =>
                 {
                     self.advance();
                     current_lit.push('\\');
@@ -189,7 +190,7 @@ impl Lexer<'_> {
                     if !current_lit.is_empty() {
                         parts.push(WordPart::Literal(std::mem::take(&mut current_lit)));
                     }
-                    parts.push(self.scan_backquote_substitution()?);
+                    parts.push(self.scan_backquote_substitution(inside_quotes)?);
                 }
                 // Inside quotes a tilde is literal: `"${x:-~}"` is one in bash.
                 '~' if !inside_quotes && self.opens_tilde(&parts, &current_lit, eq_at) => {
@@ -302,7 +303,7 @@ impl Lexer<'_> {
                     if !current_lit.is_empty() {
                         parts.push(WordPart::Literal(std::mem::take(&mut current_lit)));
                     }
-                    parts.push(self.scan_backquote_substitution()?);
+                    parts.push(self.scan_backquote_substitution(closing == Some('"'))?);
                 }
                 _ => {
                     current_lit.push(ch);

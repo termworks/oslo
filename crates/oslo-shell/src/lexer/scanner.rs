@@ -63,6 +63,14 @@ impl<'a> Lexer<'a> {
         self.chars.get(self.pos + ahead).copied()
     }
 
+    /// Step over any `\` + newline pairs at the cursor: a line continuation is nothing at all.
+    pub(super) fn skip_line_continuations(&mut self) {
+        while self.current_char() == Some('\\') && self.peek_char() == Some('\n') {
+            self.advance();
+            self.advance();
+        }
+    }
+
     /// How far the cursor has moved through the input, in characters.
     ///
     /// Exposed so a caller that loops on [`Lexer::next`] can tell a token apart from no progress
