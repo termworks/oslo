@@ -2,6 +2,7 @@
 
 mod cli;
 mod handoff;
+mod stream;
 
 // Startup, the Lua API and history expansion all live at the top of the stack now, in
 // `oslo-runtime`. History expansion in particular must stay reachable only from the interactive
@@ -369,6 +370,10 @@ fn run_program_reading(
 
 /// Parse the whole program, then run it.
 fn run_whole(env: &mut Environment, script: &str) -> i32 {
+    // `-v` from the command line echoes the `-c` string, which is read in one piece.
+    if env.option(ShellOption::Verbose) {
+        eprintln!("{script}");
+    }
     // Parsing is kept out of `run_string` so the two kinds of failure stay distinguishable. A
     // program that does not parse never runs at all and exits 2; anything that goes wrong later
     // happened *during* execution, and gets the 127 below.
@@ -390,69 +395,17 @@ fn run_whole(env: &mut Environment, script: &str) -> i32 {
 /// is the only way to run the lines before the mistake, which is what
 /// [`Reading::Streamed`] exists for.
 fn run_streamed(env: &mut Environment, script: &str) -> i32 {
-    if let Ok(ast) = parse_with_aliases(script, !env.get_aliases().is_empty(), &|n| {
-        env.get_alias(n).map(str::to_string)
-    }) {
+    if !stream::needs_line_at_a_time(env, script)
+        && let Ok(ast) = parse_with_aliases(script, !env.get_aliases().is_empty(), &|n| {
+            env.get_alias(n).map(str::to_string)
+        })
+    {
         return match absorb_loop_control(eval_command_list(env, &ast)) {
             Ok(status) => status,
             Err(e) => exit_error_status(env, e),
         };
     }
-    run_line_at_a_time(env, script)
-}
-
-/// Read a command at a time, running each before looking at the next.
-///
-/// The buffer is emptied after every complete command, so each re-parse covers one command's worth
-/// of text rather than the whole file.
-fn run_line_at_a_time(env: &mut Environment, script: &str) -> i32 {
-    use oslo::ui::syntax::{InputStatus, classify};
-
-    let mut buffer = String::new();
-    let mut status = 0;
-    // **Each chunk is parsed on its own, so its tree counts from 1.** Telling the environment how
-    // much of the file came before it is what keeps `$LINENO` and every diagnostic's `line N`
-    // talking about the file rather than about the piece. Without it, one syntax error anywhere in
-    // a script made every diagnostic before it say `line 1` — worse than saying nothing, because a
-    // line number is believed.
-    for (consumed, line) in (0_u32..).zip(script.split_inclusive('\n')) {
-        // Counted before the chunk runs, and only up to where it *starts*: the offset is added to
-        // a line number inside the chunk, and the chunk's own first line is its line 1.
-        if buffer.is_empty() {
-            env.set_line_offset(consumed);
-        }
-        buffer.push_str(line);
-        match classify(&buffer) {
-            // The command has not ended yet — an open `if`, a heredoc still looking for its
-            // delimiter, a trailing `|`.
-            InputStatus::Incomplete => continue,
-            // Not shell at all. Stop reading and let the parse below report it the usual way,
-            // *after* everything already read has run — which is the whole point.
-            InputStatus::Invalid => break,
-            InputStatus::Complete => {
-                // A blank line or a comment parses to nothing; there is no command to run and no
-                // status to take from it.
-                if !buffer.trim().is_empty() {
-                    match run_chunk(env, &buffer, script) {
-                        Ok(next) => status = next,
-                        Err(failed) => return failed,
-                    }
-                }
-                buffer.clear();
-            }
-        }
-    }
-
-    // Whatever is left never became a complete command: an unterminated `if`, or the invalid text
-    // the loop stopped at. Running it produces the same diagnostic a whole-file parse would.
-    if !buffer.trim().is_empty() {
-        match run_chunk(env, &buffer, script) {
-            Ok(next) => status = next,
-            Err(failed) => return failed,
-        }
-    }
-    env.set_line_offset(0);
-    status
+    stream::run_line_at_a_time(env, script)
 }
 
 /// Parse one piece of program text and run it.
