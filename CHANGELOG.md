@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.9] - 2026-11-27
+
+### <!-- 0 -->⛰️  Features
+
+- Add --func and --jit script modes
+
+### <!-- 3 -->📚 Documentation
+
+- Link the gate from the crate root
+
+### Build
+
+- Add an opt-in jit feature
+- Move the toolchain to rust 1.97.1
+- Move luna to v0.6.1
+
 ## [0.7.8] - 2026-11-26
 
 ### <!-- 0 -->⛰️  Features
