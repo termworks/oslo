@@ -49,7 +49,7 @@ pub(super) fn apply(
                 // Assigning the *expanded* text is the whole point: `${x:=$y}` used to persist
                 // the two characters `$y` into `x`.
                 if *assign_if_unset {
-                    target.assign(env, &text);
+                    target.assign(env, &text)?;
                 }
                 text
             }

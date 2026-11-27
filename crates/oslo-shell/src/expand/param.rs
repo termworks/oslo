@@ -15,6 +15,7 @@
 mod array;
 mod operators;
 mod pattern;
+mod positional;
 
 use crate::env::Environment;
 use crate::expand::word::{Field, Origin, Run};
@@ -55,7 +56,23 @@ impl Target<'_> {
 
     /// Persist `text` — what `${x:=v}` does. An element assignment writes the element, not the
     /// whole variable, so `${a[2]:=x}` leaves the rest of the array alone.
-    fn assign(&self, env: &mut Environment, text: &str) {
+    ///
+    /// A positional or special parameter cannot be assigned this way, and neither can a readonly
+    /// name; both are fatal expansion errors.
+    fn assign(&self, env: &mut Environment, text: &str) -> Result<()> {
+        let name = match self {
+            Self::Param(name) | Self::Element { name, .. } => *name,
+        };
+        if !crate::env::scope::is_valid_identifier(name) {
+            return Err(ShellError::ExpansionError(format!(
+                "${name}: cannot assign in this way"
+            )));
+        }
+        if env.is_readonly(name) {
+            return Err(ShellError::ExpansionError(format!(
+                "{name}: readonly variable"
+            )));
+        }
         match self {
             Self::Param(name) => {
                 env.set_var(name, text, false);
@@ -64,6 +81,7 @@ impl Target<'_> {
                 env.set_array_element(name, *index, text);
             }
         }
+        Ok(())
     }
 
     /// How the reference is named in a diagnostic — as the script wrote it.
@@ -99,6 +117,11 @@ pub fn expand_param(
             return Ok(positional_fields(env, name, origin));
         }
         if let Some(fields) = array::positional_list(env, name, expansion_type, origin)? {
+            return Ok(fields);
+        }
+        if let Some(fields) =
+            positional::operator_fields(env, name, expansion_type, in_quotes)?
+        {
             return Ok(fields);
         }
     }
@@ -172,7 +195,15 @@ fn payload_fields(
         } if !operators::is_present(&value, *test_null) => default,
         _ => return Ok(None),
     };
+    payload_word_fields(env, payload, in_quotes).map(Some)
+}
 
+/// Expand the payload of `${x-word}` or `${x+word}` where it stands.
+pub(super) fn payload_word_fields(
+    env: &mut Environment,
+    payload: &oslo_base::ast::Word,
+    in_quotes: bool,
+) -> Result<Vec<Field>> {
     let mut fields = crate::expand::word::expand_word_fields_in(env, payload, in_quotes)?;
     // A quoted expansion is one field even when it is empty: a payload with no parts expands to
     // no fields at all, so `"${x-}"` vanished instead of becoming an empty word. Unquoted it
@@ -192,7 +223,7 @@ fn payload_fields(
             }
         }
     }
-    Ok(Some(fields))
+    Ok(fields)
 }
 
 /// Where an expansion's output came from, which decides whether it may be field-split.

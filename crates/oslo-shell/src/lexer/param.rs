@@ -35,6 +35,10 @@ pub(super) fn parse_braced_body(content: &str, in_double_quotes: bool) -> Result
     let Some((idx, op)) = find_param_operator(content) else {
         return reference(content, ParamExpansion::Normal);
     };
+    // `${x:}` has no offset at all, which bash reports as a bad substitution.
+    if op == ":" && idx + 1 == content.len() {
+        return reference(content, ParamExpansion::Normal);
+    }
 
     reference(
         &content[..idx],
