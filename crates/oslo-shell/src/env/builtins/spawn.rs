@@ -51,7 +51,7 @@ pub fn exec_or_interpret(
         None => nix::unistd::execv(path, args).err(),
     };
     let failed = start(c_path, c_args).unwrap_or(nix::errno::Errno::UnknownErrno);
-    if failed != nix::errno::Errno::ENOEXEC {
+    if failed != nix::errno::Errno::ENOEXEC || looks_binary(c_path) {
         return failed;
     }
     // Re-exec rather than interpret in place: the caller has already applied redirections and
@@ -67,6 +67,36 @@ pub fn exec_or_interpret(
     let mut argv = vec![c_shell.clone(), c_path.clone()];
     argv.extend(c_args.iter().skip(1).cloned());
     start(&c_shell, &argv).unwrap_or(nix::errno::Errno::UnknownErrno)
+}
+
+/// bash's test for a file that is not a script: an ELF header, or a NUL byte in the first line
+/// of its first 80 bytes (anywhere in them after a `#!`).
+fn looks_binary(path: &CString) -> bool {
+    use std::io::Read;
+    use std::os::unix::ffi::OsStrExt;
+    let os = std::ffi::OsStr::from_bytes(path.as_bytes());
+    let mut sample = [0u8; 80];
+    let Ok(read) = std::fs::File::open(os).and_then(|mut file| file.read(&mut sample)) else {
+        return false;
+    };
+    let sample = &sample[..read];
+    if sample.starts_with(b"\x7fELF") {
+        return true;
+    }
+    let lines = if sample.starts_with(b"#!") { usize::MAX } else { 1 };
+    let mut seen = 0;
+    for &byte in sample {
+        if byte == b'\n' {
+            seen += 1;
+            if seen == lines {
+                return false;
+            }
+        }
+        if byte == 0 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Resolve a command word to a program on disk the way the shell does.

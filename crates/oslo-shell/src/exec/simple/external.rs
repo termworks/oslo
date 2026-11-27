@@ -52,8 +52,26 @@ pub(crate) fn look_up_command(name: &str) -> Lookup {
     }
     match crate::env::builtins::hash_lookup(name) {
         Some(path) => Lookup::Program(path),
+        // A file of that name on `$PATH` that cannot be run is reported as such, as bash does.
+        None if on_path_unrunnable(name) => Lookup::NotExecutable,
         None => Lookup::NotFound,
     }
+}
+
+/// Whether a `$PATH` directory holds a regular file called `name` that this process may not run.
+fn on_path_unrunnable(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = if dir.as_os_str().is_empty() {
+            Path::new(".").join(name)
+        } else {
+            dir.join(name)
+        };
+        candidate.is_file()
+            && nix::unistd::access(&candidate, nix::unistd::AccessFlags::X_OK).is_err()
+    })
 }
 
 /// Classify a path operand: does it exist, is it a directory, may this process execute it?
@@ -109,10 +127,17 @@ pub(crate) fn run_external(
                 }
 
                 // Including the shell-script fallback for a file with no `#!` line; see there.
-                crate::env::builtins::spawn::exec_or_interpret(&c_path, &c_args, None);
-
-                eprintln!("oslo: exec failed for {}", cmd_name);
-                std::process::exit(126);
+                let failure =
+                    crate::env::builtins::spawn::exec_or_interpret(&c_path, &c_args, None);
+                let why = match failure {
+                    nix::errno::Errno::ENOEXEC => "cannot execute binary file: Exec format error",
+                    other => other.desc(),
+                };
+                eprintln!("{}{}: {why}", env.origin(), cmd_name);
+                std::process::exit(match failure {
+                    nix::errno::Errno::ENOENT => 127,
+                    _ => 126,
+                });
             }
             Ok(ForkResult::Parent { child }) => {
                 // `None` when job control is off, which is when the child is still in the
@@ -137,7 +162,9 @@ pub(crate) fn run_external(
                         });
                     }
                 }
+                crate::exec::pipeline::forget_death();
                 let status = wait_for_child(child, cmd_name, words);
+                crate::exec::pipeline::announce_death(env, None, || words.join(" "));
                 if pgid.is_some() && watching {
                     job::stand_down();
                     // Whatever the watcher did, said in the shell's own voice — and a hook, so a
@@ -182,11 +209,12 @@ fn wait_for_child(child: Pid, cmd_name: &str, words: &[String]) -> i32 {
             }
             // A shell reports a signal death as 128 + the signal number, which is how `$?` tells
             // `kill -9` (137) apart from an exit status of 9.
-            Ok(WaitStatus::Signaled(_, sig, _)) => {
+            Ok(WaitStatus::Signaled(_, sig, core)) => {
                 // Recorded, not just folded into the status: `128 + n` cannot tell a program
                 // killed by signal `n` from one that called `exit(128 + n)`, and a caller that
                 // captured this command's output is about to be asked which it was.
                 crate::exec::argv::note_signal(Some(sig as i32));
+                crate::exec::pipeline::note_death(child, sig as i32, core);
                 // **R7.2: the Ctrl-C the shell never saw.** The terminal sends SIGINT to the
                 // foreground *child*, and a shell waiting on one is not in that group — so the
                 // interrupt machinery hears nothing, and the only evidence that a key was pressed
