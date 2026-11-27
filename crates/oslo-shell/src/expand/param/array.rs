@@ -89,6 +89,17 @@ fn whole_array(
             | ParamExpansion::UseAlternative { .. }
     );
 
+    if let ParamExpansion::Transform(op) = expansion_type {
+        let listed = whole_list_transform(&format!("{name}[@]"), *op, &values, || {
+            super::lists::array(env, name, *op, &indices, &values)
+        })?;
+        if let Some(listed) = listed {
+            let separate = separate && !listed.single;
+            let fields = list_fields(&listed.words, separate, &env.ifs_separator(), origin);
+            return Ok(seam_list(fields, separate, star, origin));
+        }
+    }
+
     let values: Vec<String> = match expansion_type {
         ParamExpansion::Normal => values,
 
@@ -188,6 +199,18 @@ pub(super) fn positional_list(
     expansion_type: &ParamExpansion,
     origin: Origin,
 ) -> Result<Option<Vec<Field>>> {
+    let separate = name == "@" || star_stays_apart(env, origin);
+    if let ParamExpansion::Transform(op) = expansion_type {
+        let values = env.get_positional().to_vec();
+        let listed = whole_list_transform(name, *op, &values, || {
+            super::lists::positional(env, *op, &values)
+        })?;
+        if let Some(listed) = listed {
+            let separate = separate && !listed.single;
+            let fields = list_fields(&listed.words, separate, &env.ifs_separator(), origin);
+            return Ok(Some(seam_list(fields, separate, name == "*", origin)));
+        }
+    }
     let values = match expansion_type {
         // bash slices `$0 $1 $2 …`, one list longer than `$@` itself: `${@:0}` picks up the
         // shell's own name and `${@:1}` is the first argument, which is why every
@@ -204,9 +227,30 @@ pub(super) fn positional_list(
         }
         _ => return Ok(None),
     };
-    let separate = name == "@" || star_stays_apart(env, origin);
     let fields = list_fields(&values, separate, &env.ifs_separator(), origin);
     Ok(Some(seam_list(fields, separate, name == "*", origin)))
+}
+
+/// Check a transformation of a whole list and run it when it reads the list as a whole.
+///
+/// `Ok(None)` leaves an element-wise one to the caller. An unknown letter is an error only when
+/// there is something to transform.
+fn whole_list_transform(
+    shown: &str,
+    op: char,
+    values: &[String],
+    run: impl FnOnce() -> Option<super::lists::Listed>,
+) -> Result<Option<super::lists::Listed>> {
+    if super::transform::is_known(op) {
+        return Ok(run());
+    }
+    if values.is_empty() {
+        return Ok(Some(super::lists::Listed {
+            words: Vec::new(),
+            single: false,
+        }));
+    }
+    Err(super::transform::unknown(shown, op))
 }
 
 /// Whether an unquoted `$*` or `${a[*]}` stays one field per element, which a null IFS makes it.

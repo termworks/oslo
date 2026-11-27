@@ -25,6 +25,12 @@ pub enum WordPart {
         expansion_type: ParamExpansion,
     },
     CommandSubstitution(String),
+    /// bash 5.3's `${ cmd; }` and `${| cmd; }`: the body runs in the current shell, and the word
+    /// is what it printed or, with `reply`, the value it left in `REPLY`.
+    FunctionSubstitution {
+        body: String,
+        reply: bool,
+    },
     /// `<(cmd)` or `>(cmd)` — the command runs, and the word becomes a *filename* naming a pipe
     /// connected to it.
     ///
@@ -111,6 +117,10 @@ pub enum ParamExpansion {
         /// Doubled operator: convert every eligible character rather than just the first.
         all: bool,
     },
+    /// `${name~}` and `${name~~}`: swap the case of the first, or of every, eligible character.
+    CaseToggle { pattern: Option<Word>, all: bool },
+    /// `${name@op}`: one of bash's transformations, `Q E P A K a k U u L`.
+    Transform(char),
     /// `${!name}` — `name` holds the name of the parameter to expand.
     ///
     /// **The payload is what to do once the second name is known**, because the two compose:

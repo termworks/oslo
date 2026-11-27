@@ -371,6 +371,9 @@ fn format_part(part: &WordPart) -> String {
             }
         }
         WordPart::CommandSubstitution(src) => format!("$({src})"),
+        WordPart::FunctionSubstitution { body, reply } => {
+            format!("${{{}{body}}}", if *reply { "|" } else { "" })
+        }
         WordPart::ProcessSubstitution {
             reads_from_command,
             command,
@@ -460,6 +463,12 @@ fn format_param(name: &str, expansion: &ParamExpansion) -> String {
             let pat = pattern.as_ref().map(format_word).unwrap_or_default();
             format!("${{{name}{op}{pat}}}")
         }
+        ParamExpansion::CaseToggle { pattern, all } => {
+            let op = if *all { "~~" } else { "~" };
+            let pat = pattern.as_ref().map(format_word).unwrap_or_default();
+            format!("${{{name}{op}{pat}}}")
+        }
+        ParamExpansion::Transform(op) => format!("${{{name}@{op}}}"),
         // The `!` belongs to the reference, so the inner form is rendered against a name that
         // already carries it — `${!v:-d}` rather than `${!v}:-d`.
         ParamExpansion::Indirect(inner) => format_param(&format!("!{name}"), inner),

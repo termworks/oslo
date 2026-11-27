@@ -7,6 +7,7 @@
 pub mod argv;
 pub mod compound;
 mod coproc;
+pub mod funsub;
 pub mod job;
 pub mod pipeline;
 pub mod procsub;

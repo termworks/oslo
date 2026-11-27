@@ -10,6 +10,7 @@
 //! live here, once, so that the array path and the positional path cannot drift apart the way
 //! they did when `"${@:2}"` character-sliced the space-joined positionals.
 
+use super::case::CaseMap;
 use super::{Target, pattern};
 use crate::env::Environment;
 use crate::expand::arithmetic::eval_arithmetic;
@@ -33,8 +34,11 @@ pub(super) fn apply(
         // have joined into. `${#}` never reaches here: it is `$#`, a plain reference.
         ParamExpansion::Length => match target {
             Target::Param("@" | "*") => env.get_positional().len().to_string(),
-            // Characters, not bytes — `${#v}` on a UTF-8 value must not report its encoding.
-            _ => val.map_or_else(|| "0".to_string(), |v| v.chars().count().to_string()),
+            // Characters in a UTF-8 locale, bytes in any other.
+            _ => val.map_or_else(
+                || "0".to_string(),
+                |v| crate::expand::locale::length(env, &v).to_string(),
+            ),
         },
 
         ParamExpansion::DefaultValue {
@@ -127,18 +131,12 @@ pub(super) fn apply(
             }
         }
 
-        ParamExpansion::CaseConvert {
-            pattern: selector,
-            upper,
-            all,
-        } => {
-            let selector = match selector {
-                Some(word) => Some(compile_pattern(env, word)?),
-                None => None,
-            };
-            let value = val.unwrap_or_default();
-            pattern::convert_case(&value, selector.as_ref(), *upper, *all)
+        ParamExpansion::CaseConvert { .. } | ParamExpansion::CaseToggle { .. } => {
+            let prepared = Prepared::compile(env, expansion_type)?;
+            prepared.apply(&val.unwrap_or_default())
         }
+
+        ParamExpansion::Transform(op) => return super::transform::scalar(env, target, *op, val),
 
         // `${!name}` reads `name`'s value and expands *that* parameter. Only the second lookup
         // may come up empty: bash makes a `name` that does not *hold a name* a fatal expansion
@@ -232,7 +230,8 @@ pub(super) fn is_elementwise(expansion_type: &ParamExpansion) -> bool {
             | ParamExpansion::RemoveSuffix { .. }
             | ParamExpansion::Replace { .. }
             | ParamExpansion::CaseConvert { .. }
-    )
+            | ParamExpansion::CaseToggle { .. }
+    ) || matches!(expansion_type, ParamExpansion::Transform(op) if "QEPUuL".contains(*op))
 }
 
 /// Apply an element-wise operator to every value, keeping the list's length.
@@ -261,6 +260,13 @@ pub(super) fn map_elements(
         is_elementwise(expansion_type),
         "map_elements is only defined for the operators is_elementwise admits"
     );
+    // A transformation can run commands (`@P`), so it is applied to each value in turn.
+    if let ParamExpansion::Transform(op) = expansion_type {
+        return values
+            .iter()
+            .map(|value| super::transform::text(env, *op, value))
+            .collect();
+    }
     let prepared = Prepared::compile(env, expansion_type)?;
     values
         .iter()
@@ -275,7 +281,9 @@ enum Prepared {
     RemovePrefix(ShellPattern, bool),
     RemoveSuffix(ShellPattern, bool),
     Replace(ShellPattern, pattern::Replacement, ReplaceScope),
-    CaseConvert(Option<ShellPattern>, bool, bool),
+    /// The selector, the mapping, whether every character, whether the locale is UTF-8.
+    CaseConvert(Option<ShellPattern>, CaseMap, bool, bool),
+    Unchanged,
 }
 
 impl Prepared {
@@ -302,19 +310,32 @@ impl Prepared {
                 pattern,
                 upper,
                 all,
-            } => Prepared::CaseConvert(
-                match pattern {
-                    Some(word) => Some(compile_pattern(env, word)?),
-                    None => None,
-                },
-                *upper,
-                *all,
-            ),
+            } => {
+                let map = if *upper { CaseMap::Upper } else { CaseMap::Lower };
+                Prepared::case(env, pattern.as_ref(), map, *all)?
+            }
+            ParamExpansion::CaseToggle { pattern, all } => {
+                Prepared::case(env, pattern.as_ref(), CaseMap::Toggle, *all)?
+            }
             // Unreachable: `map_elements` asserts what it was given, and `is_elementwise` admits
-            // exactly the four above. Answering with the value unchanged is what a fifth operator
-            // arriving here should do — not a panic in the middle of somebody's expansion.
-            _ => Prepared::CaseConvert(None, false, false),
+            // only the operators above and the transformations it handles itself. Answering with
+            // the value unchanged is the safe thing for anything else arriving here.
+            _ => Prepared::Unchanged,
         })
+    }
+
+    fn case(
+        env: &mut Environment,
+        selector: Option<&Word>,
+        map: CaseMap,
+        all: bool,
+    ) -> Result<Prepared> {
+        let selector = match selector {
+            Some(word) => Some(compile_pattern(env, word)?),
+            None => None,
+        };
+        let utf8 = crate::expand::locale::is_utf8(env);
+        Ok(Prepared::CaseConvert(selector, map, all, utf8))
     }
 
     fn apply(&self, value: &str) -> String {
@@ -331,9 +352,10 @@ impl Prepared {
                 ReplaceScope::Prefix => pattern::replace_prefix(value, pattern, replacement),
                 ReplaceScope::Suffix => pattern::replace_suffix(value, pattern, replacement),
             },
-            Prepared::CaseConvert(selector, upper, all) => {
-                pattern::convert_case(value, selector.as_ref(), *upper, *all)
+            Prepared::CaseConvert(selector, map, all, utf8) => {
+                super::case::convert_case(value, selector.as_ref(), *map, *all, *utf8)
             }
+            Prepared::Unchanged => value.to_string(),
         }
     }
 }

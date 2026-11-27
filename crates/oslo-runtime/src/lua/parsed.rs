@@ -143,6 +143,11 @@ fn push(part: &WordPart, out: &mut String) {
             out.push_str(body);
             out.push(')');
         }
+        WordPart::FunctionSubstitution { body, reply } => {
+            out.push_str(if *reply { "${|" } else { "${" });
+            out.push_str(body);
+            out.push('}');
+        }
         WordPart::ProcessSubstitution { command, .. } => {
             out.push_str("<(");
             out.push_str(command);

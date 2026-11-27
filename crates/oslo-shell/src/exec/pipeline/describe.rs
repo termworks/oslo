@@ -128,6 +128,9 @@ fn describe_part(part: &WordPart) -> String {
         WordPart::Variable { name, .. } => format!("${}", name),
         WordPart::ArrayRef { name, .. } => format!("${{{}[...]}}", name),
         WordPart::CommandSubstitution(text) => format!("$({})", text),
+        WordPart::FunctionSubstitution { body, reply } => {
+            format!("${{{}{body}}}", if *reply { "|" } else { "" })
+        }
         WordPart::ProcessSubstitution {
             reads_from_command,
             command,

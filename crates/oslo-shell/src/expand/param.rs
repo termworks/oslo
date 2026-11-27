@@ -13,9 +13,12 @@
 //! that fallback into a diagnostic instead.
 
 mod array;
+pub mod case;
+mod lists;
 mod operators;
 mod pattern;
 mod positional;
+pub(crate) mod transform;
 
 use crate::env::Environment;
 use crate::expand::word::{Field, Origin, Run};

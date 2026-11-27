@@ -488,11 +488,26 @@ mod tests {
     }
 
     /// The property the whole module protects: a body it cannot split stays a *name*, so the
-    /// expander rejects it. `${v@Q}` is a real bash operator oslo does not implement.
+    /// expander rejects it.
     #[test]
     fn an_unknown_operator_is_left_as_a_bad_name() {
-        assert_eq!(op_of("${v@Q}", "v@Q"), ParamExpansion::Normal);
         assert_eq!(op_of("${a b}", "a b"), ParamExpansion::Normal);
+        assert_eq!(op_of("${x:}", "x:"), ParamExpansion::Normal);
+    }
+
+    /// `@` takes one letter, and `~` toggles case.
+    #[test]
+    fn transformations_and_toggles_parse() {
+        assert_eq!(op_of("${v@Q}", "v"), ParamExpansion::Transform('Q'));
+        assert_eq!(op_of("${v@QQ}", "v"), ParamExpansion::Transform('\0'));
+        assert_eq!(op_of("${@@Q}", "@"), ParamExpansion::Transform('Q'));
+        assert_eq!(
+            op_of("${v~~}", "v"),
+            ParamExpansion::CaseToggle {
+                pattern: None,
+                all: true
+            }
+        );
     }
 
     // --- R8.1: array subscripts ---

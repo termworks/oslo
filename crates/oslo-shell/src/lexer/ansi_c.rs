@@ -13,7 +13,7 @@
 /// Decoding stops at a NUL: a shell variable is a C string, so bash's `$'a\0b'` is one character
 /// long. Producing the byte and losing it later would be worse — it would reach `CString` and
 /// fail at exec time.
-pub(super) fn decode(raw: &str) -> String {
+pub fn decode(raw: &str) -> String {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -55,12 +55,18 @@ pub(super) fn decode(raw: &str) -> String {
             'x' => radix_escape(&chars, &mut i, None, 0, 16, 2),
             'u' => radix_escape(&chars, &mut i, None, 0, 16, 4),
             'U' => radix_escape(&chars, &mut i, None, 0, 16, 8),
-            // `\cX` is the control character X masks down to; `\c\` is not special-cased because
-            // the byte it produces (NUL) would truncate the string anyway.
+            // `\cX` keeps the low five bits of X upper-cased (`\c?` is DEL), and `\c\\` spends
+            // both backslashes on one control-backslash.
             'c' => match chars.get(i) {
                 Some(&c) => {
                     i += 1;
-                    Some((c.to_ascii_uppercase() as u32) ^ 0x40)
+                    if c == '\\' && chars.get(i) == Some(&'\\') {
+                        i += 1;
+                    }
+                    Some(match c {
+                        '?' => 0x7f,
+                        _ => (c.to_ascii_uppercase() as u32) & 0x1f,
+                    })
                 }
                 None => None,
             },
@@ -72,12 +78,9 @@ pub(super) fn decode(raw: &str) -> String {
             Some(0) => return out,
             Some(v) => match char::from_u32(v) {
                 Some(c) => out.push(c),
-                // Lone surrogates and out-of-range code points: keep the source text rather than
-                // inventing a replacement character the user never wrote.
-                None => {
-                    out.push('\\');
-                    out.push(esc);
-                }
+                // A surrogate or a value past U+10FFFF is written as bash writes it, in the
+                // original UTF-8 scheme of up to six bytes, carried as raw bytes.
+                None => out.push_str(&raw_code_point(v)),
             },
             None => {
                 out.push('\\');
@@ -87,6 +90,29 @@ pub(super) fn decode(raw: &str) -> String {
     }
 
     out
+}
+
+/// The bytes of `value` in UTF-8's original scheme, which reaches 31 bits in six bytes, held the
+/// way the shell holds bytes that are not UTF-8.
+fn raw_code_point(value: u32) -> String {
+    let len = match value {
+        0..=0x7f => 1,
+        0x80..=0x7ff => 2,
+        0x800..=0xffff => 3,
+        0x1_0000..=0x1f_ffff => 4,
+        0x20_0000..=0x3ff_ffff => 5,
+        _ => 6,
+    };
+    let lead: [u8; 7] = [0, 0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc];
+    let mut bytes = vec![0u8; len];
+    let mut rest = value;
+    for byte in bytes.iter_mut().skip(1).rev() {
+        *byte = 0x80 | (rest & 0x3f) as u8;
+        rest >>= 6;
+    }
+    bytes[0] = if len == 1 { rest as u8 } else { lead[len] | rest as u8 };
+    use std::os::unix::ffi::OsStrExt;
+    oslo_base::lossless::encode(std::ffi::OsStr::from_bytes(&bytes))
 }
 
 /// Consume up to `max - taken` further digits in `radix`, folding them onto `seed`.
@@ -142,6 +168,18 @@ mod tests {
         assert_eq!(decode("\\u00e9"), "é");
         assert_eq!(decode("\\U0001F600"), "\u{1F600}");
         assert_eq!(decode("\\cA"), "\x01");
+        assert_eq!(decode("\\c1"), "\u{11}");
+        assert_eq!(decode("\\c\\\\"), "\u{1c}");
+        assert_eq!(decode("\\c?"), "\u{7f}");
+    }
+
+    /// A surrogate and a value past U+10FFFF come out as the bytes bash writes for them.
+    #[test]
+    fn out_of_range_code_points_are_raw_bytes() {
+        let bytes = |s: &str| oslo_base::lossless::decode(&decode(s));
+        assert_eq!(bytes("\\uD800"), vec![0xed, 0xa0, 0x80]);
+        assert_eq!(bytes("\\U110000"), vec![0xf4, 0x90, 0x80, 0x80]);
+        assert_eq!(bytes("\\U7fffffff"), vec![0xfd, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf]);
     }
 
     /// An octal escape is at most three digits, so the fourth character is data again.

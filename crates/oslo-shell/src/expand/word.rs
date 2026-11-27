@@ -239,6 +239,17 @@ pub fn expand_word_part(
             // Trailing newlines are stripped per POSIX.
             single(output.trim_end_matches('\n').to_string(), produced)
         }
+        WordPart::FunctionSubstitution { body, reply } => {
+            let output = crate::exec::funsub::eval_function_substitution(env, body, *reply)?;
+            if let Some(status) = env.peek_substitution_status() {
+                env.last_status = status;
+            }
+            let text = match reply {
+                true => output,
+                false => output.trim_end_matches('\n').to_string(),
+            };
+            single(text, produced)
+        }
     })
 }
 

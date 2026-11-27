@@ -27,6 +27,14 @@ fn payload(rest: &str, ctx: Context) -> Result<Word> {
     parse_operand(rest, ctx.in_double_quotes, ctx.tilde)
 }
 
+/// The pattern of a case operator, which an empty operand leaves out.
+fn selector(rest: &str) -> Result<Option<Word>> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    parse_word_source(rest).map(Some)
+}
+
 /// Build the expansion for `op` from the text that follows it.
 ///
 /// Every operand stays a [`oslo_base::ast::Word`]: `${x:-$HOME}` has to expand its default, and
@@ -63,14 +71,23 @@ pub(super) fn operator_expansion(op: &str, rest: &str, ctx: Context) -> Result<P
 
         // The optional operand selects which characters are eligible; absent means all of them.
         "^" | "^^" | "," | ",," => ParamExpansion::CaseConvert {
-            pattern: if rest.is_empty() {
-                None
-            } else {
-                Some(parse_word_source(rest)?)
-            },
+            pattern: selector(rest)?,
             upper: op.starts_with('^'),
             all: op.chars().count() == 2,
         },
+        "~" | "~~" => ParamExpansion::CaseToggle {
+            pattern: selector(rest)?,
+            all: op == "~~",
+        },
+        // One letter names the transformation; anything else is checked when it is expanded,
+        // because bash lets a malformed one through for an unset name.
+        "@" => {
+            let mut letters = rest.chars();
+            match (letters.next(), letters.next()) {
+                (Some(letter), None) => ParamExpansion::Transform(letter),
+                _ => ParamExpansion::Transform('\0'),
+            }
+        }
 
         _ => {
             // A leading `:` is not a different operator, only a different notion of "absent":

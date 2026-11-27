@@ -39,6 +39,12 @@ impl Lexer<'_> {
                 let cmd = self.scan_raw_delimited('(', ')', "command substitution", 0)?;
                 Ok(WordPart::CommandSubstitution(cmd))
             }
+            // `$[expr]` is the old spelling of `$((expr))`.
+            Some('[') => {
+                self.advance();
+                let inner = self.scan_raw_delimited('[', ']', "arithmetic expansion", 0)?;
+                Ok(WordPart::Arithmetic(inner))
+            }
             Some('\'') if !in_double_quotes => {
                 self.advance();
                 let decoded = self.scan_ansi_c_quote()?;
@@ -145,6 +151,19 @@ impl Lexer<'_> {
         // Depth- and quote-aware, so `${x:-${y}}` keeps its whole payload and `${x:-a}b}` does
         // not end early on the brace inside the quotes.
         let content = self.scan_raw_delimited('{', '}', "parameter expansion", 0)?;
+        // `${ cmd; }` and `${| cmd; }` hold a command, not a parameter.
+        if content.starts_with([' ', '\t', '\n']) {
+            return Ok(WordPart::FunctionSubstitution {
+                body: content,
+                reply: false,
+            });
+        }
+        if let Some(body) = content.strip_prefix('|') {
+            return Ok(WordPart::FunctionSubstitution {
+                body: body.to_string(),
+                reply: true,
+            });
+        }
         // A payload inside an assignment value takes the value's tilde rule.
         let tilde = if self.colon_tilde {
             super::TildeMode::Value
