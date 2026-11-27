@@ -240,4 +240,32 @@ mod tests {
         crate::exec::eval_command_list(&mut env, &script).expect("exec");
         assert_eq!(env.get_array("oslo_xa").unwrap().get(2), Some("z"));
     }
+
+    /// On an associative array the subscript is the key, quoted or expanded, never arithmetic.
+    #[test]
+    fn an_associative_subscript_is_its_expanded_text() {
+        use oslo_base::ast::{Assignment, AssignmentTarget, AssignmentValue, Word, WordPart};
+        let mut env = Environment::new();
+        env.declare_assoc("oslo_m");
+        env.set_var("oslo_k", "a b", false);
+        let element = |index: Vec<WordPart>, value: &str| Assignment {
+            target: AssignmentTarget::Element {
+                name: "oslo_m".to_string(),
+                index: Word { parts: index },
+            },
+            value: AssignmentValue::Scalar(Word::from_literal(value)),
+            append: false,
+        };
+        let quoted = vec![WordPart::DoubleQuoted(vec![WordPart::Literal("c d".into())])];
+        let variable = vec![WordPart::Variable {
+            name: "oslo_k".into(),
+            expansion_type: oslo_base::ast::ParamExpansion::Normal,
+        }];
+        for (index, value) in [(quoted, "1"), (variable, "2")] {
+            let outcome = super::apply_assignment(&mut env, &element(index, value)).unwrap();
+            assert!(outcome.assigned);
+        }
+        let map = env.get_assoc("oslo_m").unwrap();
+        assert_eq!((map.get("c d"), map.get("a b")), (Some("1"), Some("2")));
+    }
 }
