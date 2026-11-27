@@ -7,7 +7,7 @@
 //! Both builtins move through [`change_directory`], which is what keeps `$OLDPWD` correct: a
 //! `popd` followed by `cd -` has to return to where the `popd` was issued from.
 
-use super::chdir::{PathMode, change_directory, logical_join, logical_pwd};
+use super::chdir::{PathMode, change_directory, logical_pwd};
 use super::dirs::builtin_dirs;
 use crate::env::origin_now;
 use crate::env::scope::Environment;
@@ -155,9 +155,8 @@ pub fn builtin_pushd(env: &mut Environment, args: &[String]) -> Result<i32> {
             let mut next = entries;
             if no_cd {
                 // `-n` keeps the shell where it is, so the new entry goes *below* the current
-                // directory rather than becoming it.
-                let resolved = logical_join(&logical_pwd(env), &dir);
-                next.insert(1, resolved);
+                // directory rather than becoming it — as written, the way bash stores it.
+                next.insert(1, dir);
             } else {
                 // CDPATH can send the shell somewhere the operand does not name, so the entry
                 // is read back from `$PWD` afterwards rather than guessed from the operand.

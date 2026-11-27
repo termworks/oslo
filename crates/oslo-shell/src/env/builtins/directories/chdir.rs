@@ -87,15 +87,12 @@ fn lexical_canon(path: &str) -> String {
             other => kept.push(other),
         }
     }
-    format!("/{}", kept.join("/"))
-}
-
-/// Name `operand` the way `-L` would, relative to `base`, without going anywhere.
-///
-/// `pushd -n dir` needs a stack entry for a directory the shell is not moving to, and a stack
-/// full of relative paths would break the moment the shell moved.
-pub fn logical_join(base: &str, operand: &str) -> String {
-    lexical_canon(&absolute_against(base, operand))
+    // Exactly two leading slashes are kept, as POSIX allows and bash does; three or more are one.
+    let root = match path.starts_with("//") && !path.starts_with("///") {
+        true => "//",
+        false => "/",
+    };
+    format!("{root}{}", kept.join("/"))
 }
 
 /// Try to move to `operand`, interpreted relative to `base`. Nothing is printed and no shell
@@ -306,6 +303,9 @@ mod tests {
         assert_eq!(lexical_canon("/a/b/../.."), "/");
         // `..` at the root stays at the root, as chdir would.
         assert_eq!(lexical_canon("/../.."), "/");
+        assert_eq!(lexical_canon("//"), "//");
+        assert_eq!(lexical_canon("//tmp/.."), "//");
+        assert_eq!(lexical_canon("///tmp"), "/tmp");
     }
 
     #[test]

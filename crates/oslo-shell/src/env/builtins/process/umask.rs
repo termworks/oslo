@@ -81,6 +81,10 @@ pub fn builtin_umask(_env: &mut Environment, args: &[String]) -> Result<i32> {
     match parse_mode(spec, current) {
         Ok(new_mask) => {
             umask(Mode::from_bits_truncate((new_mask & MAX_OCTAL) as mode_t));
+            // `-S` with a mode sets it and then shows the result symbolically, as bash does.
+            if symbolic {
+                print_mask(new_mask & MAX_OCTAL, true, false);
+            }
             Ok(0)
         }
         Err(e) => {

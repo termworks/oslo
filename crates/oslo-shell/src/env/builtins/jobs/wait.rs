@@ -108,11 +108,23 @@ pub fn builtin_wait(env: &mut Environment, args: &[String]) -> Result<i32> {
     // Several operands: bash waits for each in turn and reports the *last* one, so a bad operand
     // in the middle contributes its own status without aborting the rest —
     // `wait $! abc` is 1 and `wait abc $!` is the child's status.
+    //
+    // Outside POSIX mode a pid's status is kept after it is reported, as default bash keeps it,
+    // so `wait $p $p` answers twice.
+    let keep = !env.posix();
     let mut status = 0;
     for id in &opts.ids {
-        status = match resolve(id) {
+        status = match resolve(id, keep) {
             Ok(target) => match settle(target) {
-                Ok(outcome) => report(env, &opts, outcome),
+                Ok(outcome) => {
+                    if keep
+                        && !id.starts_with('%')
+                        && let Some((pid, code)) = outcome
+                    {
+                        with_jobs(|jobs| jobs.remember_status(pid, code));
+                    }
+                    report(env, &opts, outcome)
+                }
                 Err(cut) => return interrupted_status(env, cut),
             },
             Err(status) => status,
@@ -198,7 +210,7 @@ fn report(env: &mut Environment, opts: &Options, outcome: Option<(Pid, i32)>) ->
 /// The two failure statuses are different on purpose, and bash distinguishes them: an operand
 /// that is not a pid or a job spec at all is a usage error (1), while a well-formed reference to
 /// a job the shell does not have is "no such child" (127), the same as an unknown pid.
-fn resolve(id: &str) -> std::result::Result<Target, i32> {
+fn resolve(id: &str, keep: bool) -> std::result::Result<Target, i32> {
     if id.starts_with('%') {
         return match resolve_job(id) {
             Some(target) => Ok(target),
@@ -215,7 +227,7 @@ fn resolve(id: &str) -> std::result::Result<Target, i32> {
         };
     }
     match id.parse::<i32>() {
-        Ok(n) if n > 0 => Ok(resolve_pid(Pid::from_raw(n))),
+        Ok(n) if n > 0 => Ok(resolve_pid(Pid::from_raw(n), keep)),
         _ => {
             crate::env::complain(
                 &[String::from("wait"), id.to_string()],
@@ -246,8 +258,14 @@ fn resolve_job(spec: &str) -> Option<Target> {
 }
 
 /// A pid operand: the table first, in case the opportunistic reaper already collected it.
-fn resolve_pid(pid: Pid) -> Target {
-    match with_jobs(|jobs| jobs.take_status(pid)) {
+///
+/// `keep` leaves the remembered status where it is, for a later `wait` on the same pid.
+fn resolve_pid(pid: Pid, keep: bool) -> Target {
+    let remembered = with_jobs(|jobs| match keep {
+        true => jobs.peek_status(pid),
+        false => jobs.take_status(pid),
+    });
+    match remembered {
         Some(status) => {
             // Symmetric with `resolve_job`, which removes the entry it reports. Without this the
             // finished job sits in the table and a later bare `wait -n` hands the same child back
@@ -279,7 +297,7 @@ fn collect_targets(ids: &[String]) -> (Vec<Pid>, Option<(Pid, i32)>) {
     let mut pids = Vec::new();
     let mut finished = None;
     for id in ids {
-        match resolve(id) {
+        match resolve(id, false) {
             Ok(Target::Live(live)) => pids.extend(live),
             Ok(Target::Done(pid, status)) => {
                 pids.push(pid);
@@ -520,10 +538,13 @@ mod tests {
     /// reference to a job that does not exist is "no such child" (127).
     #[test]
     fn a_malformed_operand_and_a_missing_job_report_different_statuses() {
-        assert!(matches!(resolve("abc"), Err(1)));
-        assert!(matches!(resolve("-3"), Err(1)));
-        assert!(matches!(resolve("%no-such-job-xyz"), Err(NO_SUCH_CHILD)));
-        assert!(matches!(resolve("1234"), Ok(Target::Live(_))));
+        assert!(matches!(resolve("abc", false), Err(1)));
+        assert!(matches!(resolve("-3", false), Err(1)));
+        assert!(matches!(
+            resolve("%no-such-job-xyz", false),
+            Err(NO_SUCH_CHILD)
+        ));
+        assert!(matches!(resolve("1234", false), Ok(Target::Live(_))));
     }
 
     /// A child that is not ours at all: the kernel says `ECHILD`, and that is 127, not 0.

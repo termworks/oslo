@@ -56,8 +56,8 @@ struct OptionError {
 
 /// The option letters this `read` has, printed under a usage error. Unprefixed, as bash leaves
 /// its own — the line above it has already said where the error came from.
-const USAGE: &str = "read: usage: read [-ers] [-a array] [-d delim] [-n nchars] [-N nchars] [-p prompt] \
-     [-t timeout] [-u fd] [name ...]";
+const USAGE: &str = "read: usage: read [-ers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] \
+     [-p prompt] [-t timeout] [-u fd] [name ...]";
 
 fn usage(word: impl Into<String>, message: String) -> OptionError {
     OptionError {
@@ -78,7 +78,7 @@ fn invalid(word: impl Into<String>, message: String) -> OptionError {
 /// Which option letters consume a value, either as the rest of their cluster or as the next
 /// argument. `read -n3`, `read -n 3` and `read -rn3` all mean the same thing.
 fn takes_argument(flag: char) -> bool {
-    matches!(flag, 'p' | 'n' | 'N' | 't' | 'd' | 'u' | 'a')
+    matches!(flag, 'p' | 'n' | 'N' | 't' | 'd' | 'u' | 'a' | 'i')
 }
 
 /// Pull the value of `flag` out of the cluster remainder, or out of the next argument.
@@ -162,6 +162,8 @@ fn apply_flag<'a>(
         'u' => opts.fd = parse_number('u', &value)?,
         // `-d ''` is bash's way of spelling a NUL delimiter, which is what `find -print0` needs.
         'd' => opts.delim = value.bytes().next().unwrap_or(0),
+        // `-i text` is readline's initial text, and oslo reads a descriptor, not a line editor.
+        'i' => {}
         _ => unreachable!("takes_argument admits only the letters handled here"),
     }
     Ok("")

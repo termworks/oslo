@@ -124,6 +124,8 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
 
     match step {
         Step::Found { opt, optarg } => {
+            // `?` with no argument is `?` named in the optstring, not an unknown option.
+            let named = opt == "?" && optarg.is_none();
             match optarg {
                 Some(value) => {
                     env.set_var("OPTARG", &value, false);
@@ -132,7 +134,7 @@ pub fn builtin_getopts(env: &mut Environment, args: &[String]) -> Result<i32> {
                 // from the previous option would otherwise look like this option's.
                 None => env.unset_var("OPTARG"),
             }
-            report(&opt, name, silent, print_errors, env);
+            report(&opt, name, silent, print_errors && !named, env);
             Ok(0)
         }
         Step::Done => {

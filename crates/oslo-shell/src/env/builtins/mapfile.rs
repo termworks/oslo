@@ -15,8 +15,11 @@ use nix::errno::Errno;
 use oslo_base::error::Result;
 use std::os::fd::RawFd;
 
-const USAGE: &str =
-    "mapfile: usage: mapfile [-d delim] [-n count] [-O origin] [-s count] [-t] [-u fd] [array]";
+const USAGE: &str = "mapfile: usage: mapfile [-d delim] [-n count] [-O origin] [-s count] [-t] \
+     [-u fd] [-C callback] [-c quantum] [array]";
+
+/// How many records pass between two calls of `-C`'s callback when `-c` does not say.
+const DEFAULT_QUANTUM: usize = 5000;
 
 /// The array `mapfile` fills when the caller names none. bash's default, and scripts rely on it.
 const DEFAULT_ARRAY: &str = "MAPFILE";
@@ -33,6 +36,10 @@ struct Options {
     /// `-t`: strip the delimiter from each record.
     strip: bool,
     fd: RawFd,
+    /// `-C`: shell code run with the next index and record every `quantum` records.
+    callback: Option<String>,
+    /// `-c`: how many records between two calls of `callback`.
+    quantum: usize,
 }
 
 impl Default for Options {
@@ -44,6 +51,8 @@ impl Default for Options {
             skip: 0,
             strip: false,
             fd: 0,
+            callback: None,
+            quantum: DEFAULT_QUANTUM,
         }
     }
 }
@@ -69,7 +78,10 @@ pub fn builtin_mapfile(env: &mut Environment, args: &[String]) -> Result<i32> {
         Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("{}mapfile: {}", origin_now(), e.message);
-            eprintln!("{}", USAGE);
+            // A bad value is not a spelling mistake, and bash prints the usage only for one.
+            if e.status == 2 {
+                eprintln!("{}", USAGE);
+            }
             return Ok(e.status);
         }
     };
@@ -100,12 +112,35 @@ pub fn builtin_mapfile(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     };
 
+    if let Some(callback) = &opts.callback {
+        run_callbacks(env, callback, &opts, &records)?;
+    }
+
     let mut array = ShellArray::default();
     for (offset, record) in records.into_iter().enumerate() {
         array.set(opts.origin.saturating_add(offset as i64), record);
     }
     // A read-only name is refused by the store, which reports it; the failure is `mapfile`'s.
     Ok(i32::from(!env.set_array(name, array)))
+}
+
+/// `-C callback`: every `quantum`th record, run `callback index 'record'` as bash does.
+fn run_callbacks(
+    env: &mut Environment,
+    callback: &str,
+    opts: &Options,
+    records: &[String],
+) -> Result<()> {
+    for (offset, record) in records.iter().enumerate() {
+        if (offset + 1) % opts.quantum != 0 {
+            continue;
+        }
+        let index = opts.origin.saturating_add(offset as i64);
+        let quoted = format!("'{}'", record.replace('\'', "'\\''"));
+        let line = format!("{callback} {index} {quoted}");
+        super::builtin_eval(env, &["eval".to_string(), line])?;
+    }
+    Ok(())
 }
 
 fn parse_options(args: &[String]) -> std::result::Result<(Options, Vec<String>), OptionError> {
@@ -170,15 +205,16 @@ fn apply_valued_flag(
         'O' => opts.origin = number('O', value)?,
         's' => opts.skip = number('s', value)?,
         'u' => opts.fd = number('u', value)?,
-        // The callback options run shell code between records. Refused rather than ignored:
-        // accepting `-C` and never calling the callback would silently drop the progress
-        // reporting or the incremental processing it was there to do.
-        'C' | 'c' => {
-            return Err(OptionError {
-                message: format!("-{flag}: the callback options are not implemented"),
-                status: 2,
-            });
-        }
+        'C' => opts.callback = Some(value.to_string()),
+        'c' => match value.parse::<usize>() {
+            Ok(quantum) if quantum > 0 => opts.quantum = quantum,
+            _ => {
+                return Err(OptionError {
+                    message: format!("{value}: invalid callback quantum"),
+                    status: 1,
+                });
+            }
+        },
         _ => return Err(usage(format!("-{flag}: invalid option"))),
     }
     Ok(())

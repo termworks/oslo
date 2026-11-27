@@ -24,7 +24,10 @@ use crate::exec::job::{
 use oslo_base::error::Result;
 
 /// `jobs [-lnprs] [jobspec …]` — report what the shell still has running.
-pub fn builtin_jobs(_env: &mut Environment, args: &[String]) -> Result<i32> {
+pub fn builtin_jobs(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.get(1).map(String::as_str) == Some("-x") {
+        return run_with_job_pids(env, &args[2..]);
+    }
     let mut long = false;
     let mut pids_only = false;
     let mut running_only = false;
@@ -102,6 +105,31 @@ pub fn builtin_jobs(_env: &mut Environment, args: &[String]) -> Result<i32> {
 }
 
 /// Whether a job passes the `-r`/`-s` filters.
+/// `jobs -x command [args]`: run the command with every job spec replaced by that job's group id.
+fn run_with_job_pids(env: &mut Environment, words: &[String]) -> Result<i32> {
+    let mut line = Vec::new();
+    for word in words {
+        if !word.starts_with('%') {
+            line.push(super::shell_quote(word));
+            continue;
+        }
+        let pgid = with_jobs(|jobs| {
+            jobs.lookup(word)
+                .and_then(|id| jobs.get(id))
+                .map(|job| job.pgid)
+        });
+        // A spec that names no job is passed through as written, as bash does.
+        match pgid {
+            Some(pgid) => line.push(pgid.to_string()),
+            None => line.push(super::shell_quote(word)),
+        }
+    }
+    if line.is_empty() {
+        return Ok(0);
+    }
+    super::builtin_eval(env, &["eval".to_string(), line.join(" ")])
+}
+
 fn wanted(job: &Job, running_only: bool, stopped_only: bool) -> bool {
     match job.state {
         JobState::Running => !stopped_only,

@@ -335,6 +335,14 @@ impl JobTable {
         Some(self.statuses.remove(index).1)
     }
 
+    /// The remembered status of `pid`, left in place for the next `wait` to ask about.
+    pub fn peek_status(&self, pid: Pid) -> Option<i32> {
+        self.statuses
+            .iter()
+            .find(|(p, _)| *p == pid)
+            .map(|(_, status)| *status)
+    }
+
     /// Take everything that has happened since the last drain, for a caller that no longer holds
     /// the lock and can therefore afford to run Lua.
     pub fn take_transitions(&mut self) -> Vec<Transition> {

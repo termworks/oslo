@@ -22,6 +22,9 @@ const PWD_USAGE: &str = "pwd: usage: pwd [-LP]";
 /// Last flag wins (`cd -LP` is `cd -P`), a bare `-` is an operand rather than an option, and the
 /// first operand ends option parsing — so `cd dir -P` has two operands, which is an error, not a
 /// physical `cd`.
+///
+/// `cd` also takes `-e`, which only changes the status when the new directory cannot be named
+/// after a `-P` move; the move itself has already failed in that case here, so it is accepted.
 fn parse_mode(args: &[String]) -> std::result::Result<(PathMode, &[String]), String> {
     let mut mode = PathMode::Logical;
     let mut index = 1;
@@ -43,6 +46,7 @@ fn parse_mode(args: &[String]) -> std::result::Result<(PathMode, &[String]), Str
             match flag {
                 'L' => mode = PathMode::Logical,
                 'P' => mode = PathMode::Physical,
+                'e' if args[0] == "cd" => {}
                 other => return Err(format!("-{other}")),
             }
         }
@@ -93,8 +97,13 @@ pub fn builtin_cd(env: &mut Environment, args: &[String]) -> Result<i32> {
         Some("-") => {
             announce = true;
             match env.get_var("OLDPWD").map(str::to_string) {
-                Some(old) if !old.is_empty() => old,
-                _ => {
+                // An empty `OLDPWD` is a directory of no name: bash stays put and says so.
+                Some(old) if old.is_empty() => {
+                    println!();
+                    return Ok(0);
+                }
+                Some(old) => old,
+                None => {
                     eprintln!("{}cd: OLDPWD not set", origin_now());
                     return Ok(1);
                 }

@@ -72,7 +72,8 @@ impl super::JobTable {
             .collect()
     }
 
-    fn remember_status(&mut self, pid: Pid, status: i32) {
+    /// Keep `status` as the answer a later `wait` for `pid` gets.
+    pub fn remember_status(&mut self, pid: Pid, status: i32) {
         self.statuses.retain(|(p, _)| *p != pid);
         self.statuses.push((pid, status));
         if self.statuses.len() > REMEMBERED_STATUSES {
