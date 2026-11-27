@@ -405,7 +405,17 @@ pub(crate) fn eval_compound_command(
             var_name,
             items,
             body,
-        } => super::select::eval_select(env, var_name, items.as_deref(), body),
+        } => {
+            let header = match items {
+                Some(words) => {
+                    let words: Vec<String> = words.iter().map(format_word).collect();
+                    format!("select {var_name} in {}", words.join(" "))
+                }
+                None => format!("select {var_name} in \"$@\""),
+            };
+            header_hooks(env, &header, &header);
+            super::select::eval_select(env, var_name, items.as_deref(), body)
+        }
         CompoundCommand::Coproc { name, body } => super::coproc::start(env, name, body),
         CompoundCommand::Case { word, items } => eval_case(env, word, items),
         CompoundCommand::Arithmetic(expr) => eval_arithmetic_command(env, expr),
