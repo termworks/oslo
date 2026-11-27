@@ -126,6 +126,10 @@ impl Environment {
         self.vars.remove("GROUPS");
         self.publish_array("GROUPS", ShellArray::from_values(groups()));
         self.publish_dirstack();
+        // The call stack is empty before anything runs; `FUNCNAME` is declared without a value.
+        self.publish_array("BASH_SOURCE", ShellArray::default());
+        self.publish_array("BASH_LINENO", ShellArray::default());
+        self.unpublish_array("FUNCNAME");
     }
 
     /// Publish the arguments the shell was started with as `BASH_ARGV` (last first) and

@@ -223,6 +223,14 @@ impl Environment {
             .map(|(name, _)| name.as_str())
     }
 
+    /// Leave an array the shell maintains declared but without a value, as `FUNCNAME` is outside
+    /// every function.
+    pub(super) fn unpublish_array(&mut self, name: &str) {
+        let mut var = Var::unset(Attrs::empty());
+        var.value = Value::Indexed(ShellArray::default());
+        self.vars.insert(name.to_string(), var);
+    }
+
     /// Publish an array the shell maintains, bypassing the read-only check.
     pub(super) fn publish_array(&mut self, name: &str, array: ShellArray) {
         match self.vars.get_mut(name) {

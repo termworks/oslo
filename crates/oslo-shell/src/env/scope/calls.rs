@@ -105,9 +105,8 @@ impl Environment {
         {
             match array {
                 Some(array) => self.publish_array(name, array),
-                None => {
-                    self.vars.remove(name);
-                }
+                // Declared, with no value: `declare -p FUNCNAME` still names it, as in bash.
+                None => self.unpublish_array(name),
             };
         }
     }
