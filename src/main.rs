@@ -317,6 +317,9 @@ fn run_program_reading(
     frame: Option<&str>,
 ) -> ! {
     let mut env = Environment::new();
+    if reading == Reading::Whole {
+        env.set_var("BASH_EXECUTION_STRING", script, false);
+    }
     // **The name first**, because pushing the frame publishes `$BASH_SOURCE` and the script's own
     // path is its outermost entry — pushed first, the array named `oslo` instead of the script and
     // `dirname "${BASH_SOURCE[0]}"` answered the wrong directory.
@@ -327,6 +330,7 @@ fn run_program_reading(
         env.enter_script_frame(frame);
     }
     env.set_positional(invocation.positional.clone());
+    env.publish_startup_args();
     apply_invocation_options(&mut env, invocation);
     startup::history::register(&mut env);
     // **A script sees them too.** "Every running session" has to include the `-c` a Makefile just

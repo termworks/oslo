@@ -8,6 +8,7 @@ pub mod origin;
 mod record;
 mod registry;
 mod seed;
+mod special;
 #[cfg(test)]
 mod tests;
 mod traps;
@@ -237,6 +238,7 @@ impl Environment {
         env_struct.seed_working_directory();
         env_struct.seed_option_index();
         env_struct.seed_compatibility_vars();
+        env_struct.seed_special_vars();
         env_struct
     }
 
@@ -253,10 +255,21 @@ impl Environment {
     /// a subshell (`trap 'echo T' EXIT; (:)` prints `T` once). Deliberately kept: `$$`, the
     /// invoking shell's pid, and `$!`, which bash inherits into a subshell.
     pub fn enter_subshell(&mut self) {
+        self.enter_subshell_counted(true);
+    }
+
+    /// [`Self::enter_subshell`] for a pipeline stage, which bash counts in `$BASH_SUBSHELL` only
+    /// when the stage is more than a simple command.
+    pub fn enter_pipeline_stage(&mut self, counted: bool) {
+        self.enter_subshell_counted(counted);
+    }
+
+    fn enter_subshell_counted(&mut self, counted: bool) {
         self.current_pid = std::process::id();
         // Moved rather than dropped: the actions stop applying, but `$(trap)` still has to be
         // able to report them. See [`Self::inherited_traps`].
         self.inherited_traps = std::mem::take(&mut self.signal_traps);
+        self.refresh_subshell_vars(counted);
     }
 
     /// This process's real pid, as opposed to `$$`. See [`Self::enter_subshell`].
@@ -333,7 +346,7 @@ impl Environment {
     }
 
     pub fn is_integer(&self, name: &str) -> bool {
-        self.integer_vars.contains(name)
+        self.integer_vars.contains(name) || crate::env::dynamic::is_integer(name)
     }
 
     /// Drop the attribute, for `declare +i`.
@@ -343,10 +356,13 @@ impl Environment {
 
     pub fn push_dir(&mut self, path: PathBuf) {
         self.dir_stack.push(path);
+        self.publish_dirstack();
     }
 
     pub fn pop_dir(&mut self) -> Option<PathBuf> {
-        self.dir_stack.pop()
+        let popped = self.dir_stack.pop();
+        self.publish_dirstack();
+        popped
     }
 
     pub fn get_dir_stack(&self) -> &[PathBuf] {

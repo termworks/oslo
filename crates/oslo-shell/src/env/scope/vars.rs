@@ -28,6 +28,7 @@ impl Environment {
             // `$-` joins the list: it is computed from the option bitset, and a variable of that
             // name (which no assignment can create, but `environ` can carry) must not shadow it.
             "?" | "$" | "!" | "#" | "*" | "@" | "-" => None,
+            "BASH_ARGV0" if !crate::env::dynamic::retired(name) => Some(&self.shell_name),
             _ => match self.vars.get(name) {
                 Some((v, _)) => Some(v.as_str()),
                 None => self.arrays.get(name).and_then(|a| a.get(0)),
@@ -68,7 +69,7 @@ impl Environment {
                 // shadowed by our clock.
                 self.get_var(name)
                     .map(|s| s.to_string())
-                    .or_else(|| crate::env::dynamic::value(name))
+                    .or_else(|| self.special_value(name))
             }
         }
     }
@@ -103,11 +104,9 @@ impl Environment {
         if reject_unrepresentable(&self.origin(), name, value) {
             return false;
         }
-        // **The clock and the generator take an assignment rather than being shadowed by it.**
-        // `SECONDS=0` resets the count and `RANDOM=42` seeds a reproducible sequence; storing the
-        // string instead pinned `SECONDS` at zero for the life of the shell and made every later
-        // `$RANDOM` answer 42. Here for the reason the doc above gives — one rule, not three.
-        if crate::env::dynamic::assign(name, value) {
+        // The clocks, the generator and the shell's own special names take an assignment rather
+        // than being shadowed by it: `SECONDS=0` re-bases, `RANDOM=42` seeds.
+        if self.special_assign(name, value) {
             return true;
         }
         // **An integer name evaluates what it is assigned.** `declare -i n; n=4*5` stores 20, not
@@ -152,6 +151,9 @@ impl Environment {
             // them would make `PATH=/new/bin:$PATH; tool` still run the old `tool` — the one
             // failure a command cache is always blamed for. bash flushes here too.
             crate::env::builtins::hash_forget_all();
+        }
+        if name == "PWD" {
+            self.publish_dirstack();
         }
         true
     }
@@ -201,6 +203,7 @@ impl Environment {
         // which it is empty. Without this it would go straight back to counting, so the one way to
         // stop it counting would not work.
         crate::env::dynamic::retire(name);
+        self.integer_vars.remove(name);
         self.vars.remove(name);
         self.arrays.remove(name);
         // `unset` undoes a pending `export` too, or `export V; unset V; V=1` would still export.

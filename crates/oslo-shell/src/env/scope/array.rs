@@ -15,6 +15,7 @@
 //! `declare -A` reports that rather than building a second value shape nothing else understands.
 
 use super::Environment;
+use super::special::ArrayWrite;
 use std::collections::BTreeMap;
 
 /// An indexed array: a sparse map from index to element.
@@ -147,6 +148,9 @@ impl Environment {
             );
             return false;
         }
+        if let Some(done) = self.special_array_write(name, ArrayWrite::Whole(&array)) {
+            return done;
+        }
         // A name can be a scalar or an array, never both: leaving the scalar behind would make
         // `get_var` answer with the stale string it happens to check first.
         self.drop_scalar(name);
@@ -170,6 +174,9 @@ impl Environment {
             );
             return false;
         }
+        if let Some(done) = self.special_array_write(name, ArrayWrite::Element(index, value)) {
+            return done;
+        }
         self.promote_scalar(name);
         self.arrays
             .entry(name.to_string())
@@ -191,6 +198,9 @@ impl Environment {
             );
             return false;
         }
+        if let Some(done) = self.special_array_write(name, ArrayWrite::Append) {
+            return done;
+        }
         self.promote_scalar(name);
         self.arrays.entry(name.to_string()).or_default().push(value);
         true
@@ -205,6 +215,9 @@ impl Environment {
 
     /// Drop one element. `unset 'a[1]'`.
     pub fn unset_array_element(&mut self, name: &str, index: i64) {
+        if self.special_array_write(name, ArrayWrite::Unset).is_some() {
+            return;
+        }
         if let Some(array) = self.arrays.get_mut(name) {
             array.remove(index);
         }

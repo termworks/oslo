@@ -183,6 +183,17 @@ fn payload_fields(
     expansion_type: &ParamExpansion,
     in_quotes: bool,
 ) -> Result<Option<Vec<Field>>> {
+    // Read only for the two operators that need it: reading `$RANDOM` draws a number.
+    if !matches!(
+        expansion_type,
+        ParamExpansion::UseAlternative { .. }
+            | ParamExpansion::DefaultValue {
+                assign_if_unset: false,
+                ..
+            }
+    ) {
+        return Ok(None);
+    }
     let value = Target::Param(name).value(env);
     let payload = match expansion_type {
         ParamExpansion::UseAlternative {

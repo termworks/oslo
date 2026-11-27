@@ -33,10 +33,8 @@ impl Environment {
     /// scripts, and an unset `$UID` makes it answer "not root" on a machine where the script is
     /// running as root. `$PPID` names the parent for lock files and process trees.
     ///
-    /// Not exported, matching bash: they describe *this* shell, and a child that inherited its
-    /// parent's `$PPID` would be told the wrong thing. They are set only if the name is not
-    /// already taken, so an inherited environment variable of the same name still wins — the
-    /// shell should not overwrite something the caller deliberately put there.
+    /// Not exported, matching bash. Which of them an inherited value overrides follows bash name
+    /// by name: `PPID`, `OPTERR` and `COMP_WORDBREAKS` are always the shell's own.
     pub(super) fn seed_process_vars(&mut self) {
         let uid = nix::unistd::getuid().as_raw();
         let euid = nix::unistd::geteuid().as_raw();
@@ -68,45 +66,48 @@ impl Environment {
         self.vars
             .insert("OSLO_SESSION".to_string(), (session.clone(), true));
         environ_set("OSLO_SESSION", &session);
+        // `PPID` is always this shell's; `UID` and `EUID` keep an inherited value, as bash does,
+        // and are read-only integers only when the shell set them.
+        self.vars
+            .insert("PPID".to_string(), (ppid.to_string(), false));
+        self.set_integer("PPID");
+        self.set_readonly("PPID");
+        for (name, value) in [("UID", uid), ("EUID", euid)] {
+            if !self.vars.contains_key(name) {
+                self.vars
+                    .insert(name.to_string(), (value.to_string(), false));
+                self.set_integer(name);
+                self.set_readonly(name);
+            }
+        }
         for (name, value) in [
-            ("UID", uid.to_string()),
-            ("EUID", euid.to_string()),
-            ("PPID", ppid.to_string()),
-            // What kind of system this is. Scripts branch on it and nothing set it.
             ("OSTYPE", "linux-gnu".to_string()),
-            (
-                "MACHTYPE",
-                format!("{}-pc-linux-gnu", std::env::consts::ARCH),
-            ),
+            ("HOSTTYPE", std::env::consts::ARCH.to_string()),
+            ("MACHTYPE", machine_type()),
+            ("PS4", "+ ".to_string()),
+            ("BASH_LOADABLES_PATH", LOADABLES_PATH.to_string()),
         ] {
             if !self.vars.contains_key(name) {
                 self.vars.insert(name.to_string(), (value, false));
             }
         }
+        self.force_var("OPTERR", "1");
+        self.force_var("COMP_WORDBREAKS", WORD_BREAKS);
     }
 
-    /// The bash version oslo declares itself compatible with.
-    ///
-    /// **This is a compatibility declaration, not a claim to be bash.** It exists because the
-    /// entire shell-integration ecosystem gates on it, and an *absent* `$BASH_VERSINFO` is read as
-    /// bash 0.0 — older than any bash that ever shipped. atuin's include guard is
-    /// `((BASH_VERSINFO[0] < 3 || ...))`, so with nothing here it concluded the shell predated
-    /// 3.1 and skipped its whole integration silently. Not being bash and saying so got oslo
-    /// treated worse than a twenty-year-old bash would have been.
-    ///
-    /// **4.2 rather than 5.x**, deliberately. The number chooses which code path an integration
-    /// takes, so claiming more than oslo can execute trades a silent skip for a loud failure
-    /// halfway through someone's init script. oslo has what 4.2 implies — `+=`, `[[ =~ ]]`,
-    /// indexed arrays, negative subscripts — and does *not* have what 4.4 and 5.x imply:
-    /// `${x@P}`, `${x@Q}`, associative arrays, `local -n`. Raising this is a promise, and it
-    /// should be raised only as those land.
-    const BASH_COMPAT: (u32, u32, u32) = (4, 2, 0);
+    /// Set `name` to `value` whatever was inherited, keeping an inherited export flag.
+    fn force_var(&mut self, name: &str, value: &str) {
+        let exported = self.vars.get(name).is_some_and(|(_, exported)| *exported);
+        self.vars
+            .insert(name.to_string(), (value.to_string(), exported));
+        if exported {
+            environ_set(name, value);
+        }
+    }
 
-    /// Declare compatibility with a bash version, the way every integration expects to read it.
-    ///
-    /// Set only when unset, matching [`Self::seed_process_vars`]: a caller who exported their own
-    /// `$BASH_VERSION` meant it, and a shell that overwrote it would be arguing with the person
-    /// running it.
+    /// The bash release oslo declares compatibility with: major, minor, patch level.
+    const BASH_COMPAT: (u32, u32, u32) = (5, 3, 9);
+
     /// `$IFS`, which POSIX says the shell sets at startup to space, tab and newline.
     ///
     /// **It was a default without a variable.** Field splitting read `get_var("IFS")` and fell
@@ -183,11 +184,11 @@ impl Environment {
     /// Not exported, as in bash: it describes this shell's scan, and a child inheriting a
     /// half-finished cursor would be told something untrue.
     pub(super) fn seed_option_index(&mut self) {
-        self.vars
-            .entry("OPTIND".to_string())
-            .or_insert_with(|| ("1".to_string(), false));
+        self.force_var("OPTIND", "1");
+        self.set_integer("OPTIND");
     }
 
+    /// `$BASH`, `$BASH_VERSION` and the read-only `BASH_VERSINFO` array.
     pub(super) fn seed_compatibility_vars(&mut self) {
         let (major, minor, patch) = Self::BASH_COMPAT;
         // **`$BASH` is how a script starts another copy of the shell**, and it was the one member
@@ -205,30 +206,43 @@ impl Environment {
             self.vars
                 .insert("BASH".to_string(), (exe.display().to_string(), false));
         }
-        if !self.vars.contains_key("BASH_VERSION") {
-            self.vars.insert(
-                "BASH_VERSION".to_string(),
-                (format!("{major}.{minor}.{patch}(1)-release"), false),
-            );
-        }
-        if self.get_array("BASH_VERSINFO").is_none() {
-            // Six elements, in bash's order: major, minor, patch, build, release status, machine.
-            // Scripts index all of them; `BASH_VERSINFO[5]` is what a few use to spot the OS.
-            let fields = [
-                major.to_string(),
-                minor.to_string(),
-                patch.to_string(),
-                "1".to_string(),
-                "release".to_string(),
-                std::env::consts::ARCH.to_string() + "-pc-linux-gnu",
-            ];
-            let mut array = crate::env::scope::array::ShellArray::default();
-            for (index, value) in fields.iter().enumerate() {
-                array.set(index as i64, value.clone());
-            }
-            self.set_array("BASH_VERSINFO", array);
-        }
+        self.force_var(
+            "BASH_VERSION",
+            &format!("{major}.{minor}.{patch}(1)-release"),
+        );
+        // Six elements, in bash's order: major, minor, patch, build, release status, machine.
+        let fields = [
+            major.to_string(),
+            minor.to_string(),
+            patch.to_string(),
+            "1".to_string(),
+            "release".to_string(),
+            machine_type(),
+        ];
+        self.vars.remove("BASH_VERSINFO");
+        self.arrays.insert(
+            "BASH_VERSINFO".to_string(),
+            crate::env::scope::array::ShellArray::from_values(fields),
+        );
+        self.set_readonly("BASH_VERSINFO");
     }
+}
+
+/// bash's `$BASH_LOADABLES_PATH` default.
+const LOADABLES_PATH: &str =
+    "/usr/local/lib/bash:/usr/lib/bash:/opt/local/lib/bash:/usr/pkg/lib/bash:/opt/pkg/lib/bash:.";
+
+/// readline's word break characters, which bash publishes as `$COMP_WORDBREAKS`.
+const WORD_BREAKS: &str = " \t\n\"'@><=;|&(:";
+
+/// The GNU triplet bash reports as `$MACHTYPE`.
+fn machine_type() -> String {
+    let arch = std::env::consts::ARCH;
+    let vendor = match arch {
+        "x86_64" | "x86" => "pc",
+        _ => "unknown",
+    };
+    format!("{arch}-{vendor}-linux-gnu")
 }
 
 #[cfg(test)]

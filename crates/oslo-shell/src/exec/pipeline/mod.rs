@@ -22,6 +22,7 @@ mod interrupt;
 mod jobs;
 /// What each link of `a && b` did — see the module docs.
 pub mod segments;
+mod stage;
 mod structured;
 mod timing;
 
@@ -39,6 +40,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, close, dup2, fork, pipe};
 use oslo_base::ast::*;
 use oslo_base::error::{Result, ShellError};
+use stage::stage_is_nested;
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 /// Waiting on a child, and turning what came back into a status.
@@ -405,7 +407,8 @@ fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
                     }
 
                     // R4.1: a stage is a subshell — same environment, subshell-local state only.
-                    env.enter_subshell();
+                    let counted = stage_is_nested(env, cmd);
+                    env.enter_pipeline_stage(counted);
                     // R4.2: `echo x | exit 3` exits the stage with 3, not with 1.
                     let status = status_of(eval_command(env, cmd));
                     flush_stdout();

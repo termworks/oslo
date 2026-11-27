@@ -260,7 +260,11 @@ fn print_variables(env: &mut Environment, names: &[String]) -> i32 {
             println!("{}", render_array(env, name));
             continue;
         }
-        match env.get_var(name).map(str::to_string) {
+        let value = env
+            .get_var(name)
+            .map(str::to_string)
+            .or_else(|| env.special_value(name));
+        match value {
             Some(value) => render(env, name, &value),
             None => {
                 crate::env::complain(
