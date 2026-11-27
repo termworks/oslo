@@ -97,8 +97,7 @@ impl RedirectGuard {
                 continue;
             }
 
-            // The source is checked before anything is saved: a save could land on the very
-            // number a closed source used to have, and `dup2` would then copy the saved stdout.
+            // A closed source fails here, before a saved copy of the target can take its number.
             if let Some(source) =
                 moved_descriptor(&target_str).or_else(|| target_str.parse::<RawFd>().ok())
                 && matches!(redir.kind, RedirectKind::DupInput | RedirectKind::DupOutput)

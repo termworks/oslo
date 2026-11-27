@@ -23,8 +23,7 @@ const PWD_USAGE: &str = "pwd: usage: pwd [-LP]";
 /// first operand ends option parsing — so `cd dir -P` has two operands, which is an error, not a
 /// physical `cd`.
 ///
-/// `cd` also takes `-e`, which only changes the status when the new directory cannot be named
-/// after a `-P` move; the move itself has already failed in that case here, so it is accepted.
+/// `cd` also accepts `-e`, which changes nothing here.
 fn parse_mode(args: &[String]) -> std::result::Result<(PathMode, &[String]), String> {
     let mut mode = PathMode::Logical;
     let mut index = 1;

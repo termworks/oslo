@@ -78,7 +78,7 @@ pub fn builtin_mapfile(env: &mut Environment, args: &[String]) -> Result<i32> {
         Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("{}mapfile: {}", origin_now(), e.message);
-            // A bad value is not a spelling mistake, and bash prints the usage only for one.
+            // The usage follows an unknown option, not a bad value.
             if e.status == 2 {
                 eprintln!("{}", USAGE);
             }
