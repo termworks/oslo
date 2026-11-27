@@ -244,12 +244,9 @@ carries, because it replaced the process image and nothing registered at exit co
   separators is a syntax error, because brush's tokenizer takes the longest match and fuses the two
   `;` into the `;;` that terminates a `case` item; `for (( ; ; ))` and `for ((i=0;i<3;i++))` both
   work. `coproc` and `select` have since closed and match bash.
-- **Four `declare` attributes are refused rather than honoured**: `-A` (associative arrays), `-i`,
-  `-l`, `-u` and `-n`. Each exits 2 and says which one, because this shell has no representation for
-  them and the alternative is worse than the gap. `declare -A m` answered with an *indexed* array
-  would put every key on element 0 — the subscript is arithmetic, so `m[alpha]` and `m[beta]` are
-  the same slot — and the last write would silently win with nothing on screen looking wrong.
-  `-a`, `-r`, `-x`, `-g` and `-p` all work. Indexed arrays are complete.
+- **Every `declare` attribute bash has is honoured**: `-a`, `-A` (associative arrays, walked in
+  bash's own hash order), `-i`, `-l`, `-u`, `-c`, `-n` (namerefs), `-r`, `-t`, `-x`, `-g`, and the
+  `+` forms that take them back, with `declare -p` printing each the way bash does.
 - **stderr is compared only for emptiness.** Two shells will never agree on diagnostic wording and
   should not be forced to, so a diagnostic that says the wrong thing while being non-empty is
   invisible to the suite.
