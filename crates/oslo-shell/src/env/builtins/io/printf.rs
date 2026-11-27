@@ -111,7 +111,8 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
             Ok(true) => Ok(status),
             Ok(false) => Ok(1),
             Err(e) => {
-                eprintln!("{}printf: {e}", origin_now());
+                let body = format!("printf: {e}");
+                crate::env::complain(args, name, &body, "not an element", None);
                 Ok(1)
             }
         };

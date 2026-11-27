@@ -161,6 +161,30 @@ const KEPT: &[(&str, &str)] = &[
         "an internal inconsistency — a builtin dispatched under a name it is not registered as;
          there is no user word involved at all",
     ),
+    (
+        "error importing function definition for `{name}'",
+        "an environment entry read at startup, before there is any command line to point into",
+    ),
+    (
+        "`{target}': invalid variable name for name reference",
+        "raised inside an assignment through a nameref, which reaches the store with no words",
+    ),
+    (
+        "{name}: readonly function",
+        "a function definition reaches the evaluator as a tree, with no source words to point at",
+    ),
+    (
+        "{message}",
+        "the array layer's own message about a subscript, already naming the element",
+    ),
+    (
+        "{name}: bad array subscript",
+        "raised during expansion, which holds the parameter but not the command line",
+    ),
+    (
+        "{name}[]: bad array subscript",
+        "the same expansion, for an empty key",
+    ),
 ];
 
 /// Every `.rs` file under the scanned directories, except the test modules beside them.

@@ -113,7 +113,13 @@ pub fn builtin_mapfile(env: &mut Environment, args: &[String]) -> Result<i32> {
     };
 
     if env.is_assoc(name) {
-        eprintln!("{}mapfile: {name}: not an indexed array", origin_now());
+        crate::env::complain(
+            args,
+            name,
+            &format!("mapfile: {name}: not an indexed array"),
+            "an associative array",
+            Some("`mapfile` fills an indexed array"),
+        );
         return Ok(1);
     }
     // Without `-O` the array is emptied first; with it, the records overwrite from the origin on

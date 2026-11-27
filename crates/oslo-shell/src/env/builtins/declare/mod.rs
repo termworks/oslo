@@ -78,9 +78,12 @@ pub(crate) fn parse_spec<'a>(
         for c in arg[1..].chars() {
             if !accepted.contains(c) {
                 let sign = if plus { '+' } else { '-' };
-                eprintln!(
-                    "{}{builtin}: {sign}{c}: invalid option",
-                    crate::env::origin_now()
+                crate::env::complain(
+                    args,
+                    arg,
+                    &format!("{builtin}: {sign}{c}: invalid option"),
+                    "not an option here",
+                    Some("the attributes are -a -A -i -l -u -c -n -r -t -x, and -f -F -g -p"),
                 );
                 return Err(2);
             }
@@ -195,6 +198,8 @@ pub(crate) fn declare_all(
 
 /// An operand split into the name it declares and what it assigns.
 pub(crate) struct Operand<'a> {
+    /// The operand as written, for a diagnostic to point at.
+    pub text: &'a str,
     pub name: &'a str,
     pub subscript: Option<&'a str>,
     pub value: Option<&'a str>,
@@ -232,6 +237,7 @@ pub(crate) fn split_operand(text: &str) -> Option<Operand<'_>> {
         return None;
     };
     (is_valid_identifier(name) && subscript != Some("")).then_some(Operand {
+        text,
         name,
         subscript,
         value,
@@ -239,9 +245,15 @@ pub(crate) fn split_operand(text: &str) -> Option<Operand<'_>> {
     })
 }
 
-/// Say that `what` cannot be declared, the way bash words each refusal.
-fn refuse(builtin: &str, what: &str, reason: &str) {
-    eprintln!("{}{builtin}: {what}: {reason}", crate::env::origin_now());
+/// Say that `operand` cannot be declared, the way bash words each refusal: with the builtin's
+/// name for `declare` and `local`, without it for the special builtins `export` and `readonly`.
+fn refuse(builtin: &str, operand: &str, what: &str, reason: &str) {
+    let body = match builtin {
+        "export" | "readonly" => format!("{what}: {reason}"),
+        _ => format!("{builtin}: {what}: {reason}"),
+    };
+    let words = crate::env::line(builtin, std::slice::from_ref(&operand.to_string()));
+    crate::env::complain(&words, operand, &body, "refused", None);
 }
 
 /// Declare one operand. `Ok(false)` if it was refused, with the reason already printed.
@@ -253,11 +265,8 @@ pub(crate) fn declare_one(
     scope: Scope,
 ) -> Result<bool> {
     let Some(op) = split_operand(operand) else {
-        eprintln!(
-            "{}{builtin}: `{}': not a valid identifier",
-            crate::env::origin_now(),
-            oslo_base::shown::shown(operand)
-        );
+        let shown = format!("`{}'", oslo_base::shown::shown(operand));
+        refuse(builtin, operand, &shown, "not a valid identifier");
         return Ok(false);
     };
     match scope {
@@ -281,13 +290,19 @@ fn declare_here(
     let nameref_op = spec.on.has(Attrs::NAMEREF) || spec.off.has(Attrs::NAMEREF);
     if spec.on.has(Attrs::NAMEREF) {
         if op.subscript.is_some() {
-            refuse(builtin, op.name, "reference variable cannot be an array");
+            refuse(
+                builtin,
+                op.text,
+                op.name,
+                "reference variable cannot be an array",
+            );
             return Ok(false);
         }
         if let Some(value) = op.value {
             if !is_reference_name(value) {
                 refuse(
                     builtin,
+                    op.text,
                     &format!("`{value}'"),
                     "invalid variable name for name reference",
                 );
@@ -296,6 +311,7 @@ fn declare_here(
             if value == op.name {
                 refuse(
                     builtin,
+                    op.text,
                     op.name,
                     "nameref variable self references not allowed",
                 );
@@ -304,7 +320,7 @@ fn declare_here(
         }
     }
     if scope == Scope::Local && !env.make_local(op.name) {
-        refuse(builtin, op.name, "readonly variable");
+        refuse(builtin, op.text, op.name, "readonly variable");
         return Ok(false);
     }
     let target = match nameref_op {
@@ -363,7 +379,7 @@ fn compatible(
     } else {
         return true;
     };
-    refuse(builtin, target, reason);
+    refuse(builtin, op.text, target, reason);
     false
 }
 

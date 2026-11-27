@@ -222,35 +222,51 @@ pub(super) fn assign_name(env: &mut Environment, name: &str, value: &str) -> boo
             assigned || !env.is_readonly(base)
         }
         Err(e) => {
-            eprintln!("{}read: {e}", origin_now());
+            crate::env::complain(
+                &crate::env::line("read", std::slice::from_ref(&name.to_string())),
+                name,
+                &format!("read: {e}"),
+                "not an element",
+                None,
+            );
             false
         }
     }
 }
 
 /// Refuse a name operand that is neither a name nor an element, before any input is read.
-fn names_are_valid(env: &Environment, opts: &ReadOptions) -> bool {
+fn names_are_valid(env: &Environment, args: &[String], opts: &ReadOptions) -> bool {
+    let not_a_name = |name: &str| {
+        crate::env::complain(
+            args,
+            name,
+            &format!(
+                "read: `{}': not a valid identifier",
+                oslo_base::shown::shown(name)
+            ),
+            "not a name",
+            None,
+        );
+    };
     for name in &opts.names {
         if crate::env::builtins::arrays::parse_target(name).is_none() {
-            eprintln!(
-                "{}read: `{}': not a valid identifier",
-                origin_now(),
-                oslo_base::shown::shown(name)
-            );
+            not_a_name(name);
             return false;
         }
     }
     if let Some(array) = &opts.array {
         if !crate::env::scope::is_valid_identifier(array) {
-            eprintln!(
-                "{}read: `{}': not a valid identifier",
-                origin_now(),
-                oslo_base::shown::shown(array)
-            );
+            not_a_name(array);
             return false;
         }
         if env.is_assoc(array) {
-            eprintln!("{}read: {array}: not an indexed array", origin_now());
+            crate::env::complain(
+                args,
+                array,
+                &format!("read: {array}: not an indexed array"),
+                "an associative array",
+                Some("`read -a` fills an indexed array"),
+            );
             return false;
         }
     }
@@ -290,7 +306,7 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     };
 
-    if !names_are_valid(env, &opts) {
+    if !names_are_valid(env, args, &opts) {
         return Ok(1);
     }
 

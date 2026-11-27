@@ -51,7 +51,10 @@ impl Environment {
                     self.set_function(name, body);
                     self.set_function_source(name, source.0);
                 }
-                None => eprintln!("oslo: error importing function definition for `{name}'"),
+                None => eprintln!(
+                    "{}error importing function definition for `{name}'",
+                    self.origin()
+                ),
             }
         }
     }

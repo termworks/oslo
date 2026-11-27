@@ -150,9 +150,12 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
                 && env.get_function(name).is_some());
         if target_function {
             if env.is_function_readonly(name) {
-                eprintln!(
-                    "{}unset: {name}: cannot unset: readonly function",
-                    origin_now()
+                crate::env::complain(
+                    args,
+                    name,
+                    &format!("unset: {name}: cannot unset: readonly function"),
+                    "readonly",
+                    Some("`readonly -f` keeps a function for the life of the shell"),
                 );
                 status = 1;
                 continue;

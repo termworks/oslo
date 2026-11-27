@@ -88,9 +88,12 @@ fn readonly_functions(env: &mut Environment, names: &[String], print: bool) -> i
     let mut status = 0;
     for name in names {
         if !env.set_function_readonly(name) {
-            eprintln!(
-                "{}readonly: {name}: not a function",
-                crate::env::origin_now()
+            crate::env::complain(
+                &crate::env::line("readonly", names),
+                name,
+                &format!("readonly: {name}: not a function"),
+                "no function of that name",
+                Some("`declare -F` lists the functions there are"),
             );
             status = 1;
         }

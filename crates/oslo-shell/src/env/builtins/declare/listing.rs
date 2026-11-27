@@ -57,10 +57,12 @@ pub(super) fn named(env: &Environment, names: &[String], builtin: &str) -> i32 {
                 println!("{}", super::print::special_declaration(env, name));
             }
             None => {
-                eprintln!(
-                    "{}{builtin}: {}: not found",
-                    crate::env::origin_now(),
-                    oslo_base::shown::shown(name)
+                crate::env::complain(
+                    &crate::env::line(builtin, names),
+                    operand,
+                    &format!("{builtin}: {}: not found", oslo_base::shown::shown(name)),
+                    "no variable of that name",
+                    Some("`declare -p` on its own lists every variable there is"),
                 );
                 status = 1;
             }
@@ -129,7 +131,13 @@ fn set_function_attrs(env: &mut Environment, names: &[String], spec: &Spec, buil
     let mut status = 0;
     for name in names {
         if env.get_function(name).is_none() {
-            eprintln!("{}{builtin}: {name}: not found", crate::env::origin_now());
+            crate::env::complain(
+                &crate::env::line(builtin, names),
+                name,
+                &format!("{builtin}: {name}: not found"),
+                "no function of that name",
+                Some("`declare -F` lists the functions there are"),
+            );
             status = 1;
             continue;
         }
