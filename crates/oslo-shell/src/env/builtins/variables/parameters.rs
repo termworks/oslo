@@ -238,6 +238,9 @@ fn print_functions(env: &Environment) {
 
 /// `shift [n]` — drop the first `n` positional parameters.
 pub fn builtin_shift(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.len() > 2 {
+        return Err(crate::env::builtins::control::too_many_arguments("shift"));
+    }
     let n = if args.len() > 1 {
         match args[1].trim().parse::<i64>() {
             Ok(num) if num < 0 => {

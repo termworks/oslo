@@ -43,6 +43,10 @@ pub enum ShellError {
     /// command list catches it; see `exec::pipeline`.
     NoMatch(String),
 
+    /// A usage error that abandons the whole top-level command it occurred in — `exit 1 2`,
+    /// `return 1 2` — carrying its diagnostic, which the place that catches it prints.
+    Discard(String),
+
     ExecutionError(String),
 
     Io(std::io::Error),
@@ -140,7 +144,7 @@ impl std::fmt::Display for ShellError {
             | ShellError::UnsetParameter(m)
             | ShellError::MalformedExpansion(m) => write!(f, "{m}"),
             ShellError::NoMatch(pattern) => write!(f, "no match: {pattern}"),
-            ShellError::ExecutionError(m) => write!(f, "{m}"),
+            ShellError::Discard(m) | ShellError::ExecutionError(m) => write!(f, "{m}"),
             ShellError::Io(e) => write!(f, "{}", reason(e)),
             ShellError::Lua(e) => write!(f, "Lua error: {e}"),
             ShellError::Nix(e) => write!(f, "POSIX error: {e}"),

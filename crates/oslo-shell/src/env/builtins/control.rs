@@ -116,11 +116,20 @@ pub(crate) fn take_break_status() -> i32 {
     BREAK_STATUS.with(|s| s.replace(0))
 }
 
+/// What bash does with a second operand to `exit`, `return`, `shift`, `break` or `continue`:
+/// it abandons the whole top-level command, which the catching list reports.
+pub(crate) fn too_many_arguments(builtin: &str) -> ShellError {
+    ShellError::Discard(format!("{builtin}: too many arguments"))
+}
+
 /// `break [n]` — leave the innermost `n` enclosing loops.
 ///
 /// Signalled as an error so it unwinds through nested command lists; the loop evaluators in
 /// [`crate::exec::pipeline`] catch it, decrement the depth, and either stop or re-raise.
 pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.len() > 2 && env.in_loop() {
+        return Err(too_many_arguments("break"));
+    }
     let asked = loop_depth("break", args);
     // Outside a loop this is a no-op, because signalling would unwind out of the enclosing command
     // list and abandon the commands after it — but it is not a *silent* one. `break` where no loop
@@ -148,6 +157,9 @@ pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
 
 /// `continue [n]` — start the next iteration of the `n`th enclosing loop.
 pub fn builtin_continue(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.len() > 2 && env.in_loop() {
+        return Err(too_many_arguments("continue"));
+    }
     let asked = loop_depth("continue", args);
     // The same no-op, and the same diagnostic — see `builtin_break`.
     if matches!(asked, Depth::Leave(_)) && !env.in_loop() {
@@ -180,6 +192,9 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
         // 2, not 1: bash treats it as a usage error, and `$?` says so.
         return Ok(2);
     }
+    if args.len() > 2 {
+        return Err(too_many_arguments("return"));
+    }
     let code = match args.get(1) {
         // Bare `return` yields the status of the last command, as in bash.
         None => env.last_status,
@@ -201,9 +216,7 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
 /// meant to reveal. It is a usage error, and bash leaves with 2.
 pub fn builtin_exit(env: &mut Environment, args: &[String]) -> Result<i32> {
     if args.len() > 2 {
-        eprintln!("{}exit: too many arguments", origin_now());
-        // Not an exit: bash refuses the request and leaves the shell running.
-        return Ok(1);
+        return Err(too_many_arguments("exit"));
     }
     if refuse_over_stopped_jobs(env) {
         return Ok(1);

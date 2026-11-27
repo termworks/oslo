@@ -136,6 +136,17 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
                     env.last_status = 1;
                     1
                 }
+                // `exit 1 2` abandons the rest of a `-c` program, or the rest of a script's line.
+                Err(e @ ShellError::Discard(_)) if outermost => {
+                    eprintln!("{}{e}", env.origin());
+                    if env.option(crate::env::options::ShellOption::CommandString) {
+                        env.last_status = 1;
+                        return Ok(1);
+                    }
+                    abandoned = Some(item.line);
+                    env.last_status = 2;
+                    2
+                }
                 other => other?,
             };
         }
