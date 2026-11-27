@@ -26,12 +26,15 @@ fn is_option(arg: &str) -> bool {
 
 /// `echo [-neE] [arg…]` — arguments joined by a single space.
 pub fn builtin_echo(env: &mut Environment, args: &[String]) -> Result<i32> {
+    // `shopt -s xpg_echo` expands escapes by default, and in POSIX mode reads no options at all.
+    let xpg = crate::env::builtins::shopt::on("xpg_echo");
     let mut opts = EchoOptions {
         newline: true,
-        escapes: false,
+        escapes: xpg,
     };
+    let takes_options = !(xpg && env.posix());
     let mut idx = 1;
-    while idx < args.len() && is_option(&args[idx]) {
+    while takes_options && idx < args.len() && is_option(&args[idx]) {
         for flag in args[idx][1..].chars() {
             match flag {
                 'n' => opts.newline = false,
