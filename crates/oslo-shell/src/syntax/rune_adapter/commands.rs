@@ -5,8 +5,8 @@ use super::redirects::{convert_redirects, redirects_of};
 use crate::lexer::TildeMode;
 use crate::syntax::lower::cond;
 use crate::syntax::lower::{
-    convert_braced_words_from_str, convert_braced_words_with_tilde, convert_words_from_str,
-    single_word_from_str, single_word_with_tilde,
+    convert_braced_words_from_str, convert_words_from_str, single_word_from_str,
+    single_word_with_tilde,
 };
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::{Result, ShellError};
@@ -400,7 +400,8 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
     let append = node.token(SyntaxKind::PlusEqual).is_some();
 
     // `name[i]=value`, whose subscript rune gives a node of its own: `a[$i]=x`, `a[ $i + 1 ]=x`.
-    // The subscript is one word however many blanks it holds.
+    // The subscript is one word however many blanks it holds, and keeps them: `m[ a ]` is the key
+    // ` a `.
     let target = match node.node(SyntaxKind::Subscript) {
         Some(subscript) => {
             let text = text_of(tree, subscript);
@@ -408,7 +409,7 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
             let inner = inner.strip_suffix(']').unwrap_or(inner);
             oslo_ast::AssignmentTarget::Element {
                 name,
-                index: crate::lexer::parse_single_word(inner.trim())?,
+                index: crate::lexer::parse_single_word(inner)?,
             }
         }
         None => oslo_ast::AssignmentTarget::Name(name),
@@ -416,11 +417,7 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
 
     let value = match node.node(SyntaxKind::ArrayValue) {
         Some(array) => {
-            let mut elements = Vec::new();
-            for element in array.nodes().filter(|node| node.kind() == SyntaxKind::Word) {
-                elements.extend(convert_array_element(tree, text_of(tree, element))?);
-            }
-            oslo_ast::AssignmentValue::Array(elements)
+            oslo_ast::AssignmentValue::Array(super::literal::array_elements(tree, array)?)
         }
         None => oslo_ast::AssignmentValue::Scalar(single_word_with_tilde(
             node.node(SyntaxKind::Word)
@@ -435,30 +432,6 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
         value,
         append,
     })
-}
-
-/// One element of an array literal.
-///
-/// An unindexed element may still expand to several words — `a=($list)` and `a=(*.c)` both do — so
-/// it becomes one [`oslo_ast::ArrayElement`] per word rather than being forced into one. An
-/// *indexed* element (`[3]=x`) is a single value by construction.
-pub(super) fn convert_array_element(
-    tree: &Tree,
-    text: &str,
-) -> Result<Vec<oslo_ast::ArrayElement>> {
-    let _ = tree;
-    if let Some(rest) = text.strip_prefix('[')
-        && let Some((index, value)) = rest.split_once("]=")
-    {
-        return Ok(vec![oslo_ast::ArrayElement {
-            index: Some(single_word_from_str(index)?),
-            value: single_word_with_tilde(value, TildeMode::Value)?,
-        }]);
-    }
-    Ok(convert_braced_words_with_tilde(text, TildeMode::Leading)?
-        .into_iter()
-        .map(|value| oslo_ast::ArrayElement { index: None, value })
-        .collect())
 }
 
 /// Lower a `[[ ... ]]` expression onto and-or lists and calls to the `[[` builtin.

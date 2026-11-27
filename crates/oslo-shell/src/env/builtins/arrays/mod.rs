@@ -52,19 +52,23 @@ fn expand_subscript_text(env: &mut Environment, text: &str) -> Result<String> {
 }
 
 /// The key `text` names in `name`: the string itself for an associative array, its arithmetic
-/// value for anything else.
+/// value for anything else. Only an empty subscript is refused; a blank one is index 0.
 pub fn key_for(env: &mut Environment, name: &str, text: &str) -> Result<Key> {
-    if env.is_assoc(name) {
-        if text.is_empty() {
-            return Err(bad_subscript(&format!("{name}[{text}]")));
-        }
-        return Ok(Key::Name(text.to_string()));
-    }
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    if text.is_empty() {
         return Err(bad_subscript(&format!("{name}[{text}]")));
     }
-    Ok(Key::Index(eval_arithmetic(env, trimmed)?))
+    if env.is_assoc(name) {
+        return Ok(Key::Name(text.to_string()));
+    }
+    Ok(Key::Index(index_of(env, text)?))
+}
+
+/// The index a subscript of an indexed array evaluates to: a blank one is 0.
+pub(super) fn index_of(env: &mut Environment, text: &str) -> Result<i64> {
+    match text.trim() {
+        "" => Ok(0),
+        trimmed => eval_arithmetic(env, trimmed),
+    }
 }
 
 /// `name[subscript]=value` where the subscript is still text, as a builtin's operand gives it.

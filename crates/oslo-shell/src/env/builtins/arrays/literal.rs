@@ -8,15 +8,19 @@
 
 use crate::env::Environment;
 use crate::env::scope::{AssocArray, ShellArray};
-use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::{expand_word, expand_word_to_string};
 use oslo_base::ast::ArrayElement;
 use oslo_base::error::{Result, ShellError};
 
 /// One element of a literal, expanded.
 pub enum LiteralItem {
-    /// `[key]=value`: the key as text, arithmetic only once it is known to be an index.
-    Keyed { key: String, value: String },
+    /// `[key]=value`, or `[key]+=value` when `append`: the key as text, arithmetic only once it is
+    /// known to be an index.
+    Keyed {
+        key: String,
+        value: String,
+        append: bool,
+    },
     /// A bare element, one per field it expanded to.
     Plain(String),
 }
@@ -42,6 +46,7 @@ pub fn literal_items_from_ast(
             Some(index) => items.push(LiteralItem::Keyed {
                 key: expand_word_to_string(env, index)?,
                 value: expand_word_to_string(env, &element.value)?,
+                append: element.append,
             }),
             None => items.extend(
                 expand_word(env, &element.value)?
@@ -95,15 +100,17 @@ fn build_indexed(
     let mut next = array.next_index();
     for item in items {
         match item {
-            LiteralItem::Keyed { key, value } => {
-                let trimmed = key.trim();
-                let index = match trimmed.is_empty() {
+            LiteralItem::Keyed { key, value, append } => {
+                let index = match key.is_empty() {
                     true => None,
-                    false => array.resolve(eval_arithmetic(env, trimmed)?),
+                    false => array.resolve(super::index_of(env, &key)?),
                 };
                 let Some(index) = index else {
                     return Err(super::bad_subscript(&format!("[{key}]={value}")));
                 };
+                // `[i]+=v` appends to the element as this literal has left it so far.
+                let existing = array.get(index).map(str::to_string);
+                let value = super::combined(env, name, existing, &value, append);
                 array.set(index, env.transform_with(attrs, &value));
                 next = index + 1;
             }
@@ -123,18 +130,30 @@ fn build_assoc(
     append: bool,
 ) -> Result<AssocArray> {
     let attrs = env.variable(name).map(|v| v.attrs).unwrap_or_default();
+    let old = env.get_assoc(name).cloned().unwrap_or_default();
     let mut map = match append {
-        true => env.get_assoc(name).cloned().unwrap_or_default(),
+        true => old.clone(),
         false => AssocArray::default(),
     };
     let keyed = items.iter().any(|i| matches!(i, LiteralItem::Keyed { .. }));
     let mut pending_key: Option<String> = None;
     for item in items {
         match item {
-            LiteralItem::Keyed { key, value } => {
+            LiteralItem::Keyed {
+                key,
+                value,
+                append: add,
+            } => {
                 if key.is_empty() {
                     return Err(super::bad_subscript(&format!("{name}[{key}]")));
                 }
+                // `[k]+=v` appends to the value the map held before this literal, as bash's does:
+                // `m=([k]=1 [k]+=2)` leaves `2` when `m` had no `k`.
+                let base = match append {
+                    true => map.get(&key),
+                    false => old.get(&key),
+                };
+                let value = super::combined(env, name, base.map(str::to_string), &value, add);
                 map.set(&key, env.transform_with(attrs, &value));
             }
             LiteralItem::Plain(word) if keyed => {

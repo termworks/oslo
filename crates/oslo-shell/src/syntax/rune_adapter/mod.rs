@@ -25,6 +25,7 @@
 //!   shell's own and-or lists and pipeline negation; see [`super::lower::cond`].
 
 mod commands;
+mod literal;
 mod redirects;
 
 use oslo_base::ast as oslo_ast;
@@ -203,14 +204,7 @@ pub fn array_literal(body: &str) -> Result<Vec<oslo_ast::ArrayElement>> {
     else {
         return Err(bad());
     };
-    let mut elements = Vec::new();
-    for element in array.nodes().filter(|node| node.kind() == SyntaxKind::Word) {
-        elements.extend(commands::convert_array_element(
-            tree,
-            tree.source().slice(element.span()),
-        )?);
-    }
-    Ok(elements)
+    literal::array_elements(tree, array)
 }
 
 fn convert_script(tree: &Tree) -> Result<oslo_ast::CommandList> {

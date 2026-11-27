@@ -331,6 +331,7 @@ fn an_assignment_is_claimed_only_where_a_brace_expands() {
     let array = assigned(AssignmentValue::Array(vec![oslo_base::ast::ArrayElement {
         index: None,
         value: literal("{0:0}"),
+        append: false,
     }]));
     assert!(
         command_uses_coordinates(&array),

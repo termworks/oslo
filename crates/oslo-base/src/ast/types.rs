@@ -187,6 +187,8 @@ pub struct ArrayElement {
     /// An explicit `[index]=`, evaluated as arithmetic. `None` means "the next free index".
     pub index: Option<Word>,
     pub value: Word,
+    /// `[index]+=value`: append to the element rather than replace it.
+    pub append: bool,
 }
 
 /// The right-hand side of an assignment.

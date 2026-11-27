@@ -203,6 +203,7 @@ mod tests {
             value: AssignmentValue::Array(vec![ArrayElement {
                 index: None,
                 value: AstWord::from_literal("a"),
+                append: false,
             }]),
             append: false,
         };
