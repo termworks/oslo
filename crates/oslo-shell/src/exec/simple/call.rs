@@ -34,6 +34,8 @@ pub(super) fn call_function_command(
     words: &[String],
     redirections: &[Redirection],
 ) -> Result<i32> {
+    // A function body is never the program's last command, whatever called it.
+    super::oneshot::end();
     // Checked before anything is set up, so a refused call has nothing to unwind: `f() { f; }`
     // would otherwise overflow the stack.
     env.enter_function_named(words.first().map_or("", String::as_str))?;

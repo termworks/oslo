@@ -78,10 +78,12 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
     // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
     let mut abandoned: Option<u32> = None;
 
-    for item in &cmd_list.items {
+    for (index, item) in cmd_list.items.iter().enumerate() {
         if abandoned.is_some_and(|line| line > 0 && item.line == line) {
             continue;
         }
+        let last = index + 1 == cmd_list.items.len();
+        crate::exec::simple::oneshot::arm(env, item, last, outermost);
         // `set -n`: read the program, run none of it. Checked per command rather than once before
         // the list so that `set -n` *within* a script stops execution from that point, which is
         // where bash stops too — and so that `oslo -n script` never reaches a command at all.

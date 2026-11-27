@@ -78,13 +78,21 @@ fn run_not_found_handler(
     use nix::unistd::{ForkResult, fork};
     let mut argv = vec![NOT_FOUND_HANDLER.to_string()];
     argv.extend(words.iter().cloned());
+    // The last command of a `-c` program is not forked, so neither is its handler.
+    if super::oneshot::current() {
+        IN_HANDLER.store(true, Ordering::Relaxed);
+        let result = super::call::call_named_function(env, NOT_FOUND_HANDLER, &argv, redirections);
+        IN_HANDLER.store(false, Ordering::Relaxed);
+        return result;
+    }
     crate::exec::compound::flush_stdout();
     // SAFETY: the child only evaluates shell code and leaves through `process::exit`.
     match unsafe { oslo_base::forksafe::quiesced(|| fork()) } {
         Ok(ForkResult::Child) => {
             crate::exec::job::reset_signals_for_child();
             IN_HANDLER.store(true, Ordering::Relaxed);
-            env.enter_subshell();
+            // A forked simple command, which bash does not count in `$BASH_SUBSHELL`.
+            env.enter_pipeline_stage(false);
             let status = crate::exec::pipeline::status_of(super::call::call_named_function(
                 env,
                 NOT_FOUND_HANDLER,

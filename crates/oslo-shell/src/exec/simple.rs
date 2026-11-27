@@ -16,6 +16,8 @@ mod declare;
 /// `\command` and `\\command`, which decide how much of the shell a name skips past.
 mod escape;
 mod external;
+/// bash's unforked last command of a `-c` program.
+pub(crate) mod oneshot;
 mod posix;
 pub(crate) mod trace;
 
@@ -34,7 +36,9 @@ pub(crate) fn eval_simple_command(env: &mut Environment, simple: &SimpleCommand)
     // until the command has run and be closed afterwards, whichever way the command ends. The
     // wrapper is what guarantees the second half on the error paths too.
     let opened_before = env.procsubs.len();
+    oneshot::begin();
     let result = eval_simple_command_inner(env, simple);
+    oneshot::end();
     crate::exec::procsub::finish_from(env, opened_before);
     result
 }
