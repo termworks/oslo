@@ -9,5 +9,6 @@ pub mod cond;
 pub mod words;
 
 pub(super) use words::{
-    convert_braced_words_from_str, convert_words_from_str, single_word_from_str,
+    convert_braced_words_from_str, convert_braced_words_with_tilde, convert_words_from_str,
+    single_word_from_str, single_word_with_tilde,
 };

@@ -5,6 +5,7 @@
 //! so the positional hazards (nesting, quoting, the leftmost-longest rule) stay in one file and
 //! the operator table stays in another.
 
+use super::Context;
 use super::scan::{Nesting, split_top_level};
 use crate::lexer::quoting::{parse_operand, parse_word_source};
 use oslo_base::ast::{ParamExpansion, ReplaceScope, Word};
@@ -22,8 +23,8 @@ use oslo_base::error::Result;
 ///
 /// This applies to the payload operators only. A *pattern* and a *replacement* process their quotes
 /// in either context, which is bash's rule and is why `"${v#'a'}"` still strips the `a`.
-fn payload(rest: &str, in_double_quotes: bool) -> Result<Word> {
-    parse_operand(rest, in_double_quotes)
+fn payload(rest: &str, ctx: Context) -> Result<Word> {
+    parse_operand(rest, ctx.in_double_quotes, ctx.tilde)
 }
 
 /// Build the expansion for `op` from the text that follows it.
@@ -31,13 +32,9 @@ fn payload(rest: &str, in_double_quotes: bool) -> Result<Word> {
 /// Every operand stays a [`oslo_base::ast::Word`]: `${x:-$HOME}` has to expand its default, and
 /// `${v/$sep/-}` has to expand its pattern, both at use time rather than here.
 ///
-/// `in_double_quotes` is whether the whole `${…}` was written inside double quotes, and it changes
-/// exactly one thing — see [`payload`].
-pub(super) fn operator_expansion(
-    op: &str,
-    rest: &str,
-    in_double_quotes: bool,
-) -> Result<ParamExpansion> {
+/// `ctx` says whether the whole `${…}` was written inside double quotes, and which tilde rule a
+/// payload follows; both change only a payload — see [`payload`].
+pub(super) fn operator_expansion(op: &str, rest: &str, ctx: Context) -> Result<ParamExpansion> {
     Ok(match op {
         // A substring operand is arithmetic, so parentheses nest and `${v:(-1)}` splits correctly.
         ":" => {
@@ -84,7 +81,7 @@ pub(super) fn operator_expansion(
             // `%%` share this arm and are *patterns*, which process their own quotes in either
             // context — `"${v#'a'}"` strips the `a` in bash. See [`payload`].
             let arg = match bare {
-                "-" | "=" | "+" | "?" => payload(rest, in_double_quotes)?,
+                "-" | "=" | "+" | "?" => payload(rest, ctx)?,
                 _ => parse_word_source(rest)?,
             };
             match bare {

@@ -1,7 +1,8 @@
 //! Redirection conversion: files, fd duplication, here-documents and here-strings.
 
 use super::commands::{text_of, word_of};
-use crate::lexer::parse_heredoc_body;
+use crate::lexer::{TildeMode, parse_heredoc_body};
+use crate::syntax::lower::single_word_with_tilde;
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::Result;
 use rune::{Node, SyntaxKind, Tree};
@@ -62,12 +63,14 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         // Re-lexing it as a word is what keeps the quoting: expansion does the quote removal that
         // a textual strip used to do wrongly (`<<< a"b"c` lost nothing, `<<< "a"x"b"` lost the
         // wrong quotes).
+        // Only a leading tilde expands there: `<<< a=~` keeps its tilde.
         Some(SyntaxKind::LessLessLess) => {
+            let body = single_word_with_tilde(target_text, TildeMode::Leading)?;
             return Ok(vec![oslo_ast::Redirection {
                 fd,
                 kind: oslo_ast::RedirectKind::Heredoc,
                 target: oslo_ast::Word::from_literal(""),
-                heredoc_content: Some(target.clone()),
+                heredoc_content: Some(body),
                 here_string: true,
                 fd_var: None,
             }]);

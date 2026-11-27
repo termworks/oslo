@@ -24,4 +24,4 @@ mod stack;
 
 pub use cd::{builtin_cd, builtin_pwd};
 pub use dirs::builtin_dirs;
-pub use stack::{builtin_popd, builtin_pushd};
+pub use stack::{builtin_popd, builtin_pushd, stack};

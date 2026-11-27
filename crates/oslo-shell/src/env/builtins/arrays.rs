@@ -24,7 +24,7 @@ pub fn array_elements(env: &mut Environment, body: &str) -> Result<ShellArray> {
     // Brace expansion is a pass over the *text* of each word, ahead of the lexer, so a body that
     // oslo lexes itself has to run it itself: `declare -a a='(x{1,2})'` is two elements.
     let body = oslo_base::brace::expand_braces_in_line(body);
-    let mut lexer = Lexer::new(&body);
+    let mut lexer = Lexer::with_tilde(&body, crate::lexer::TildeMode::Element);
     let mut elements = Vec::new();
 
     loop {

@@ -11,7 +11,32 @@ use crate::env::Environment;
 /// this crate — completion, the ghost and the highlighter each knew only `~` and `~/…`, so a form
 /// this function expands perfectly read at the prompt as a mistake.
 pub fn expand_tilde(env: &Environment, user: &str) -> String {
+    if let Some(entry) = stack_entry(env, user) {
+        return entry;
+    }
     oslo_base::tilde::expand(user, &|name: &str| env.get_var(name).map(str::to_string))
+}
+
+/// `~N`, `~+N` and `~-N`: an entry of the directory stack, counted as `dirs +N` and `dirs -N`.
+///
+/// `None` for any other prefix, and for an index past the end, which stays literal.
+fn stack_entry(env: &Environment, user: &str) -> Option<String> {
+    let (from_bottom, digits) = match user.as_bytes().first()? {
+        b'+' => (false, &user[1..]),
+        b'-' => (true, &user[1..]),
+        _ => (false, user),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: usize = digits.parse().ok()?;
+    let entries = crate::env::builtins::directory_stack(env);
+    let index = if from_bottom {
+        entries.len().checked_sub(n + 1)?
+    } else {
+        n
+    };
+    entries.get(index).cloned()
 }
 
 #[cfg(test)]

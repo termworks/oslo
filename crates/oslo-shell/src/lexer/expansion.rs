@@ -145,7 +145,13 @@ impl Lexer<'_> {
         // Depth- and quote-aware, so `${x:-${y}}` keeps its whole payload and `${x:-a}b}` does
         // not end early on the brace inside the quotes.
         let content = self.scan_raw_delimited('{', '}', "parameter expansion", 0)?;
-        param::parse_braced_body(&content, in_double_quotes)
+        // A payload inside an assignment value takes the value's tilde rule.
+        let tilde = if self.colon_tilde {
+            super::TildeMode::Value
+        } else {
+            super::TildeMode::Leading
+        };
+        param::parse_braced_body(&content, in_double_quotes, tilde)
     }
 }
 

@@ -3,6 +3,7 @@
 //! The parser hands back a word's raw source text; oslo's evaluator needs it decomposed into
 //! [`oslo_base::ast::WordPart`]s so expansion can run, which means re-lexing it here.
 
+use crate::lexer::TildeMode;
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::Result;
 
@@ -22,7 +23,14 @@ pub(crate) fn single_command(and_or: oslo_ast::AndOrList) -> oslo_ast::Command {
 
 /// Re-lex `text` as one word, which is what every operand and redirect target is.
 pub(crate) fn single_word_from_str(text: &str) -> Result<oslo_ast::Word> {
-    Ok(convert_words_from_str(text)?
+    single_word_with_tilde(text, TildeMode::Word)
+}
+
+/// Re-lex `text` as one word under the tilde rule of `mode`.
+///
+/// An assignment value takes [`TildeMode::Value`], a here-string [`TildeMode::Leading`].
+pub(crate) fn single_word_with_tilde(text: &str, mode: TildeMode) -> Result<oslo_ast::Word> {
+    Ok(convert_words_with_tilde(text, mode)?
         .into_iter()
         .next()
         .unwrap_or_else(|| oslo_ast::Word::from_literal("")))
@@ -38,10 +46,18 @@ pub(crate) fn single_word_from_str(text: &str) -> Result<oslo_ast::Word> {
 /// a caller that should have used this one loses brace expansion — visible immediately, and covered by the
 /// corpus — rather than a caller that should not have used it silently rewriting a pattern.
 pub(crate) fn convert_braced_words_from_str(word_str: &str) -> Result<Vec<oslo_ast::Word>> {
+    convert_braced_words_with_tilde(word_str, TildeMode::Word)
+}
+
+/// [`convert_braced_words_from_str`] under the tilde rule of `mode`.
+pub(crate) fn convert_braced_words_with_tilde(
+    word_str: &str,
+    mode: TildeMode,
+) -> Result<Vec<oslo_ast::Word>> {
     let trimmed = word_str.trim();
     let mut words = Vec::new();
     for text in oslo_base::brace::expand_braces_text(trimmed) {
-        words.extend(convert_words_from_str(&text)?);
+        words.extend(convert_words_with_tilde(&text, mode)?);
     }
     Ok(words)
 }
@@ -59,6 +75,14 @@ pub(crate) fn convert_braced_words_from_str(word_str: &str) -> Result<Vec<oslo_a
 /// that keeps the next one from being a hang. It must stay an error and never a silent
 /// truncation: a word this function cannot lex is a word the shell must not go on to run.
 pub(crate) fn convert_words_from_str(word_str: &str) -> Result<Vec<oslo_ast::Word>> {
+    convert_words_with_tilde(word_str, TildeMode::Word)
+}
+
+/// [`convert_words_from_str`] under the tilde rule of `mode`.
+pub(crate) fn convert_words_with_tilde(
+    word_str: &str,
+    mode: TildeMode,
+) -> Result<Vec<oslo_ast::Word>> {
     let trimmed = word_str.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
@@ -76,7 +100,7 @@ pub(crate) fn convert_words_from_str(word_str: &str) -> Result<Vec<oslo_ast::Wor
         return Ok(vec![oslo_ast::Word::from_literal(trimmed)]);
     }
 
-    let mut lexer = crate::lexer::Lexer::new(trimmed);
+    let mut lexer = crate::lexer::Lexer::with_tilde(trimmed, mode);
     let mut words = Vec::new();
 
     loop {

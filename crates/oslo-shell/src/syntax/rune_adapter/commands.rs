@@ -3,8 +3,10 @@
 use super::convert_command_list;
 use super::redirects::{convert_redirects, redirects_of};
 use crate::syntax::lower::cond;
+use crate::lexer::TildeMode;
 use crate::syntax::lower::{
-    convert_braced_words_from_str, convert_words_from_str, single_word_from_str,
+    convert_braced_words_from_str, convert_braced_words_with_tilde, convert_words_from_str,
+    single_word_from_str, single_word_with_tilde,
 };
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::{Result, ShellError};
@@ -362,10 +364,11 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
             }
             oslo_ast::AssignmentValue::Array(elements)
         }
-        None => oslo_ast::AssignmentValue::Scalar(single_word_from_str(
+        None => oslo_ast::AssignmentValue::Scalar(single_word_with_tilde(
             node.node(SyntaxKind::Word)
                 .map(|word| text_of(tree, word))
                 .unwrap_or_default(),
+            TildeMode::Value,
         )?),
     };
 
@@ -388,10 +391,10 @@ fn convert_array_element(tree: &Tree, text: &str) -> Result<Vec<oslo_ast::ArrayE
     {
         return Ok(vec![oslo_ast::ArrayElement {
             index: Some(single_word_from_str(index)?),
-            value: single_word_from_str(value)?,
+            value: single_word_with_tilde(value, TildeMode::Value)?,
         }]);
     }
-    Ok(convert_braced_words_from_str(text)?
+    Ok(convert_braced_words_with_tilde(text, TildeMode::Leading)?
         .into_iter()
         .map(|value| oslo_ast::ArrayElement { index: None, value })
         .collect())

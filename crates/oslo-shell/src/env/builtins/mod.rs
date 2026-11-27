@@ -142,6 +142,7 @@ pub use hash::remember as hash_remember;
 /// Seeding it from [`crate::env::builtins::builtin_cd`]'s helper instead would seed every script's
 /// ring as well, and a script has no wandering to count back through.
 pub use directories::ring::record as remember_directory;
+pub use directories::stack as directory_stack;
 
 use crate::env::scope::Environment;
 

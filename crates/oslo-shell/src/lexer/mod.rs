@@ -10,10 +10,11 @@ pub mod expansion;
 mod param;
 pub mod quoting;
 pub mod scanner;
+mod tilde;
 pub mod token;
 
 pub use quoting::parse_heredoc_body;
-pub use scanner::Lexer;
+pub use scanner::{Lexer, TildeMode};
 pub use token::Token;
 
 use oslo_base::ast::Word;

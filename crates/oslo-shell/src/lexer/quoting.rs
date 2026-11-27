@@ -3,7 +3,7 @@
 //! A shell word is a sequence of parts — literal text, single-quoted runs, double-quoted runs
 //! (which may themselves contain expansions) — which the evaluator later expands in order.
 
-use super::scanner::{Lexer, is_blank, is_operator_char};
+use super::scanner::{Lexer, TildeMode, is_blank, is_operator_char};
 use crate::lexer::token::Token;
 use oslo_base::ast::{Word, WordPart};
 use oslo_base::error::{Result, ShellError};
@@ -14,7 +14,7 @@ use oslo_base::error::{Result, ShellError};
 /// difference from [`Lexer::scan_word`] is that nothing here terminates the word: a space in
 /// `${x:-a b}` is part of the operand, not a separator between two of them.
 pub(super) fn parse_word_source(source: &str) -> Result<Word> {
-    parse_operand(source, false)
+    parse_operand(source, false, TildeMode::Leading)
 }
 
 /// [`parse_word_source`], told whether the `${…}` it came from was written inside double quotes.
@@ -22,8 +22,10 @@ pub(super) fn parse_word_source(source: &str) -> Result<Word> {
 /// Only the payload of `${x-word}` and its relatives cares. There, the enclosing quotes govern —
 /// `"${x-'q'}"` is `'q'` and `"${x:-~}"` is a tilde — because the payload is part of the quoted
 /// word rather than a word of its own. A *pattern* is not: `"${v#'a'}"` still strips the `a`.
-pub(super) fn parse_operand(source: &str, inside_quotes: bool) -> Result<Word> {
-    let mut lexer = Lexer::new(source);
+///
+/// `tilde` is the payload's tilde rule, which an assignment value passes on to its payloads.
+pub(super) fn parse_operand(source: &str, inside_quotes: bool, tilde: TildeMode) -> Result<Word> {
+    let mut lexer = Lexer::with_tilde(source, tilde);
     Ok(Word {
         parts: lexer.scan_word_parts(true, inside_quotes)?,
     })
@@ -91,6 +93,9 @@ impl Lexer<'_> {
         let mut current_lit = String::new();
         // How deep inside an `extglob` group the scan is: `@(a b|c)` is one word, spaces and all.
         let mut group = 0usize;
+        // The literal's length just past the word's assignment `=`, for a word shaped `name=…`.
+        let mut eq_at = None;
+        self.colon_tilde = self.tilde == TildeMode::Value;
 
         while let Some(ch) = self.current_char() {
             // Inside a group, spaces, `|` and parentheses are the pattern's own; quoting and
@@ -186,29 +191,27 @@ impl Lexer<'_> {
                     }
                     parts.push(self.scan_backquote_substitution()?);
                 }
-                // And a tilde is a tilde: `"${x:-~}"` is a literal one in bash.
-                '~' if !inside_quotes && opens_tilde(&parts, &current_lit) => {
-                    self.advance();
-                    // The text before it goes down first. Every other branch here does this and
-                    // this one did not have to, because it only ever fired on an empty buffer —
-                    // now that a tilde can follow an `=`, `a=~/x` would otherwise come back as
-                    // `/home/youa=/x`, with the expansion in front of the text it followed.
-                    if !current_lit.is_empty() {
-                        parts.push(WordPart::Literal(std::mem::take(&mut current_lit)));
-                    }
-                    let mut user = String::new();
-                    while let Some(c) = self.current_char() {
-                        // `+` is here for `~+` (the current directory); `-` doubles as `~-` (the
-                        // previous one) and as a character usernames are allowed to contain, so
-                        // which of the two a run means is decided by expansion, not by the lexer.
-                        if c.is_alphanumeric() || c == '_' || c == '-' || c == '+' {
-                            user.push(c);
+                // Inside quotes a tilde is literal: `"${x:-~}"` is one in bash.
+                '~' if !inside_quotes && self.opens_tilde(&parts, &current_lit, eq_at) => {
+                    match self.scan_tilde_prefix(to_eof) {
+                        Some(user) => {
+                            if !current_lit.is_empty() {
+                                parts.push(WordPart::Literal(std::mem::take(&mut current_lit)));
+                            }
+                            parts.push(WordPart::Tilde(user));
+                        }
+                        None => {
+                            current_lit.push('~');
                             self.advance();
-                        } else {
-                            break;
                         }
                     }
-                    parts.push(WordPart::Tilde(user));
+                }
+                // The `=` of a `name=…` word, after which a tilde opens.
+                '=' if eq_at.is_none() && self.is_assignment_eq(&parts, &current_lit) => {
+                    current_lit.push('=');
+                    self.advance();
+                    eq_at = Some(current_lit.len());
+                    self.colon_tilde = true;
                 }
                 _ => {
                     current_lit.push(ch);
@@ -323,29 +326,3 @@ impl Lexer<'_> {
 #[cfg(test)]
 #[path = "quoting/tests.rs"]
 mod tests;
-
-/// Whether a `~` at this point in a word opens a tilde prefix.
-///
-/// At the start of a word, which is the obvious case — and **immediately after an unquoted `=` or
-/// `:`**, which is the one that was missing. POSIX names it for assignment words; bash applies it
-/// to any word, and the differential corpus is compared against bash:
-///
-/// ```text
-///   export HOME_BIN=~/bin        the value of an assignment that is an argument
-///   local p=~/x                  the same inside a function
-///   PATH=$PATH:~/bin             after a `:`, which is what makes it worth having
-///   echo a=~/x                   any word at all, in bash
-/// ```
-///
-/// A plain `a=~/x` already worked, because an assignment splits its value off and the `~` then
-/// opens that value. Everything above is the same expansion arriving by a different route, and
-/// answering it here means one rule rather than one per route.
-///
-/// Quoting never reaches this: `"~/x"` is read by the double-quote branch and stays literal, which
-/// is what bash does too.
-fn opens_tilde(parts: &[WordPart], current_lit: &str) -> bool {
-    if parts.is_empty() && current_lit.is_empty() {
-        return true;
-    }
-    matches!(current_lit.as_bytes().last(), Some(b'=' | b':'))
-}

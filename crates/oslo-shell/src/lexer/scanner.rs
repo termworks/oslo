@@ -3,6 +3,7 @@
 //! Word scanning lives in [`super::quoting`] and `$`-expansions in [`super::expansion`];
 //! all three write `impl Lexer` blocks against the struct defined here.
 
+pub use super::tilde::TildeMode;
 use crate::lexer::token::Token;
 use oslo_base::error::{Result, ShellError};
 
@@ -20,17 +21,28 @@ pub struct Lexer<'a> {
 
     pos: usize,
     peeked: Option<Token>,
+    /// Where the words this lexer scans may open a tilde prefix.
+    pub(super) tilde: TildeMode,
+    /// Whether the word being scanned is past its assignment `=`, so a `:` opens a tilde.
+    pub(super) colon_tilde: bool,
 }
 
 #[allow(clippy::should_implement_trait, clippy::collapsible_if)]
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
+        Self::with_tilde(input, TildeMode::Word)
+    }
+
+    /// A lexer whose words follow the tilde rule of `mode`.
+    pub fn with_tilde(input: &'a str, mode: TildeMode) -> Self {
         Self {
             _input: input,
             chars: input.chars().collect(),
 
             pos: 0,
             peeked: None,
+            tilde: mode,
+            colon_tilde: false,
         }
     }
 
@@ -44,6 +56,11 @@ impl<'a> Lexer<'a> {
 
     pub(super) fn peek_char(&self) -> Option<char> {
         self.chars.get(self.pos + 1).copied()
+    }
+
+    /// The character `ahead` places past the cursor.
+    pub(super) fn char_ahead(&self, ahead: usize) -> Option<char> {
+        self.chars.get(self.pos + ahead).copied()
     }
 
     /// How far the cursor has moved through the input, in characters.
