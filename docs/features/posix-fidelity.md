@@ -243,8 +243,7 @@ carries, because it replaced the process image and nothing registered at exit co
 - **Three corpus cases still differ from bash.** `for ((;;))` with no space between the section
   separators is a syntax error, because brush's tokenizer takes the longest match and fuses the two
   `;` into the `;;` that terminates a `case` item; `for (( ; ; ))` and `for ((i=0;i<3;i++))` both
-  work. `coproc` and `select` are refused by name and deliberately not implemented — one needs job
-  control, the other a prompt, `PS3` and `REPLY`.
+  work. `coproc` and `select` have since closed and match bash.
 - **Four `declare` attributes are refused rather than honoured**: `-A` (associative arrays), `-i`,
   `-l`, `-u` and `-n`. Each exits 2 and says which one, because this shell has no representation for
   them and the alternative is worse than the gap. `declare -A m` answered with an *indexed* array

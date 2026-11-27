@@ -15,46 +15,6 @@ answer arrives looking like the right one.
 
 ---
 
-## `coproc`
-
-```console
-$ oslo -c 'coproc cat'
-oslo: syntax error: coproc is not supported yet
-```
-
-A coprocess is a two-way pipe to a background command plus an array holding its descriptors. What
-it is *for* — talking to a long-running program without a temporary file — oslo does with named
-pipes, which every shell has:
-
-```sh
-mkfifo /tmp/in /tmp/out
-cat /tmp/in > /tmp/out &
-echo hello > /tmp/in &
-read reply < /tmp/out
-```
-
-## `select`
-
-```console
-$ oslo -c 'select x in a b; do echo $x; done'
-oslo: syntax error: select is not supported yet
-```
-
-`select` is a menu loop: print a numbered list, read a number, run the body with the variable set.
-It is bash's, not POSIX's. In oslo the menu belongs to the interface layer, where it can be drawn
-properly and arrowed through:
-
-```sh
-x=$(oslo userin choose a b c)
-```
-
-In a script that must stay portable, the loop is six lines of POSIX:
-
-```sh
-i=1; for opt in a b; do echo "$i) $opt"; i=$((i+1)); done
-read -r n
-```
-
 ## Associative arrays
 
 ```console
@@ -186,6 +146,8 @@ exit status of a signal nobody sends on purpose.
 | Process substitution generally | works wherever `/dev/fd` exists, which is every ordinary Linux system |
 | Three nesting limits sharing one stack, each measured alone | the stack is asked directly, so a combined workload gets an error rather than an abort |
 | `extglob` — `@(a\|b)`, `!(*.txt)` and the rest | the parser reads a group as part of its word, and `shopt -s extglob` turns matching on; see [globbing.md](features/globbing.md#extended-patterns) |
+| `coproc` refused as a syntax error | `coproc cmd` and `coproc NAME { …; }` run, with `NAME[0]`, `NAME[1]` and `NAME_PID` set and cleared when the job ends |
+| `select` refused as a syntax error | the menu loop runs as bash's does: `PS3`, `REPLY`, the column layout on stderr, and status 1 at end of input |
 
 The nesting one is worth a word too, because the counters looked adequate and were not. A function
 calling itself, a `source`/`eval` chain and a nested compound command each had a limit measured

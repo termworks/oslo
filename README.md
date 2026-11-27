@@ -261,7 +261,7 @@ to check afterwards and how to undo all of it — see [docs/default-shell.md](do
 
 ## Known gaps
 
-`coproc`, `select`, associative arrays, and process substitution on a system with no `/dev/fd`. Each
+Associative arrays, and process substitution on a system with no `/dev/fd`. Each
 is listed with its cause and what to write instead in [docs/known-gaps.md](docs/known-gaps.md), and
 each one *says so* rather than quietly doing something else — a syntax error naming the construct,
 or a builtin refusing the option.
