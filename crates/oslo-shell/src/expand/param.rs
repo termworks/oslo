@@ -122,9 +122,7 @@ pub fn expand_param(
         if let Some(fields) = array::positional_list(env, name, expansion_type, origin)? {
             return Ok(fields);
         }
-        if let Some(fields) =
-            positional::operator_fields(env, name, expansion_type, in_quotes)?
-        {
+        if let Some(fields) = positional::operator_fields(env, name, expansion_type, in_quotes)? {
             return Ok(fields);
         }
     }

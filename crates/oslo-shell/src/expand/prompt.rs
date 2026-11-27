@@ -121,7 +121,10 @@ fn tilde_pwd(env: &Environment) -> String {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
-    match env.get_var("HOME").filter(|home| !home.is_empty() && *home != "/") {
+    match env
+        .get_var("HOME")
+        .filter(|home| !home.is_empty() && *home != "/")
+    {
         Some(home) if pwd == home => "~".to_string(),
         Some(home) if pwd.starts_with(&format!("{home}/")) => format!("~{}", &pwd[home.len()..]),
         _ => pwd,

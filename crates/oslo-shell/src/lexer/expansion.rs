@@ -10,6 +10,14 @@ use oslo_base::ast::{ParamExpansion, WordPart};
 use oslo_base::error::{Result, ShellError};
 
 impl Lexer<'_> {
+    /// Step over any `\` + newline pairs at the cursor: a line continuation is nothing at all.
+    fn skip_line_continuations(&mut self) {
+        while self.current_char() == Some('\\') && self.peek_char() == Some('\n') {
+            self.advance();
+            self.advance();
+        }
+    }
+
     /// Scan whatever follows a `$`, the cursor sitting on the character after it.
     ///
     /// `in_double_quotes` is not cosmetic: `$'…'` and `$"…"` are only special *outside* quotes.
@@ -95,7 +103,10 @@ impl Lexer<'_> {
     /// Every other backslash is data, which is why this cannot reuse the raw `$( )` scanner.
     ///
     /// Inside double quotes `\"` is an escape too: ``"`echo \"q\"`"`` runs `echo "q"`.
-    pub(super) fn scan_backquote_substitution(&mut self, in_double_quotes: bool) -> Result<WordPart> {
+    pub(super) fn scan_backquote_substitution(
+        &mut self,
+        in_double_quotes: bool,
+    ) -> Result<WordPart> {
         self.advance();
         let mut cmd = String::new();
 

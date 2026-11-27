@@ -158,7 +158,10 @@ mod tests {
         assert_eq!(expand("{a..e}"), vec!["a", "b", "c", "d", "e"]);
         assert_eq!(expand("{e..a..2}"), vec!["e", "c", "a"]);
         // Between the cases sit six punctuation characters; two would be syntax to the lexer.
-        assert_eq!(expand("{Z..a}"), vec!["Z", "[", "''", "]", "^", "_", "\\`", "a"]);
+        assert_eq!(
+            expand("{Z..a}"),
+            vec!["Z", "[", "''", "]", "^", "_", "\\`", "a"]
+        );
     }
 
     #[test]

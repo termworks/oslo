@@ -170,10 +170,7 @@ pub(super) fn apply(
             // thing `v` names is set, so the operator has to run against that one — testing `v`
             // instead would answer about the pointer rather than the target.
             Some(indirect) => {
-                if env.nounset()
-                    && !defines_absence(inner)
-                    && env.get_param(&indirect).is_none()
-                {
+                if env.nounset() && !defines_absence(inner) && env.get_param(&indirect).is_none() {
                     return Err(ShellError::UnsetParameter(format!(
                         "!{name}: unbound variable"
                     )));
@@ -311,7 +308,11 @@ impl Prepared {
                 upper,
                 all,
             } => {
-                let map = if *upper { CaseMap::Upper } else { CaseMap::Lower };
+                let map = if *upper {
+                    CaseMap::Upper
+                } else {
+                    CaseMap::Lower
+                };
                 Prepared::case(env, pattern.as_ref(), map, *all)?
             }
             ParamExpansion::CaseToggle { pattern, all } => {

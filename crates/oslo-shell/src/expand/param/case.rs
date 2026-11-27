@@ -33,7 +33,11 @@ pub fn convert_case(
         // The single-character forms examine the first character and no other, so
         // `v=hello; ${v^l}` leaves the value alone: `h` is not what the pattern named.
         let eligible = selected && (all || index == 0);
-        out.push(if eligible { map_char(ch, map, utf8) } else { ch });
+        out.push(if eligible {
+            map_char(ch, map, utf8)
+        } else {
+            ch
+        });
     }
     out
 }
@@ -73,11 +77,18 @@ mod tests {
 
     #[test]
     fn case_conversion_respects_the_doubled_form() {
-        let up = |v: &str, p: Option<&ShellPattern>, all| convert_case(v, p, CaseMap::Upper, all, true);
+        let up =
+            |v: &str, p: Option<&ShellPattern>, all| convert_case(v, p, CaseMap::Upper, all, true);
         assert_eq!(up("hello", None, true), "HELLO");
         assert_eq!(up("hello", None, false), "Hello");
-        assert_eq!(convert_case("WORLD", None, CaseMap::Lower, true, true), "world");
-        assert_eq!(convert_case("WORLD", None, CaseMap::Lower, false, true), "wORLD");
+        assert_eq!(
+            convert_case("WORLD", None, CaseMap::Lower, true, true),
+            "world"
+        );
+        assert_eq!(
+            convert_case("WORLD", None, CaseMap::Lower, false, true),
+            "wORLD"
+        );
         assert_eq!(up("hello", Some(&pat("l")), true), "heLLo");
         // `${v^l}`: only the first character is a candidate, and it is not an `l`.
         assert_eq!(up("hello", Some(&pat("l")), false), "hello");
@@ -86,18 +97,33 @@ mod tests {
 
     #[test]
     fn toggling_swaps_each_case() {
-        assert_eq!(convert_case("HeLLo", None, CaseMap::Toggle, true, true), "hEllO");
-        assert_eq!(convert_case("HeLLo", None, CaseMap::Toggle, false, true), "heLLo");
+        assert_eq!(
+            convert_case("HeLLo", None, CaseMap::Toggle, true, true),
+            "hEllO"
+        );
+        assert_eq!(
+            convert_case("HeLLo", None, CaseMap::Toggle, false, true),
+            "heLLo"
+        );
     }
 
     /// One character in, one out, as the C library maps them.
     #[test]
     fn a_character_maps_to_a_single_character() {
-        assert_eq!(convert_case("Straße", None, CaseMap::Upper, true, true), "STRAßE");
+        assert_eq!(
+            convert_case("Straße", None, CaseMap::Upper, true, true),
+            "STRAßE"
+        );
         assert_eq!(convert_case("ﬁ", None, CaseMap::Upper, true, true), "ﬁ");
         assert_eq!(convert_case("İ", None, CaseMap::Lower, true, true), "i");
-        assert_eq!(convert_case("ÉCOLE", None, CaseMap::Lower, true, true), "école");
+        assert_eq!(
+            convert_case("ÉCOLE", None, CaseMap::Lower, true, true),
+            "école"
+        );
         // Outside a UTF-8 locale only ASCII has a case.
-        assert_eq!(convert_case("ÉCOLE", None, CaseMap::Lower, true, false), "École");
+        assert_eq!(
+            convert_case("ÉCOLE", None, CaseMap::Lower, true, false),
+            "École"
+        );
     }
 }

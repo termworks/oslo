@@ -205,7 +205,11 @@ fn length_counts_characters_and_positionals() {
     assert_eq!(len("hello"), Ok("5".into()));
     // Characters, not bytes, in a UTF-8 locale; bytes in the C one.
     assert_eq!(len("héllo"), Ok("5".into()));
-    let bytes = expand(&[("LC_ALL", "C"), ("s", "héllo")], "s", ParamExpansion::Length);
+    let bytes = expand(
+        &[("LC_ALL", "C"), ("s", "héllo")],
+        "s",
+        ParamExpansion::Length,
+    );
     assert_eq!(bytes, Ok("6".into()));
     assert_eq!(expand(&[], "nope", ParamExpansion::Length), Ok("0".into()));
 

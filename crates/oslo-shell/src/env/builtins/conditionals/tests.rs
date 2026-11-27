@@ -124,7 +124,12 @@ const INTEGER_OPERANDS: &[(&[&str], i32, i32)] = &[
 fn integer_operands_are_decimal_in_test_and_arithmetic_in_double_brackets() {
     for (words, posix, extended) in INTEGER_OPERANDS {
         assert_eq!(bracket(words), *posix, "[ {} ]", words.join(" "));
-        assert_eq!(double_bracket(words), *extended, "[[ {} ]]", words.join(" "));
+        assert_eq!(
+            double_bracket(words),
+            *extended,
+            "[[ {} ]]",
+            words.join(" ")
+        );
     }
 }
 

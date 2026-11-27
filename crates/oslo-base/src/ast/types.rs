@@ -118,7 +118,10 @@ pub enum ParamExpansion {
         all: bool,
     },
     /// `${name~}` and `${name~~}`: swap the case of the first, or of every, eligible character.
-    CaseToggle { pattern: Option<Word>, all: bool },
+    CaseToggle {
+        pattern: Option<Word>,
+        all: bool,
+    },
     /// `${name@op}`: one of bash's transformations, `Q E P A K a k U u L`.
     Transform(char),
     /// `${!name}` — `name` holds the name of the parameter to expand.

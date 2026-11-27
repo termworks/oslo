@@ -134,8 +134,9 @@ pub(super) fn eval_unary(env: &Environment, op: &str, target: &str) -> TestResul
         "-N" => fs::metadata(path)
             .is_ok_and(|m| (m.mtime(), m.mtime_nsec()) > (m.atime(), m.atime_nsec())),
         // The operand must be an integer; one past any descriptor is never a terminal.
-        "-t" => i32::try_from(to_int(target)?)
-            .is_ok_and(|fd| nix::unistd::isatty(fd).unwrap_or(false)),
+        "-t" => {
+            i32::try_from(to_int(target)?).is_ok_and(|fd| nix::unistd::isatty(fd).unwrap_or(false))
+        }
         "-z" => target.is_empty(),
         "-n" => !target.is_empty(),
         "-v" => env.get_param(target).is_some(),

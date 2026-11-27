@@ -14,7 +14,11 @@ use std::io::{Read, Seek};
 use std::os::fd::AsRawFd;
 
 /// Run `body` in the current shell and answer with what the substitution stands for.
-pub fn eval_function_substitution(env: &mut Environment, body: &str, reply: bool) -> Result<String> {
+pub fn eval_function_substitution(
+    env: &mut Environment,
+    body: &str,
+    reply: bool,
+) -> Result<String> {
     let ast = crate::syntax::parse_with_aliases(body, !env.get_aliases().is_empty(), &|n| {
         env.get_alias(n).map(str::to_string)
     })?;

@@ -110,7 +110,11 @@ fn raw_code_point(value: u32) -> String {
         *byte = 0x80 | (rest & 0x3f) as u8;
         rest >>= 6;
     }
-    bytes[0] = if len == 1 { rest as u8 } else { lead[len] | rest as u8 };
+    bytes[0] = if len == 1 {
+        rest as u8
+    } else {
+        lead[len] | rest as u8
+    };
     use std::os::unix::ffi::OsStrExt;
     oslo_base::lossless::encode(std::ffi::OsStr::from_bytes(&bytes))
 }
@@ -179,7 +183,10 @@ mod tests {
         let bytes = |s: &str| oslo_base::lossless::decode(&decode(s));
         assert_eq!(bytes("\\uD800"), vec![0xed, 0xa0, 0x80]);
         assert_eq!(bytes("\\U110000"), vec![0xf4, 0x90, 0x80, 0x80]);
-        assert_eq!(bytes("\\U7fffffff"), vec![0xfd, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf]);
+        assert_eq!(
+            bytes("\\U7fffffff"),
+            vec![0xfd, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf]
+        );
     }
 
     /// An octal escape is at most three digits, so the fourth character is data again.

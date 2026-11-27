@@ -17,7 +17,10 @@ use oslo_base::error::{Result, ShellError};
 
 /// Whether `op` is a transformation bash knows.
 pub(super) fn is_known(op: char) -> bool {
-    matches!(op, 'Q' | 'E' | 'P' | 'A' | 'K' | 'a' | 'k' | 'U' | 'u' | 'L')
+    matches!(
+        op,
+        'Q' | 'E' | 'P' | 'A' | 'K' | 'a' | 'k' | 'U' | 'u' | 'L'
+    )
 }
 
 /// The error a set parameter with an unknown transformation raises; bash ends the shell with 127.

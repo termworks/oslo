@@ -2,8 +2,8 @@
 
 use super::convert_command_list;
 use super::redirects::{convert_redirects, redirects_of};
-use crate::syntax::lower::cond;
 use crate::lexer::TildeMode;
+use crate::syntax::lower::cond;
 use crate::syntax::lower::{
     convert_braced_words_from_str, convert_braced_words_with_tilde, convert_words_from_str,
     single_word_from_str, single_word_with_tilde,

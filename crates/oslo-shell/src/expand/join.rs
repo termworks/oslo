@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Each field after the first of those forms opens with an empty run whose [`Origin`] is the
-//! mark, and [`join_fields`] reads it. A `Seam` joins on IFS's first character (a space when IFS
+//! mark, and `join_fields` reads it. A `Seam` joins on IFS's first character (a space when IFS
 //! is null), and only an assignment or a here-string honours it: `[[ ]]` and `case` join on a
 //! space. A `Glue` joins with nothing, everywhere.
 
@@ -79,7 +79,10 @@ pub(crate) fn join_runs(env: &Environment, fields: Vec<Field>) -> Vec<Run> {
     let mut out = Vec::new();
     for (i, field) in fields.into_iter().enumerate() {
         if i > 0 {
-            out.push(Run::new(separator(env, &field, Joining::Value), Origin::Quoted));
+            out.push(Run::new(
+                separator(env, &field, Joining::Value),
+                Origin::Quoted,
+            ));
         }
         out.extend(field);
     }
