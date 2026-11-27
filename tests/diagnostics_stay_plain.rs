@@ -192,7 +192,7 @@ const PLAIN: &[Plain] = &[
         stderr: "oslo: export: `2FOO=x': not a valid identifier",
     },
     Plain {
-        script: "unset a-b",
+        script: "unset -v a-b",
         stderr: "oslo: unset: `a-b': not a valid identifier",
     },
     Plain {

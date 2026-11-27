@@ -120,7 +120,7 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
             "{}unset: cannot simultaneously unset a function and a variable",
             origin_now()
         );
-        return Ok(2);
+        return Ok(1);
     }
 
     let mut status = 0;
@@ -136,9 +136,14 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
             }
             continue;
         }
+        // A name no variable can have may still be a function's, so only `-v` refuses it.
         if !is_valid_identifier(name) {
-            super::not_an_identifier(args, "unset", name);
-            status = 1;
+            if opts.has('v') || opts.has('n') {
+                super::not_an_identifier(args, "unset", name);
+                status = 1;
+            } else if !env.is_function_readonly(name) {
+                env.remove_function(name);
+            }
             continue;
         }
         // With neither option, a name that is only a function names the function; when both a
@@ -271,15 +276,17 @@ mod tests {
     }
 
     #[test]
-    fn unset_of_an_invalid_name_fails() {
+    /// A name no variable can have is refused under `-v`; without it, it may name a function, and
+    /// bash answers 0 for one that names nothing.
+    fn unset_of_an_invalid_name_fails_only_under_v() {
         let mut env = Environment::new();
         assert_eq!(
-            builtin_unset(&mut env, &words(&["unset", "a b"])).unwrap(),
+            builtin_unset(&mut env, &words(&["unset", "-v", "a b"])).unwrap(),
             1
         );
         assert_eq!(
             builtin_unset(&mut env, &words(&["unset", "1x"])).unwrap(),
-            1
+            0
         );
     }
 
