@@ -16,11 +16,26 @@ pub enum Target {
     Element { name: String, subscript: String },
 }
 
-/// Split `a[sub]` into its name and subscript.
+/// Split `a[sub]` into its name and subscript. The `]` that closes the first `[` must end the
+/// text, counting nested brackets, so `a[x]y]` is not a subscripted name.
 pub fn split_subscript(text: &str) -> Option<(&str, &str)> {
-    let body = text.strip_suffix(']')?;
-    let open = body.find('[')?;
-    Some((&body[..open], &body[open + 1..]))
+    let open = text.find('[')?;
+    let mut depth = 0usize;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    let close = open + i;
+                    return (close + 1 == text.len())
+                        .then(|| (&text[..open], &text[open + 1..close]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether `text` is a name a reference may hold: a variable, or one element of one.
