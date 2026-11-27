@@ -334,7 +334,7 @@ const PLAIN: &[Plain] = &[
         stderr: "oslo: rm: cannot remove $'\\E[2Jx': No such file or directory",
     },
     Plain {
-        script: "e=$(printf '\\033[2Jx'); unset \"$e\"",
+        script: "e=$(printf '\\033[2Jx'); unset -v \"$e\"",
         stderr: "oslo: unset: `$'\\E[2Jx'': not a valid identifier",
     },
     // An `OSC 8` payload, which is the half that survives being invisible: under a terminal that
