@@ -59,17 +59,6 @@ const SHARED: &[(&[&str], i32)] = &[
     // Blanks and a leading `+` are accepted.
     (&[" 3 ", "-eq", "3"], 0),
     (&["+3", "-eq", "3"], 0),
-    // R5.3: a non-numeric operand is an error, never a silent zero.
-    //
-    // Deliberate divergence for `[[ ]]`: bash runs `[[ ]]`'s arithmetic operands through the
-    // arithmetic evaluator, so `[[ abc -eq 0 ]]` reads `abc` as an unset variable and is true.
-    // R5.3 specifies one shared evaluator that reports `integer expected` in both forms, which is
-    // the safer answer for the far more common case of a variable holding a non-number.
-    (&["abc", "-eq", "0"], 2),
-    (&["1", "-eq", "abc"], 2),
-    (&["", "-eq", "0"], 2),
-    (&["0x10", "-eq", "16"], 2),
-    (&["abc", "-gt", "0"], 2),
     // R5.1/R5.3: an operator that does not exist is a syntax error, not `false`.
     (&["-q", "x"], 2),
     (&["a", "-qq", "b"], 2),
@@ -85,7 +74,8 @@ const SHARED: &[(&[&str], i32)] = &[
     (&["-s", "/nonexistent-oslo-xyz"], 1),
     (&["-L", "/nonexistent-oslo-xyz"], 1),
     (&["-p", "/nonexistent-oslo-xyz"], 1),
-    (&["-t", "not-a-number"], 1),
+    (&["-t", "not-a-number"], 2),
+    (&["-t", "99"], 1),
     // `-o` on a name no shell option has is false, not an error: that is what bash answers, and
     // it is what lets `[ -o pipefail ] || ...` run on a shell without the option.
     (&["-o", "no-such-option"], 1),
@@ -111,6 +101,30 @@ fn shared_expressions_agree_in_both_forms() {
             words.join(" "),
             expected
         );
+    }
+}
+
+/// The integer comparisons, where the two forms part: `test` reads decimal integers and calls
+/// anything else an error, `[[ ]]` evaluates each operand as an arithmetic expression.
+/// `(words, test status, [[ status)`.
+const INTEGER_OPERANDS: &[(&[&str], i32, i32)] = &[
+    (&["abc", "-eq", "0"], 2, 0),
+    (&["1", "-eq", "abc"], 2, 1),
+    (&["", "-eq", "0"], 2, 0),
+    (&["0x10", "-eq", "16"], 2, 0),
+    (&["abc", "-gt", "0"], 2, 1),
+    (&["1+1", "-eq", "2"], 2, 0),
+    (&["2#101", "-eq", "5"], 2, 0),
+    (&["010", "-eq", "8"], 1, 0),
+    (&["08", "-eq", "8"], 0, 1),
+    (&["1 2", "-eq", "1"], 2, 1),
+];
+
+#[test]
+fn integer_operands_are_decimal_in_test_and_arithmetic_in_double_brackets() {
+    for (words, posix, extended) in INTEGER_OPERANDS {
+        assert_eq!(bracket(words), *posix, "[ {} ]", words.join(" "));
+        assert_eq!(double_bracket(words), *extended, "[[ {} ]]", words.join(" "));
     }
 }
 
@@ -144,6 +158,10 @@ const POSIX_GRAMMAR: &[(&[&str], i32)] = &[
     // `!` in an operand slot is data, not an operator.
     (&["-f", "-a"], 1),
     (&["!", "-a"], 1),
+    // Three words with `-a` or `-o` in the middle join two strings, whatever they spell.
+    (&["!", "-a", "/"], 0),
+    (&["-z", "-a", "-z"], 0),
+    (&["", "-o", "-n"], 0),
     // Parentheses.
     (&["(", "a", "=", "a", ")"], 0),
     (&["(", "a", "=", "b", ")"], 1),
@@ -152,8 +170,7 @@ const POSIX_GRAMMAR: &[(&[&str], i32)] = &[
     (&["(", "a", "=", "b", ")", "-o", "(", "c", "=", "c", ")"], 0),
     (&["(", "a", "=", "b", ")", "-a", "(", "c", "=", "c", ")"], 1),
     (&["!", "(", "a", "=", "b", ")"], 0),
-    // `test` is decimal-only, so `010` is ten. (`[[ ]]` in bash would read it as octal, since it
-    // runs arithmetic operands through the arithmetic evaluator; oslo shares one evaluator.)
+    // `test` is decimal-only, so `010` is ten.
     (&["010", "-eq", "10"], 0),
     (&["010", "-eq", "8"], 1),
     // Single words that look like operators but sit alone.
@@ -280,17 +297,32 @@ fn shell_option_predicate_tracks_the_option_table() {
     assert_eq!(builtin_test(&mut env, &argv).unwrap(), 0);
 }
 
-/// R8.8: `-N` is "modified since last read", which bash defines as `atime <= mtime` — inclusive.
+/// R8.8: `-N` is "modified since last read": the modification time is strictly later.
 #[test]
-fn modified_since_last_read_counts_an_untouched_file() {
+fn modified_since_last_read_needs_a_later_modification() {
     let dir = scratch_dir("newer");
     let file = dir.join("fresh");
     std::fs::write(&file, b"x").expect("write fixture");
-
     let path = file.to_string_lossy().to_string();
-    // Freshly written and never read: atime == mtime, and bash says true.
+    let stamp = |accessed: std::time::SystemTime, modified: std::time::SystemTime| {
+        let times = std::fs::FileTimes::new()
+            .set_accessed(accessed)
+            .set_modified(modified);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|f| f.set_times(times))
+            .expect("set times");
+    };
+    let now = std::time::SystemTime::now();
+    let earlier = now - std::time::Duration::from_secs(60);
+
+    stamp(earlier, now);
     assert_eq!(bracket(&["-N", &path]), 0);
     assert_eq!(double_bracket(&["-N", &path]), 0);
+    // What `touch` leaves: both stamps alike.
+    stamp(now, now);
+    assert_eq!(bracket(&["-N", &path]), 1);
 
     assert_eq!(bracket(&["-N", "/nonexistent-oslo-xyz"]), 1);
 

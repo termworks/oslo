@@ -9,6 +9,7 @@
 //! true, 1 for false) or fails to parse (a diagnostic on stderr and **exit 2**). There is no third
 //! outcome in which an unrecognised operator quietly becomes an answer.
 
+mod arith;
 mod grammar;
 mod matching;
 mod operators;
@@ -64,6 +65,9 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
         // `=~` being `[[ ]]`-only.
         3 if matching::is_regex_op(&expr[1]) => {
             matching::eval_regex_match(env, &expr[0], &expr[1], &expr[2])
+        }
+        3 if arith::is_arithmetic_op(&expr[1]) => {
+            return arith::compare(env, &expr[0], &expr[1], &expr[2]);
         }
         3 => operators::eval_binary(Mode::Extended, &expr[0], &expr[1], &expr[2]),
         _ => Err(TestError::new("too many arguments")),

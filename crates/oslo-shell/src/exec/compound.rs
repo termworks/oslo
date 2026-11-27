@@ -189,13 +189,15 @@ fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i
 ///
 /// A bad expression is the *command's* failure, not the shell's: bash prints the diagnostic,
 /// leaves `$?` at 1 and runs the next command, unlike `$(( … ))` in a word, which is fatal.
-/// `None` means "already reported"; callers turn it into status 1 and stop.
-fn eval_arith(env: &mut Environment, expr: &str) -> Option<i64> {
+/// `None` means "already reported"; callers turn it into status 1 and stop. An unset name under
+/// `set -u` is the exception, and unwinds as it would from a word.
+fn eval_arith(env: &mut Environment, expr: &str) -> Result<Option<i64>> {
     match crate::expand::arithmetic::eval_arithmetic(env, expr) {
-        Ok(value) => Some(value),
+        Ok(value) => Ok(Some(value)),
+        Err(e @ ShellError::UnsetParameter(_)) => Err(e),
         Err(e) => {
             eprintln!("oslo: ((: {}", e);
-            None
+            Ok(None)
         }
     }
 }
@@ -205,11 +207,11 @@ fn eval_arith(env: &mut Environment, expr: &str) -> Option<i64> {
 /// The status is inverted with respect to the value: a non-zero result is success. That is what
 /// makes `while (( i < n ))` and `if (( x ))` read the way arithmetic conditions are written, and
 /// it is the same convention the `let` builtin uses.
-fn eval_arithmetic_command(env: &mut Environment, expr: &str) -> i32 {
-    match eval_arith(env, expr) {
+fn eval_arithmetic_command(env: &mut Environment, expr: &str) -> Result<i32> {
+    Ok(match eval_arith(env, expr)? {
         Some(value) => i32::from(value == 0),
         None => 1,
-    }
+    })
 }
 
 /// `for ((init; cond; step)) do … done`.
@@ -225,7 +227,7 @@ fn eval_arithmetic_for(
     body: &CommandList,
 ) -> Result<i32> {
     if let Some(expr) = init
-        && eval_arith(env, expr).is_none()
+        && eval_arith(env, expr)?.is_none()
     {
         return Ok(1);
     }
@@ -238,9 +240,10 @@ fn eval_arithmetic_for(
         // is nothing to evaluate, so nothing can fail either.
         if let Some(expr) = cond {
             match eval_arith(env, expr) {
-                Some(0) => break Ok(status),
-                Some(_) => {}
-                None => break Ok(1),
+                Ok(Some(0)) => break Ok(status),
+                Ok(Some(_)) => {}
+                Ok(None) => break Ok(1),
+                Err(e) => break Err(e),
             }
         }
 
@@ -250,10 +253,12 @@ fn eval_arithmetic_for(
             LoopStep::Unwind(e) => break Err(e),
         }
 
-        if let Some(expr) = step
-            && eval_arith(env, expr).is_none()
-        {
-            break Ok(1);
+        if let Some(expr) = step {
+            match eval_arith(env, expr) {
+                Ok(Some(_)) => {}
+                Ok(None) => break Ok(1),
+                Err(e) => break Err(e),
+            }
         }
     };
 
@@ -334,7 +339,7 @@ pub(crate) fn eval_compound_command(
         } => super::select::eval_select(env, var_name, items.as_deref(), body),
         CompoundCommand::Coproc { name, body } => super::coproc::start(env, name, body),
         CompoundCommand::Case { word, items } => eval_case(env, word, items),
-        CompoundCommand::Arithmetic(expr) => Ok(eval_arithmetic_command(env, expr)),
+        CompoundCommand::Arithmetic(expr) => eval_arithmetic_command(env, expr),
         CompoundCommand::ArithmeticFor {
             init,
             cond,

@@ -259,11 +259,13 @@ fn check_nounset(env: &Environment, name: &str, expansion_type: &ParamExpansion)
     if !env.nounset() || matches!(name, "@" | "*") {
         return Ok(());
     }
+    // An indirection checks the name it reaches, not the pointer; see `operators::apply`.
     if matches!(
         expansion_type,
         ParamExpansion::DefaultValue { .. }
             | ParamExpansion::UseAlternative { .. }
             | ParamExpansion::ErrorIfUnset { .. }
+            | ParamExpansion::Indirect(_)
     ) {
         return Ok(());
     }

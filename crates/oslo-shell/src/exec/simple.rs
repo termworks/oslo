@@ -134,7 +134,10 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // moment the command finished.
     if prefix_assignments.is_empty() {
         let result = run_command_word(env, &cmd_name, &words, &simple.redirections, escape);
-        remember_last_argument(env, &words);
+        // A `[[ … ]]` leaves `$_` as it was.
+        if !testing {
+            remember_last_argument(env, &words);
+        }
         return result;
     }
 

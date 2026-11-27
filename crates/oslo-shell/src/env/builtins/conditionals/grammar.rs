@@ -122,8 +122,16 @@ impl<'a> Parser<'a> {
         if operators::is_binary_op(second) {
             self.binary_operator()
         } else if second == "-a" || second == "-o" {
-            // `[ x -a y ]` — two bare strings joined by a connective.
-            self.expr()
+            // `[ x -a y ]` — two bare strings joined by a connective, whatever they spell:
+            // `[ ! -a / ]` and `[ -z -a -z ]` are both true.
+            let first = !self.need(self.pos)?.is_empty();
+            let third = !self.need(self.pos + 2)?.is_empty();
+            self.pos += 3;
+            Ok(if second == "-a" {
+                first && third
+            } else {
+                first || third
+            })
         } else if self.current() == Some("!") {
             self.pos += 1;
             Ok(!self.two_arguments()?)

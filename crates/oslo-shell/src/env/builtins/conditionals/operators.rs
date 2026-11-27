@@ -129,15 +129,12 @@ pub(super) fn eval_unary(env: &Environment, op: &str, target: &str) -> TestResul
         "-k" => mode_bits() & 0o1000 != 0,
         "-O" => fs::metadata(path).is_ok_and(|m| m.uid() == nix::unistd::geteuid().as_raw()),
         "-G" => fs::metadata(path).is_ok_and(|m| m.gid() == nix::unistd::getegid().as_raw()),
-        // "modified since last read": bash's test.c asks `atime <= mtime`, so a file whose two
-        // stamps are identical — every freshly written file that nothing has read — counts as
-        // modified. A strict `>` reported those as already-read.
+        // "modified since last read": the modification time is strictly later than the access
+        // time, so a file `touch` just stamped twice alike is not.
         "-N" => fs::metadata(path)
-            .is_ok_and(|m| (m.mtime(), m.mtime_nsec()) >= (m.atime(), m.atime_nsec())),
-        // A non-numeric fd is not an error, just never a terminal.
-        "-t" => target
-            .trim()
-            .parse::<i32>()
+            .is_ok_and(|m| (m.mtime(), m.mtime_nsec()) > (m.atime(), m.atime_nsec())),
+        // The operand must be an integer; one past any descriptor is never a terminal.
+        "-t" => i32::try_from(to_int(target)?)
             .is_ok_and(|fd| nix::unistd::isatty(fd).unwrap_or(false)),
         "-z" => target.is_empty(),
         "-n" => !target.is_empty(),

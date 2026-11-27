@@ -146,6 +146,12 @@ fn read(
 fn resolve(env: &mut Environment, reference: &Ref, depth: usize) -> Result<i64> {
     let name = &reference.name;
     let Some(text) = read(env, reference, depth)?.1 else {
+        // `set -u` covers a plain name; an element that is not there is still 0.
+        if reference.index.is_none() && env.nounset() {
+            return Err(ShellError::UnsetParameter(format!(
+                "{name}: unbound variable"
+            )));
+        }
         return Ok(0);
     };
     if let Some(n) = lexer::literal_value(&text) {

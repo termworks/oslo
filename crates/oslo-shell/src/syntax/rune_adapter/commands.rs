@@ -110,7 +110,12 @@ pub(super) fn convert_command(tree: &Tree, command: Command<'_>) -> Result<oslo_
         }
         Command::Conditional(conditional) => {
             let list = convert_cond(tree, conditional.syntax())?;
-            Ok(cond::as_command(list))
+            let mut command = cond::as_command(list);
+            // `[[ … ]] 2>/dev/null` redirects the whole test.
+            if let oslo_ast::Command::Compound { redirections, .. } = &mut command {
+                *redirections = convert_redirects(tree, redirects_of(conditional.syntax()))?;
+            }
+            Ok(command)
         }
         other => {
             let kind = convert_compound(tree, other)?;

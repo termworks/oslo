@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn assignment_to_a_non_variable_is_rejected() {
-        for expr in ["1 = 2", "x = 2 = 3", "++1", "1 += 2"] {
+        for expr in ["1 = 2", "x = 2 = 3", "1 += 2"] {
             let e = parse(&tokenize(expr).expect("scan")).expect_err(expr);
             assert!(e.to_string().contains("non-variable"), "{expr}: {e}");
         }

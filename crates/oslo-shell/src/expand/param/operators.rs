@@ -171,7 +171,17 @@ pub(super) fn apply(
             // **Applied to the second parameter, not the first.** `${!v:-d}` asks whether the
             // thing `v` names is set, so the operator has to run against that one — testing `v`
             // instead would answer about the pointer rather than the target.
-            Some(indirect) => return apply(env, &Target::Param(&indirect), inner),
+            Some(indirect) => {
+                if env.nounset()
+                    && !defines_absence(inner)
+                    && env.get_param(&indirect).is_none()
+                {
+                    return Err(ShellError::UnsetParameter(format!(
+                        "!{name}: unbound variable"
+                    )));
+                }
+                return apply(env, &Target::Param(&indirect), inner);
+            }
         },
     };
 
@@ -187,6 +197,16 @@ fn compile_pattern(env: &mut Environment, word: &Word) -> Result<ShellPattern> {
     Ok(crate::expand::glob::pattern_from_runs(
         &expand_word_to_pattern(env, word)?,
     ))
+}
+
+/// Whether the operator says what an unset parameter means, which exempts it from `set -u`.
+fn defines_absence(expansion_type: &ParamExpansion) -> bool {
+    matches!(
+        expansion_type,
+        ParamExpansion::DefaultValue { .. }
+            | ParamExpansion::UseAlternative { .. }
+            | ParamExpansion::ErrorIfUnset { .. }
+    )
 }
 
 /// Whether the parameter counts as "set" for the `${x-d}` family.
