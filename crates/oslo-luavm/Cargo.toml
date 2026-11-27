@@ -15,8 +15,9 @@ description = "The Lua VM oslo runs on: luna."
 # same oslo revision would compile against whatever had landed that morning. A tag moves when
 # somebody moves it, deliberately, and `cargo update` cannot move it at all.
 #
-# This was a commit hash while luna had no releases. `v0.5.0` is the first, and the exact commit is
-# recorded in `Cargo.lock` either way — so what the tag buys is a name a human can read in a diff.
-luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
+# This was a commit hash while luna had no releases. The exact commit is recorded in `Cargo.lock`
+# either way — so what the tag buys is a name a human can read in a diff. The flake pins the same
+# tag's hash in `outputHashes`, and moves with it.
+luna = { git = "https://github.com/onix-os/luna", tag = "v0.6.1" }
 # The value type the shell speaks. The whole point of this crate is converting between the two.
 oslo-base = { path = "../oslo-base" }

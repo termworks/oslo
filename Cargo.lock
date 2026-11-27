@@ -452,6 +452,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "libredox"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -468,13 +474,14 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "luna"
-version = "0.5.0"
-source = "git+https://github.com/onix-os/luna?tag=v0.5.0#3d8ac2d73a6bf4c078db3c9ad74bd34dcde5a556"
+version = "0.6.1"
+source = "git+https://github.com/onix-os/luna?tag=v0.6.1#adf4682abb5c8c5ef571b9ab5117951a25267cd9"
 dependencies = [
  "ahash",
  "allocator-api2",
  "anyhow",
  "hashbrown 0.14.5",
+ "libm",
  "ottavino-gc-arena",
  "rand",
  "thiserror 1.0.69",
