@@ -212,10 +212,26 @@ fn compile(chars: &[(char, bool)], options: &Options) -> Component {
 
 /// Whether a directory entry named `name` matches, with the pathname-only leading-dot rule.
 fn name_matches(items: &[Item], name: &str, options: &Options) -> bool {
-    if name.starts_with('.') && !options.dotglob && items.first() != Some(&Item::Ch('.')) {
+    if name.starts_with('.') && !options.dotglob && !opens_with_a_dot(items) {
         return false;
     }
     matches_items_with(items, name, options.nocase)
+}
+
+/// Whether the pattern can match a leading dot explicitly: a `.` of its own, one opening an
+/// `extglob` alternative, or one after a `*(…)` or `?(…)` that may match nothing, as
+/// `*(a|c).*` reaches `.hid` in bash.
+fn opens_with_a_dot(items: &[Item]) -> bool {
+    use super::ext::ExtKind;
+    match items.first() {
+        Some(Item::Ch('.')) => true,
+        Some(Item::Ext { kind, alts }) => match kind {
+            ExtKind::Not => false,
+            ExtKind::ZeroOrOne | ExtKind::ZeroOrMore if opens_with_a_dot(&items[1..]) => true,
+            _ => alts.iter().any(|alt| opens_with_a_dot(alt)),
+        },
+        _ => false,
+    }
 }
 
 /// What `readdir` said an entry is, before anything follows a link.
