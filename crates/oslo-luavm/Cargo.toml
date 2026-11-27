@@ -21,3 +21,9 @@ description = "The Lua VM oslo runs on: luna."
 luna = { git = "https://github.com/onix-os/luna", tag = "v0.6.1" }
 # The value type the shell speaks. The whole point of this crate is converting between the two.
 oslo-base = { path = "../oslo-base" }
+
+[features]
+# `jit` — luna's cranelift tier: a hot Lua function is compiled to machine code on its own.
+# Not forwarded by the root crate, so `--all-features` builds leave it out; `make build --type jit`
+# turns it on.
+jit = ["luna/jit"]
