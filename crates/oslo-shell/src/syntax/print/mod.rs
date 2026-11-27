@@ -3,8 +3,8 @@
 //!
 //! The source text is re-parsed with rune, whose tree keeps everything bash's printer reads:
 //! here-document bodies, quoting, `[[ ]]` expressions, `time`, `|&` and unexpanded braces. The
-//! tree is turned into a command tree shaped like bash's own ([`build`]), which is then printed
-//! by a port of bash's `print_cmd.c` ([`emit`]), down to its trailing spaces.
+//! tree is turned into a command tree shaped like bash's own (the `build` module), which is then
+//! printed by a port of bash's `print_cmd.c` (the `emit` module), down to its trailing spaces.
 
 mod build;
 mod emit;
