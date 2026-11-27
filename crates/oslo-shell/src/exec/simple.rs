@@ -21,7 +21,6 @@ pub(crate) mod oneshot;
 mod posix;
 pub(crate) mod trace;
 
-pub(crate) use assign::build_array;
 pub use autocd::set_autocd;
 
 use crate::env::Environment;
@@ -190,7 +189,7 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // that shape for a quoted delimiter, so nothing expands it a second time.
     let redirections = heredocs_expanded(env, &simple.redirections)?;
 
-    env.push_scope();
+    env.push_temp_scope();
     for (name, value) in &prefix_assignments {
         env.set_local_exported_var(name, value);
     }

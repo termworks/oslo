@@ -24,7 +24,7 @@ mod complete;
 mod conditionals;
 pub(crate) mod control;
 mod copy;
-mod declare;
+pub(crate) mod declare;
 mod directories;
 #[cfg(feature = "direnv")]
 mod direnv;
@@ -77,7 +77,7 @@ pub use control::{
     builtin_break, builtin_continue, builtin_eval, builtin_exit, builtin_return, builtin_source,
     builtin_type, format_function, format_word,
 };
-pub use declare::builtin_declare;
+pub use declare::{builtin_declare, builtin_local};
 pub use directories::{builtin_cd, builtin_dirs, builtin_popd, builtin_pushd, builtin_pwd};
 pub use exec::builtin_exec;
 pub use getopts::builtin_getopts;
@@ -103,8 +103,8 @@ pub use suspend::builtin_suspend;
 pub use times::builtin_times;
 pub use ulimit::builtin_ulimit;
 pub use variables::{
-    builtin_alias, builtin_export, builtin_local, builtin_readonly, builtin_set, builtin_shift,
-    builtin_unalias, builtin_unset,
+    builtin_alias, builtin_export, builtin_readonly, builtin_set, builtin_shift, builtin_unalias,
+    builtin_unset,
 };
 
 /// Whether a command's redirections must outlive it — the `exec > "$log" 2>&1` form.

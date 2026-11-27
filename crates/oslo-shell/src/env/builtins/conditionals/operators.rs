@@ -100,6 +100,28 @@ pub(super) fn is_binary_op(op: &str) -> bool {
     )
 }
 
+/// `-v name`: a set variable, a set element (`a[1]`, `m[key]`), a non-empty array (`a[@]`), or a
+/// positional parameter. The special parameters `#`, `@` and the rest are never "set" here.
+fn variable_is_set(env: &Environment, target: &str) -> bool {
+    use crate::env::scope::is_valid_identifier;
+    if let Some((name, subscript)) = crate::env::scope::nameref::split_subscript(target)
+        && is_valid_identifier(name)
+    {
+        return match subscript {
+            "@" | "*" => match (env.get_array(name), env.get_assoc(name)) {
+                (Some(array), _) => !array.is_empty(),
+                (None, Some(map)) => !map.is_empty(),
+                (None, None) => env.get_var(name).is_some(),
+            },
+            _ => env.element_text(name, subscript).is_some(),
+        };
+    }
+    if target.chars().all(|c| c.is_ascii_digit()) {
+        return env.get_param(target).is_some();
+    }
+    is_valid_identifier(target) && env.get_param(target).is_some()
+}
+
 pub(super) fn eval_unary(env: &Environment, op: &str, target: &str) -> TestResult<bool> {
     // The bytes the name really has, not its UTF-8 stand-in: `[ -e "$f" ]` over a glob match.
     let real = oslo_base::lossless::to_os(target);
@@ -139,15 +161,15 @@ pub(super) fn eval_unary(env: &Environment, op: &str, target: &str) -> TestResul
         }
         "-z" => target.is_empty(),
         "-n" => !target.is_empty(),
-        "-v" => env.get_param(target).is_some(),
+        "-v" => variable_is_set(env, target),
         // `-o NAME` reads the same table `set -o` writes, so `[[ -o errexit ]]` cannot disagree
         // with `set -o` about whether errexit is on. An unknown name is false, not an error —
         // that is what bash answers, and it is what makes `[[ -o pipefail ]] || ...` portable to
         // shells lacking the option.
         "-o" => crate::env::options::ShellOption::from_name(target).is_some_and(|o| env.option(o)),
-        // `-R` needs namerefs, which this shell does not have; false is what bash answers for a
-        // variable that is set but not a nameref, and no variable here is ever one.
-        "-R" => false,
+        "-R" => env
+            .variable(target)
+            .is_some_and(|var| var.is_nameref() && var.is_set()),
         other => {
             return Err(TestError::new(format!(
                 "{}: unary operator expected",

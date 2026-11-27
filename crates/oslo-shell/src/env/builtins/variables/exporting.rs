@@ -1,20 +1,20 @@
 //! `export` and `unset`: giving a name the export attribute, and taking a name away entirely.
 
 use super::options;
-use super::quoting::single_quoted;
 use crate::env::announce::{Change, Scope, Source, announce};
+use crate::env::builtins::declare::{self, Spec, print_matching};
 use crate::env::origin_now;
+use crate::env::scope::value::Attrs;
 use crate::env::scope::{Environment, is_valid_identifier};
 use oslo_base::error::{Result, ShellError};
 
-const EXPORT_USAGE: &str = "usage: export [-fnp] [name[=value] ...]";
-const UNSET_USAGE: &str = "usage: unset [-fv] [name ...]";
+const EXPORT_USAGE: &str = "usage: export [-fn] [name[=value] ...] or export -p";
+const UNSET_USAGE: &str = "usage: unset [-f] [-v] [-n] [name ...]";
 
 /// `export [-fnp] [name[=value] ...]`.
 ///
 /// With no operands — and with `-p`, which POSIX makes the explicit spelling of the same thing —
-/// this prints the exported variables as assignments a shell can read back. Sorted, because a
-/// listing whose order changes between two runs of the same script is not output, it is noise.
+/// this prints the exported variables as `declare -x` lines a shell can read back, sorted.
 pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     let opts = match options::parse(args, "fnp") {
         Ok(o) => o,
@@ -22,49 +22,44 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     };
     let operands = &args[opts.operands..];
 
-    if operands.is_empty() {
-        print_listing(env, None);
-        return Ok(0);
-    }
-    if opts.has('p') {
-        print_listing(env, Some(operands));
-        return Ok(0);
-    }
     if opts.has('f') {
-        return Ok(export_functions(env, operands));
+        return Ok(export_functions(env, operands, opts.has('n')));
+    }
+    if operands.is_empty() || opts.has('p') {
+        if operands.is_empty() {
+            print_matching(env, Some("export"), |_, var| var.exported());
+        }
+        return Ok(0);
     }
 
+    let spec = match opts.has('n') {
+        true => Spec {
+            off: Attrs::EXPORT,
+            ..Spec::default()
+        },
+        false => Spec {
+            on: Attrs::EXPORT,
+            ..Spec::default()
+        },
+    };
     let mut status = 0;
     // A name `export` cannot accept is a *utility error*, not just a failed command, and POSIX
     // 2.8.1 ends a non-interactive shell over one because `export` is special. It is tracked
-    // separately from `status` because the other ways this loop fails are not: `export -f
-    // nosuchfn` reports 1 and `bash --posix` carries on. The whole line is still processed first —
-    // bash sets the good names before it gives up.
+    // apart from `status` because the other ways this loop fails are not; the whole line is still
+    // processed first, as bash sets the good names before it gives up.
     let mut bad_name = false;
     for arg in operands {
-        let (name, value) = match arg.find('=') {
-            Some(idx) => (&arg[..idx], Some(&arg[idx + 1..])),
-            None => (arg.as_str(), None),
-        };
+        let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
+        let name = name.strip_suffix('+').unwrap_or(name);
         if !is_valid_identifier(name) {
             super::not_an_identifier(args, "export", arg);
             status = 1;
             bad_name = true;
             continue;
         }
-        // `-n` still performs the assignment: `export -n x=1` sets x and leaves it unexported.
-        let assigned = match value {
-            Some(v) if opts.has('n') => env.set_var(name, v, false),
-            Some(v) => env.set_var(name, v, true),
-            None if opts.has('n') => true,
-            None => env.export_var(name),
-        };
-        if !assigned {
+        if !declare::declare_one(env, "export", arg, &spec, declare::Scope::Visible)? {
             status = 1;
             continue;
-        }
-        if opts.has('n') && !unexport(env, name) {
-            status = 1;
         }
         announce(
             name,
@@ -77,8 +72,7 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
 
     if bad_name {
-        // Folded back to `Ok(1)` by `posix::resolve_builtin_result` outside POSIX mode, so this
-        // is invisible to an ordinary shell — see [`crate::exec::simple::posix`].
+        // Folded back to `Ok(1)` by `posix::resolve_builtin_result` outside POSIX mode.
         return Err(ShellError::utility_error(
             "export: not a valid identifier",
             1,
@@ -87,31 +81,8 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     Ok(status)
 }
 
-/// Print exported variables as `export name='value'`, restricted to `only` when given.
-///
-/// Names that are not valid shell identifiers are skipped. `environ` can hold them — bash's
-/// exported-function entries are called things like `BASH_FUNC_x%%` — but no shell can *parse*
-/// an assignment to one, and a listing that cannot be read back is the bug this replaces.
-fn print_listing(env: &Environment, only: Option<&[String]>) {
-    let vars = env.get_exported_vars();
-    let mut names: Vec<&String> = vars
-        .keys()
-        .filter(|name| is_valid_identifier(name))
-        .filter(|name| only.is_none_or(|sel| sel.iter().any(|s| s == *name)))
-        .collect();
-    names.sort();
-    for name in names {
-        println!("export {}={}", name, single_quoted(&vars[name]));
-    }
-}
-
-/// `export -f name` — check that `name` really is a function, which is all oslo can promise.
-///
-/// bash smuggles functions to children through `environ`; oslo has no such encoding, and does
-/// not need one for its own subshells, which are forked and therefore already hold every
-/// function the parent had. Validating the name is the honest remainder: `export -f nosuch`
-/// must still fail the way it does everywhere else.
-fn export_functions(env: &Environment, names: &[String]) -> i32 {
+/// `export -f name` hands a function to child shells; `export -nf name` takes it back.
+fn export_functions(env: &mut Environment, names: &[String], remove: bool) -> i32 {
     let mut status = 0;
     for name in names {
         if env.get_function(name).is_none() {
@@ -123,42 +94,24 @@ fn export_functions(env: &Environment, names: &[String]) -> i32 {
                 Some("`export -f` exports a shell function; `declare -F` lists the ones there are"),
             );
             status = 1;
+            continue;
+        }
+        match remove {
+            true => env.unexport_function(name),
+            false => {
+                env.export_function(name);
+            }
         }
     }
     status
 }
 
-/// Clear the export attribute of `name`, keeping its value in the shell.
+/// `unset [-fvn] [name ...]`.
 ///
-/// Done by removing and re-setting: [`Environment`] exposes no way to flip the flag in place,
-/// and the removal is needed anyway to get the name out of `environ`, which is the whole point
-/// of `-n`. A read-only variable cannot make the round trip, so it is refused rather than
-/// silently destroyed.
-fn unexport(env: &mut Environment, name: &str) -> bool {
-    let Some(value) = env.get_var(name).map(str::to_string) else {
-        return true;
-    };
-    if env.is_readonly(name) {
-        crate::env::complain(
-            &crate::env::line("export", std::slice::from_ref(&name.to_string())),
-            name,
-            &format!("export: {name}: readonly variable"),
-            "readonly",
-            Some("declared with `readonly`; the name keeps its value for the life of the shell"),
-        );
-        return false;
-    }
-    env.unset_var(name);
-    env.set_var(name, &value, false)
-}
-
-/// `unset [-fv] [name ...]`.
-///
-/// The read-only check is the point of this rewrite. Without it `unset` dropped the *value* while
-/// the read-only mark stayed behind, so the variable ended up permanently empty and permanently
-/// unassignable — a state no shell has and no script can recover from.
+/// A read-only name is refused and keeps its value. `-n` removes a nameref itself rather than the
+/// variable it names, and `name[subscript]` removes one element.
 pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
-    let opts = match options::parse(args, "fv") {
+    let opts = match options::parse(args, "fvn") {
         Ok(o) => o,
         Err(letter) => return Err(options::invalid(args, "unset", letter, UNSET_USAGE)),
     };
@@ -174,8 +127,9 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
     // Whether any name was refused for being read-only. See the note where it is read.
     let mut refused = false;
     for name in &args[opts.operands..] {
-        // `unset 'a[1]'` drops one element and leaves the rest of the array where it was.
-        if let Some(result) = crate::env::builtins::arrays::unset_element(env, name) {
+        if !opts.has('f')
+            && let Some(result) = crate::env::builtins::arrays::unset_element(env, name)
+        {
             if let Err(e) = result {
                 eprintln!("{}unset: {}", origin_now(), e);
                 status = 1;
@@ -190,15 +144,28 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
         // With neither option, a name that is only a function names the function; when both a
         // variable and a function exist the variable goes first, as in bash.
         let target_function = opts.has('f')
-            || (!opts.has('v') && env.get_var(name).is_none() && env.get_function(name).is_some());
+            || (!opts.has('v')
+                && !opts.has('n')
+                && env.variable(name).is_none()
+                && env.get_function(name).is_some());
         if target_function {
-            // Not an error when there is no such function: bash exits 0 for
-            // `unset -f nosuchfn`, so the removal's answer is deliberately discarded. What
-            // matters is that this arm no longer falls through to the *variable* path.
+            if env.is_function_readonly(name) {
+                eprintln!(
+                    "{}unset: {name}: cannot unset: readonly function",
+                    origin_now()
+                );
+                status = 1;
+                continue;
+            }
+            // `unset -f nosuchfn` is not an error in bash either.
             env.remove_function(name);
             continue;
         }
-        if env.is_readonly(name) {
+        let readonly = match opts.has('n') {
+            true => env.variable(name).is_some_and(|v| v.readonly()),
+            false => env.is_readonly(name),
+        };
+        if readonly {
             crate::env::complain(
                 args,
                 name,
@@ -210,14 +177,16 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
             refused = true;
             continue;
         }
-        env.unset_var(name);
+        match opts.has('n') {
+            true => env.unset_binding(name),
+            false => env.unset_var(name),
+        }
         announce(name, Change::Erased, Scope::Shell, Source::Local);
     }
 
     // **After the whole line, not at the name that failed.** `unset` is a special builtin, so a
     // read-only name ends a non-interactive shell in POSIX mode — but bash still unsets the other
-    // names first: `bash -c 'readonly r=1; x=2; unset r x; echo "[$x]"'` prints `[]`. Raising here
-    // keeps both, and outside POSIX `resolve_builtin_result` folds it back to the same status 1.
+    // names first. Outside POSIX `resolve_builtin_result` folds this back to the same status 1.
     if refused {
         return Err(ShellError::utility_error("unset: readonly variable", 1));
     }

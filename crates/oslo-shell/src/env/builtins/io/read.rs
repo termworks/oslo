@@ -200,18 +200,61 @@ fn parse_options(args: &[String]) -> std::result::Result<ReadOptions, OptionErro
 ///
 /// `-N` reads a fixed number of characters, so there is no delimiter to have split on and no
 /// trailing whitespace that a delimiter would have removed — the text is assigned as it stands.
-fn assign_verbatim(env: &mut Environment, names: &[String], text: &str) {
+fn assign_verbatim(env: &mut Environment, names: &[String], text: &str) -> bool {
     match names.split_first() {
         Some((first, rest)) => {
-            env.set_var(first, text, false);
+            let mut assigned = assign_name(env, first, text);
             for name in rest {
-                env.set_var(name, "", false);
+                assigned &= assign_name(env, name, "");
             }
+            assigned
         }
-        None => {
-            env.set_var("REPLY", text, false);
+        None => env.set_var("REPLY", text, false),
+    }
+}
+
+/// Assign one field to a name operand, which may be `name[subscript]`. `false` if a read-only
+/// name or a bad subscript refused it.
+pub(super) fn assign_name(env: &mut Environment, name: &str, value: &str) -> bool {
+    match crate::env::builtins::arrays::assign_target(env, name, value) {
+        Ok(assigned) => {
+            let base = name.split_once('[').map_or(name, |(base, _)| base);
+            assigned || !env.is_readonly(base)
+        }
+        Err(e) => {
+            eprintln!("{}read: {e}", origin_now());
+            false
         }
     }
+}
+
+/// Refuse a name operand that is neither a name nor an element, before any input is read.
+fn names_are_valid(env: &Environment, opts: &ReadOptions) -> bool {
+    for name in &opts.names {
+        if crate::env::builtins::arrays::parse_target(name).is_none() {
+            eprintln!(
+                "{}read: `{}': not a valid identifier",
+                origin_now(),
+                oslo_base::shown::shown(name)
+            );
+            return false;
+        }
+    }
+    if let Some(array) = &opts.array {
+        if !crate::env::scope::is_valid_identifier(array) {
+            eprintln!(
+                "{}read: `{}': not a valid identifier",
+                origin_now(),
+                oslo_base::shown::shown(array)
+            );
+            return false;
+        }
+        if env.is_assoc(array) {
+            eprintln!("{}read: {array}: not an indexed array", origin_now());
+            return false;
+        }
+    }
+    true
 }
 
 /// `read [-rs] [-p prompt] [-n N] [-N N] [-t sec] [-d delim] [-u fd] [-a array] [name…]`
@@ -246,6 +289,10 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
             return Ok(err.status);
         }
     };
+
+    if !names_are_valid(env, &opts) {
+        return Ok(1);
+    }
 
     // The prompt is a terminal courtesy: bash prints nothing when the input is a file or a pipe,
     // and a script that redirects `read` must not find the prompt in its output.
@@ -301,9 +348,11 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
             return Ok(1);
         }
     } else if opts.exact || opts.names.is_empty() {
-        assign_verbatim(env, &opts.names, &line.text());
-    } else {
-        assign_fields(env, &opts.names, &line);
+        if !assign_verbatim(env, &opts.names, &line.text()) {
+            return Ok(1);
+        }
+    } else if !assign_fields(env, &opts.names, &line) {
+        return Ok(1);
     }
 
     Ok(status_of(line.stop))

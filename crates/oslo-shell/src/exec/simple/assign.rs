@@ -8,16 +8,16 @@
 //!   stores the pattern and `x=$(printf 'a\nb')` keeps its newline;
 //! * an *array literal's* elements are the opposite — each element is a word that expands to as
 //!   many fields as it wants, so `a=($list)` and `a=(*.c)` are how a script builds an array;
-//! * a subscript is arithmetic, evaluated when the assignment runs.
+//! * a subscript is arithmetic for an indexed array and a string for an associative one,
+//!   evaluated when the assignment runs.
 
 use super::trace::{assignment_text, list_assignment_text, trace_assignment};
 use crate::env::Environment;
 use crate::env::announce::{Change, Scope, Source};
+use crate::env::builtins::arrays;
 use crate::env::builtins::format_word;
-use crate::env::scope::ShellArray;
-use crate::expand::arithmetic::eval_arithmetic;
-use crate::expand::{expand_word, expand_word_to_string};
-use oslo_base::ast::{ArrayElement, Assignment, AssignmentTarget, AssignmentValue};
+use crate::expand::expand_word_to_string;
+use oslo_base::ast::{Assignment, AssignmentTarget, AssignmentValue};
 use oslo_base::error::{Result, ShellError};
 
 /// What one assignment did.
@@ -59,12 +59,16 @@ pub(super) fn apply_assignment(env: &mut Environment, assign: &Assignment) -> Re
     Ok(outcome)
 }
 
-/// An empty operand is a zero, so `()+(4)` — which is not an expression — never gets built.
-fn or_zero(text: &str) -> &str {
-    match text.trim().is_empty() {
-        true => "0",
-        false => text,
-    }
+/// A subscript that names no element, or one whose arithmetic fails, abandons the command the way
+/// a refused assignment does: reported here, then unwound as [`ShellError::Abandoned`].
+fn abandoning<T>(env: &Environment, result: Result<T>) -> Result<T> {
+    result.map_err(|e| match e {
+        ShellError::ExpansionError(message) => {
+            eprintln!("{}{message}", env.origin());
+            ShellError::Abandoned
+        }
+        other => other,
+    })
 }
 
 fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
@@ -73,41 +77,23 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
             let value = expand_word_to_string(env, word)?;
             // Traced once expanded and before it is made, as bash traces it.
             trace_assignment(env, &assignment_text(name, assign.append, &value));
-            if assign.append {
-                // `x+=b` on an *array* appends an element, as bash does; on a scalar it
-                // concatenates. Which one it is depends on what the name already holds.
-                if env.get_array(name).is_some() {
-                    let ok = env.append_array_element(name, &value);
-                    return Ok(Outcome::new(ok));
-                }
-                // **On an integer name `+=` adds.** `declare -i q=6; q+=4` is 10, not the string
-                // `64` — and concatenating first would not merely look wrong, it would then be
-                // *evaluated* as the number sixty-four by the assignment below.
-                if env.is_integer(name) {
-                    let existing = or_zero(env.get_var(name).unwrap_or_default());
-                    let sum = format!("({existing})+({})", or_zero(&value));
-                    let ok = env.set_var(name, &sum, false);
-                    return Ok(Outcome::new(ok));
-                }
-                let value = format!("{}{}", env.get_var(name).unwrap_or_default(), value);
-                let ok = env.set_var(name, &value, false);
-                return Ok(Outcome::new(ok));
-            }
-            let ok = env.set_var(name, &value, false);
+            // `x+=b` extends `$x`, which on an array is element 0; on an integer name it adds.
+            let ok = match assign.append {
+                true => arrays::append_scalar(env, name, &value),
+                false => env.set_var(name, &value, false),
+            };
             Ok(Outcome::new(ok))
         }
 
         (AssignmentTarget::Element { name, index }, AssignmentValue::Scalar(word)) => {
             let lhs = format!("{name}[{}]", format_word(index));
-            let index = eval_subscript(env, index)?;
-            let mut value = expand_word_to_string(env, word)?;
+            let text = expand_word_to_string(env, index)?;
+            let key = arrays::key_for(env, name, &text);
+            let key = abandoning(env, key)?;
+            let value = expand_word_to_string(env, word)?;
             trace_assignment(env, &assignment_text(&lhs, assign.append, &value));
-            if assign.append {
-                let existing = env.get_array(name).and_then(|a| a.get(index)).unwrap_or("");
-                value = format!("{existing}{value}");
-            }
-            let ok = env.set_array_element(name, index, &value);
-            Ok(Outcome::new(ok))
+            let written = arrays::write_element(env, name, key, &value, assign.append);
+            Ok(Outcome::new(abandoning(env, written)?))
         }
 
         (AssignmentTarget::Name(name), AssignmentValue::Array(elements)) => {
@@ -119,13 +105,12 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
                     None => format_word(&e.value),
                 })
                 .collect();
-            let array = build_array(env, name, elements, assign.append)?;
+            let items = arrays::literal_items_from_ast(env, elements)?;
             let list = written.join(" ");
             trace_assignment(env, &list_assignment_text(name, assign.append, &list));
-            // Inside a function `a=(…)` is still global unless `local`/`declare` said otherwise,
-            // which is what `set_array` does; `set_local_array` is the declaration builtins' path.
-            let ok = env.set_array(name, array);
-            Ok(Outcome::new(ok))
+            // Inside a function `a=(…)` is still global unless `local`/`declare` said otherwise.
+            let assigned = arrays::assign_literal(env, name, items, assign.append);
+            Ok(Outcome::new(abandoning(env, assigned)?))
         }
 
         // `a[0]=(1 2)` — bash rejects this too ("cannot assign list to array member"). Refusing is
@@ -134,54 +119,6 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
             ShellError::ExpansionError(format!("{name}: cannot assign a list to an array element")),
         ),
     }
-}
-
-/// Build the array an `a=(…)` or `a+=(…)` literal denotes.
-///
-/// Unindexed elements go to the next free index, so `a=(x [5]=y z)` puts `z` at 6 — bash's rule,
-/// and the reason the running index is taken from the array rather than from the element count.
-pub(crate) fn build_array(
-    env: &mut Environment,
-    name: &str,
-    elements: &[ArrayElement],
-    append: bool,
-) -> Result<ShellArray> {
-    let mut array = if append {
-        env.get_array(name).cloned().unwrap_or_default()
-    } else {
-        ShellArray::default()
-    };
-
-    for element in elements {
-        match &element.index {
-            Some(index) => {
-                let index = eval_subscript(env, index)?;
-                array.set(index, expand_word_to_string(env, &element.value)?);
-            }
-            // Not `expand_word_to_string`: an element of an array literal is an ordinary word in
-            // list context, so `a=($list)` splits and `a=(*.c)` globs, both into separate
-            // elements. That is the difference between an array literal and a scalar assignment.
-            None => {
-                for field in expand_word(env, &element.value)? {
-                    array.push(field);
-                }
-            }
-        }
-    }
-
-    Ok(array)
-}
-
-/// Evaluate a subscript as arithmetic: `a[i+1]=x` writes where `i+1` points when it runs.
-fn eval_subscript(env: &mut Environment, word: &oslo_base::ast::Word) -> Result<i64> {
-    let text = expand_word_to_string(env, word)?;
-    let text = text.trim();
-    if text.is_empty() {
-        return Err(ShellError::ExpansionError(
-            "bad array subscript".to_string(),
-        ));
-    }
-    eval_arithmetic(env, text)
 }
 
 #[cfg(test)]

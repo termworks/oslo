@@ -389,7 +389,15 @@ pub(crate) fn eval_compound_command(
             let result = 'items: {
                 for item in item_words {
                     header_hooks(env, &header, &header);
-                    env.set_var(var_name, &item, false);
+                    // A nameref loop variable is pointed at each word in turn rather than
+                    // assigned through; a name that refuses the word ends the loop with 1.
+                    let bound = match env.variable(var_name).is_some_and(|v| v.is_nameref()) {
+                        true => env.set_reference(var_name, &item),
+                        false => env.set_var(var_name, &item, false),
+                    };
+                    if !bound {
+                        break 'items Ok(1);
+                    }
                     match run_loop_body(env, body, &mut status) {
                         LoopStep::Next => {}
                         LoopStep::Stop => break 'items Ok(status),

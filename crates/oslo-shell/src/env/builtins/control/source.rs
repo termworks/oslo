@@ -118,6 +118,6 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     // `return` ends a sourced script early and supplies its status.
     match result {
         Err(ShellError::Return(code)) => Ok(code),
-        other => other,
+        other => crate::exec::absorb_abandoned(env, other),
     }
 }

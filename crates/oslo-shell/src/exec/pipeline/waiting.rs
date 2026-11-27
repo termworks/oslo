@@ -46,6 +46,9 @@ pub fn report_error_status(err: ShellError) -> i32 {
     if let Some(status) = err.control_flow_status() {
         return status;
     }
+    if matches!(err, ShellError::Abandoned) {
+        return 1;
+    }
     eprintln!("oslo: {}", err);
     err.failure_status()
 }
@@ -97,6 +100,19 @@ pub(crate) fn announce_death(env: &Environment, of: Option<Pid>, command: impl F
         eprintln!("{name:<27}{core}{text}");
     } else {
         eprintln!("{}{pid} {name:<27}{core}{text}", env.origin());
+    }
+}
+
+/// End `eval` or `source` with status 1 where a refused assignment or a `failglob` miss abandoned
+/// the text it was running, as bash does, rather than letting the abandonment reach the caller.
+pub fn absorb_abandoned(env: &Environment, result: Result<i32>) -> Result<i32> {
+    match result {
+        Err(ShellError::Abandoned) => Ok(1),
+        Err(e @ ShellError::NoMatch(_)) => {
+            eprintln!("{}{e}", env.origin());
+            Ok(1)
+        }
+        other => other,
     }
 }
 

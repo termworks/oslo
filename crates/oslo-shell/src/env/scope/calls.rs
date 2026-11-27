@@ -103,10 +103,11 @@ impl Environment {
             .into_iter()
             .chain([("FUNCNAME", names)])
         {
-            self.vars.remove(name);
             match array {
-                Some(array) => self.arrays.insert(name.to_string(), array),
-                None => self.arrays.remove(name),
+                Some(array) => self.publish_array(name, array),
+                None => {
+                    self.vars.remove(name);
+                }
             };
         }
     }

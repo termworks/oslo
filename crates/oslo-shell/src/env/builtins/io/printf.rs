@@ -44,7 +44,7 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
     };
 
     if let Some(name) = into
-        && !crate::env::scope::is_valid_identifier(name)
+        && crate::env::builtins::arrays::parse_target(name).is_none()
     {
         crate::env::complain(
             args,
@@ -107,8 +107,14 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
             bytes.truncate(nul);
         }
         let value = lossless::encode(std::os::unix::ffi::OsStrExt::from_bytes(&bytes));
-        env.set_var(name, &value, false);
-        return Ok(status);
+        return match crate::env::builtins::arrays::assign_target(env, name, &value) {
+            Ok(true) => Ok(status),
+            Ok(false) => Ok(1),
+            Err(e) => {
+                eprintln!("{}printf: {e}", origin_now());
+                Ok(1)
+            }
+        };
     }
 
     // A failed write outranks the formatting status.

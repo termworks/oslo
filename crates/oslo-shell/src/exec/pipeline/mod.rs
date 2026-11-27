@@ -48,7 +48,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod waiting;
 pub(crate) use waiting::{announce_death, forget_death, note_death, quiet_deaths, wait_for_child};
 pub use waiting::{
-    is_interactive, report_error_status, set_interactive, status_of, wait_for_status,
+    absorb_abandoned, is_interactive, report_error_status, set_interactive, status_of,
+    wait_for_status,
 };
 
 /// Run a command list, and absorb an interrupt that unwound all the way out of it.
@@ -148,6 +149,12 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
                     abandoned = Some(item.line);
                     env.last_status = 2;
                     2
+                }
+                // A refused assignment abandons the line the same way; its reason is printed.
+                Err(ShellError::Abandoned) if outermost => {
+                    abandoned = Some(item.line);
+                    env.last_status = 1;
+                    1
                 }
                 other => other?,
             };
@@ -416,6 +423,10 @@ pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {
             result
         }
         Command::FunctionDef { name, body, source } => {
+            if env.is_function_readonly(name) {
+                eprintln!("{}{name}: readonly function", env.origin());
+                return Ok(1);
+            }
             env.set_function(name, *body.clone());
             env.set_function_source(name, source.0.clone());
             Ok(0)

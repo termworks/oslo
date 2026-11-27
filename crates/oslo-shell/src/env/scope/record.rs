@@ -127,11 +127,11 @@ impl Environment {
         // The array is rebuilt only when the numbers moved. Publishing it unconditionally meant a
         // `Vec`, a `"PIPESTATUS"` `String`, a `BTreeMap` and a `String` per stage after every
         // command — and a run of successful commands reports the same `[0]` every time.
-        if self.pipeline_status == statuses && self.arrays.contains_key("PIPESTATUS") {
+        if self.pipeline_status == statuses && self.get_array("PIPESTATUS").is_some() {
             return;
         }
-        self.arrays.insert(
-            "PIPESTATUS".to_string(),
+        self.publish_array(
+            "PIPESTATUS",
             ShellArray::from_values(statuses.iter().map(i32::to_string)),
         );
         self.pipeline_status = statuses;

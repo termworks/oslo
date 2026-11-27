@@ -36,8 +36,10 @@ fn exporting_a_nul_bearing_value_is_refused() {
     let mut env = Environment::new();
     // Not exported, so this never touches `environ` — the value only becomes a problem when
     // `export` tries to publish it.
-    env.vars
-        .insert("NUL_EXPORT".to_string(), ("a\0b".to_string(), false));
+    env.vars.insert(
+        "NUL_EXPORT".to_string(),
+        super::Var::scalar("a\0b", super::Attrs::empty()),
+    );
     assert!(!env.export_var("NUL_EXPORT"));
     assert!(!env.get_exported_vars().contains_key("NUL_EXPORT"));
 }

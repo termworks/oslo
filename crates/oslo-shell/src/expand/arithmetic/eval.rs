@@ -130,12 +130,34 @@ fn read(
     let Some(index) = &reference.index else {
         return Ok((None, env.get_param(&reference.name)));
     };
+    if let Some(key) = assoc_key(env, reference, index) {
+        let text = env
+            .get_assoc(&reference.name)
+            .and_then(|map| map.get(&key))
+            .map(str::to_string);
+        return Ok((None, text));
+    }
     let index = eval(env, index, depth)?;
-    let text = env
-        .get_array(&reference.name)
-        .and_then(|array| array.get(index))
-        .map(str::to_string);
+    // A scalar is element 0 of itself, as `${x[0]}` already reads it.
+    let text = match env.get_array(&reference.name) {
+        Some(array) => array.get(index).map(str::to_string),
+        None if index == 0 => env.get_var(&reference.name).map(str::to_string),
+        None => None,
+    };
     Ok((Some(index), text))
+}
+
+/// The key a subscript names when the reference is an associative array: the word written there,
+/// rather than its arithmetic value.
+fn assoc_key(env: &Environment, reference: &Ref, index: &Expr) -> Option<String> {
+    if !env.is_assoc(&reference.name) {
+        return None;
+    }
+    match index {
+        Expr::Var(Ref { name, index: None }) => Some(name.clone()),
+        Expr::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// Read a reference as a number.
@@ -181,10 +203,15 @@ fn store(env: &mut Environment, reference: &Ref, value: i64, depth: usize) -> Re
         None => {
             env.set_var(&reference.name, &text, false);
         }
-        Some(index) => {
-            let index = eval(env, index, depth)?;
-            env.set_array_element(&reference.name, index, &text);
-        }
+        Some(index) => match assoc_key(env, reference, index) {
+            Some(key) => {
+                env.set_assoc_element(&reference.name, &key, &text);
+            }
+            None => {
+                let index = eval(env, index, depth)?;
+                env.set_array_element(&reference.name, index, &text);
+            }
+        },
     }
     Ok(value)
 }

@@ -1,7 +1,12 @@
 mod array;
+mod assoc;
+mod attrs;
 mod calls;
+mod elements;
 mod environ;
 mod frames;
+mod functions;
+pub mod nameref;
 mod names;
 mod options;
 mod optvars;
@@ -13,6 +18,7 @@ mod special;
 #[cfg(test)]
 mod tests;
 mod traps;
+pub mod value;
 mod vars;
 
 use crate::env::nesting::{DepthGuard, MAX_FUNCTION_DEPTH, MAX_SCRIPT_DEPTH};
@@ -26,8 +32,10 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use value::{Attrs, Var};
 
 pub use array::{ShellArray, array_literal_body};
+pub use assoc::AssocArray;
 pub use calls::{CallFrame, FrameKind};
 pub use registry::{BuiltinFn, is_special_builtin};
 pub use traps::TrapFrame;
@@ -64,10 +72,9 @@ pub fn is_valid_identifier(name: &str) -> bool {
 }
 
 pub struct Environment {
-    vars: HashMap<String, (String, bool)>, // (value, is_exported)
-    /// Indexed arrays, in the same namespace as [`Self::vars`]: a name is a scalar or an array,
-    /// never both. See the `array` submodule for why the two tables stay separate.
-    arrays: HashMap<String, ShellArray>,
+    /// The binding every name resolves to now: scalar, indexed or associative, with its
+    /// attributes. What locals shadowed lives in [`Self::scope_stack`].
+    vars: HashMap<String, Var>,
     positional: Vec<String>,
     pub last_status: i32,
     pub pid: u32,
@@ -120,17 +127,10 @@ pub struct Environment {
     /// parent had. Keeping the strings here separates the two: nothing ever *runs* from this map,
     /// and [`Self::listable_traps`] is the only thing that reads it.
     inherited_traps: HashMap<String, String>,
-    readonly_vars: HashSet<String>,
-    /// Names declared with `-i`, whose assignments are evaluated as arithmetic. See
-    /// [`Environment::set_integer`].
-    integer_vars: HashSet<String>,
-    /// Names `export` was told about before they existed.
-    ///
-    /// `export V` with no value marks `V` for export and leaves it **unset**: bash gives an empty
-    /// `${V+set}` and no `V=` in `env`, and a later `V=1` is exported. Creating it empty instead
-    /// made it answer "set" to every test, and put a spurious `V=` in every child's environment.
-    /// [`Self::set_var`] spends the intention when the name is finally assigned.
-    pending_exports: HashSet<String>,
+    /// Functions `export -f` marked, handed to children as `BASH_FUNC_name%%`.
+    exported_functions: HashSet<String>,
+    /// Functions `readonly -f` marked, which cannot be redefined or unset.
+    readonly_functions: HashSet<String>,
     dir_stack: Vec<PathBuf>,
     scope_stack: Vec<ScopeFrame>,
     /// How many loops are currently executing in this shell.
@@ -192,9 +192,14 @@ impl Environment {
         // `String` is UTF-8 — and replacing the byte would hand a child a value that is neither
         // what was set nor what it expects. Skipped, the variable is simply not oslo's to read, and
         // the real bytes still reach every child through the environment `execve` inherits.
+        let mut imported_functions = Vec::new();
         for (key, value) in env::vars_os() {
             if let (Some(key), Some(value)) = (key.to_str(), value.to_str()) {
-                vars.insert(key.to_string(), (value.to_string(), true));
+                if let Some(name) = functions::exported_function_name(key, value) {
+                    imported_functions.push((name.to_string(), value.to_string()));
+                    continue;
+                }
+                vars.insert(key.to_string(), Var::scalar(value, Attrs::EXPORT));
             }
         }
 
@@ -207,7 +212,6 @@ impl Environment {
 
         let mut env_struct = Self {
             vars,
-            arrays: HashMap::new(),
             positional: Vec::new(),
             last_status: 0,
             pid,
@@ -226,9 +230,8 @@ impl Environment {
             procsubs: Vec::new(),
             signal_traps: HashMap::new(),
             inherited_traps: HashMap::new(),
-            readonly_vars: HashSet::new(),
-            integer_vars: HashSet::new(),
-            pending_exports: HashSet::new(),
+            exported_functions: HashSet::new(),
+            readonly_functions: HashSet::new(),
             dir_stack: Vec::new(),
             scope_stack: Vec::new(),
             loop_depth: 0,
@@ -255,6 +258,7 @@ impl Environment {
         env_struct.seed_compatibility_vars();
         env_struct.seed_special_vars();
         env_struct.seed_option_vars();
+        env_struct.import_functions(&imported_functions);
         env_struct
     }
 
@@ -344,53 +348,6 @@ impl Environment {
 
     pub fn exit_nested_script(&mut self) {
         self.script_depth.exit()
-    }
-
-    pub fn set_readonly(&mut self, name: &str) {
-        self.readonly_vars.insert(name.to_string());
-    }
-
-    pub fn is_readonly(&self, name: &str) -> bool {
-        self.readonly_vars.contains(name)
-    }
-
-    /// Mark `name` read-only *for the innermost scope*, as `local -r` and `declare -r` do.
-    ///
-    /// **The mark leaves with the scope.** It used to go into the process-wide set with nothing to
-    /// take it out again, so `f() { local -r x=1; }; f` left `x` frozen for the rest of the
-    /// session — a name that could never be assigned and had no value under it. bash scopes the
-    /// mark for `local` and `declare` and keeps it global for the `readonly` builtin, which is why
-    /// this is a second entry point rather than a change to [`Self::set_readonly`].
-    ///
-    /// At the top level there is no frame to leave, so this is the global mark.
-    pub fn set_readonly_here(&mut self, name: &str) {
-        // Already read-only means this scope is not what made it so, and must not release it.
-        if !self.readonly_vars.contains(name) {
-            self.note_scope_readonly(name);
-        }
-        self.set_readonly(name);
-    }
-
-    /// Drop the read-only mark. Only [`Environment::pop_scope`] calls this.
-    pub(super) fn release_readonly(&mut self, name: &str) {
-        self.readonly_vars.remove(name);
-    }
-
-    /// Mark `name` as holding an integer: every assignment to it is arithmetic from now on.
-    ///
-    /// A name set, the way `readonly` is one, because the attribute belongs to the *name* and has
-    /// to outlive any particular value — `local -i n; n=4*5` declares first and assigns after.
-    pub fn set_integer(&mut self, name: &str) {
-        self.integer_vars.insert(name.to_string());
-    }
-
-    pub fn is_integer(&self, name: &str) -> bool {
-        self.integer_vars.contains(name) || crate::env::dynamic::is_integer(name)
-    }
-
-    /// Drop the attribute, for `declare +i`.
-    pub fn clear_integer(&mut self, name: &str) {
-        self.integer_vars.remove(name);
     }
 
     pub fn push_dir(&mut self, path: PathBuf) {

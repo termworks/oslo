@@ -14,13 +14,16 @@
 
 mod array;
 pub mod case;
+mod indirect;
 mod lists;
 mod operators;
 mod pattern;
 mod positional;
 pub(crate) mod transform;
+mod whole;
 
 use crate::env::Environment;
+use crate::env::builtins::arrays::Key;
 use crate::expand::word::{Field, Origin, Run};
 use oslo_base::ast::ParamExpansion;
 use oslo_base::error::{Result, ShellError};
@@ -35,8 +38,8 @@ pub use array::expand_array_ref;
 pub(crate) enum Target<'a> {
     /// A parameter by name: a variable, a positional, or a special parameter.
     Param(&'a str),
-    /// One element of an indexed array, with its subscript already evaluated.
-    Element { name: &'a str, index: i64 },
+    /// One element, with its subscript already evaluated: an index, or an associative key.
+    Element { name: &'a str, key: Key },
 }
 
 impl Target<'_> {
@@ -44,12 +47,15 @@ impl Target<'_> {
     fn value(&self, env: &Environment) -> Option<String> {
         match self {
             Self::Param(name) => env.get_param(name),
-            // **A scalar is an array of one.** `v=x; echo ${v[0]}` answers `x` in bash, and
-            // `whole_array` already implements that identity for `${v[@]}` — its comment even
-            // claims this function does too. It did not: `${v[0]}` expanded to nothing, `${#v[0]}`
-            // to 0, and under `set -u` the whole shell exited. Any script indexing a name that
-            // happens to hold a scalar read empty and said nothing about it.
-            Self::Element { name, index } => match env.get_array(name) {
+            Self::Element {
+                name,
+                key: Key::Name(key),
+            } => env.get_assoc(name)?.get(key).map(str::to_string),
+            // **A scalar is an array of one.** `v=x; echo ${v[0]}` answers `x` in bash.
+            Self::Element {
+                name,
+                key: Key::Index(index),
+            } => match env.get_array(name) {
                 Some(array) => array.get(*index).map(str::to_string),
                 None if *index == 0 => env.get_var(name).map(str::to_string),
                 None => None,
@@ -80,8 +86,17 @@ impl Target<'_> {
             Self::Param(name) => {
                 env.set_var(name, text, false);
             }
-            Self::Element { name, index } => {
+            Self::Element {
+                name,
+                key: Key::Index(index),
+            } => {
                 env.set_array_element(name, *index, text);
+            }
+            Self::Element {
+                name,
+                key: Key::Name(key),
+            } => {
+                env.set_assoc_element(name, key, text);
             }
         }
         Ok(())
@@ -91,7 +106,14 @@ impl Target<'_> {
     fn display(&self) -> String {
         match self {
             Self::Param(name) => (*name).to_string(),
-            Self::Element { name, index } => format!("{name}[{index}]"),
+            Self::Element {
+                name,
+                key: Key::Index(index),
+            } => format!("{name}[{index}]"),
+            Self::Element {
+                name,
+                key: Key::Name(key),
+            } => format!("{name}[{key}]"),
         }
     }
 }
@@ -125,6 +147,12 @@ pub fn expand_param(
         if let Some(fields) = positional::operator_fields(env, name, expansion_type, in_quotes)? {
             return Ok(fields);
         }
+    }
+
+    if let ParamExpansion::Indirect(inner) = expansion_type
+        && let Some(fields) = indirect::fields(env, name, inner, in_quotes)?
+    {
+        return Ok(fields);
     }
 
     if let Some(fields) = payload_fields(env, name, expansion_type, in_quotes)? {

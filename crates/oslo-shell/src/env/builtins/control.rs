@@ -353,7 +353,7 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     if !super::process::in_trap() {
         env.set_bash_command(command);
     }
-    result
+    crate::exec::absorb_abandoned(env, result)
 }
 
 #[cfg(test)]

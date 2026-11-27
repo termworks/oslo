@@ -148,6 +148,8 @@ pub(super) fn apply(
             // is the ordinary case every hook helper is written around. stdenv's `runHook`,
             // `runPhase` and `substituteStream` all reach this on their first line.
             None if name.chars().all(|c| c.is_ascii_digit()) => String::new(),
+            // A declared name with no value — `declare x`, an array with no element 0 — is empty.
+            None if env.variable(&name).is_some() => String::new(),
             None => {
                 return Err(ShellError::ExpansionError(format!(
                     "{name}: invalid indirect expansion"
@@ -392,6 +394,28 @@ pub(super) fn slice_list(
     let (from, to) = window(values.len(), start, count)
         .map_err(|n| ShellError::ExpansionError(format!("{n}: substring expression < 0")))?;
     Ok(values[from..to].to_vec())
+}
+
+/// A slice's offset and count, evaluated: `${a[@]:offset:length}` on an array. A negative length
+/// is fatal for a list, as [`window`] explains.
+pub(super) fn slice_operands(
+    env: &mut Environment,
+    offset: &Word,
+    length: Option<&Word>,
+) -> Result<(i64, Option<usize>)> {
+    let start = eval_operand(env, offset)?;
+    let count = match length {
+        Some(word) => match eval_operand(env, word)? {
+            n if n < 0 => {
+                return Err(ShellError::ExpansionError(format!(
+                    "{n}: substring expression < 0"
+                )));
+            }
+            n => Some(n as usize),
+        },
+        None => None,
+    };
+    Ok((start, count))
 }
 
 /// The half-open element range `offset` and `length` select out of a list of `len` items.

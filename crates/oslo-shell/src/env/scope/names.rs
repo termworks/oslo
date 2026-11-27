@@ -50,11 +50,13 @@ impl Environment {
         names
     }
 
+    /// Define `name`, keeping an `export -f` mark and handing children the new definition.
     pub fn set_function(&mut self, name: &str, body: Command) {
         self.functions.insert(name.to_string(), Arc::new(body));
         let file = self.defining_file();
         self.function_files.insert(name.to_string(), file);
         self.function_sources.remove(name);
+        self.publish_function(name);
     }
 
     /// Remember the text `name` was defined with, for printing it back as bash does.
@@ -63,6 +65,7 @@ impl Environment {
             Some(text) => self.function_sources.insert(name.to_string(), text),
             None => self.function_sources.remove(name),
         };
+        self.publish_function(name);
     }
 
     /// The definition of `name` as `declare -f` prints it: bash's layout from the source text
@@ -91,6 +94,7 @@ impl Environment {
     pub fn remove_function(&mut self, name: &str) -> bool {
         self.function_files.remove(name);
         self.function_sources.remove(name);
+        self.forget_function_attrs(name);
         self.functions.remove(name).is_some()
     }
 

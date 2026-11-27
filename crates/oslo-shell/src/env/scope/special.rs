@@ -3,6 +3,7 @@
 //!
 //! Each stays special until it is `unset`, which [`crate::env::dynamic::retired`] records.
 
+use super::value::{Attrs, Var};
 use super::{Environment, ShellArray};
 use crate::env::dynamic;
 
@@ -84,8 +85,8 @@ impl Environment {
         if dynamic::retired("DIRSTACK") {
             return;
         }
-        let here = match self.vars.get("PWD") {
-            Some((pwd, _)) if !pwd.is_empty() => pwd.clone(),
+        let here = match self.vars.get("PWD").and_then(Var::text) {
+            Some(pwd) if !pwd.is_empty() => pwd.to_string(),
             _ => std::env::current_dir()
                 .map(|d| d.to_string_lossy().into_owned())
                 .unwrap_or_default(),
@@ -97,17 +98,14 @@ impl Environment {
                 .rev()
                 .map(|path| path.to_string_lossy().into_owned()),
         );
-        self.vars.remove("DIRSTACK");
-        self.arrays
-            .insert("DIRSTACK".to_string(), ShellArray::from_values(entries));
+        self.publish_array("DIRSTACK", ShellArray::from_values(entries));
     }
 
     /// The per-process state a forked child refreshes: `$BASHPID`, and `$BASH_SUBSHELL` when
     /// `deeper` says this child counts as one more level.
     pub(super) fn refresh_subshell_vars(&mut self, deeper: bool) {
         if !dynamic::retired("BASHPID") {
-            self.vars
-                .insert("BASHPID".to_string(), (self.current_pid.to_string(), false));
+            self.store_special("BASHPID", &self.current_pid.to_string(), false);
         }
         if deeper && !dynamic::retired("BASH_SUBSHELL") {
             let level = self
@@ -122,13 +120,11 @@ impl Environment {
     /// Set the special variables a new shell starts with.
     pub(super) fn seed_special_vars(&mut self) {
         let pid = self.current_pid.to_string();
-        self.vars.insert("BASHPID".to_string(), (pid, false));
+        self.store_special("BASHPID", &pid, false);
         self.store_special("BASH_SUBSHELL", "0", self.is_exported("BASH_SUBSHELL"));
-        self.vars
-            .insert("HISTCMD".to_string(), ("0".to_string(), false));
+        self.store_special("HISTCMD", "0", false);
         self.vars.remove("GROUPS");
-        self.arrays
-            .insert("GROUPS".to_string(), ShellArray::from_values(groups()));
+        self.publish_array("GROUPS", ShellArray::from_values(groups()));
         self.publish_dirstack();
     }
 
@@ -137,16 +133,23 @@ impl Environment {
     pub fn publish_startup_args(&mut self) {
         let args: Vec<String> = self.positional.iter().rev().cloned().collect();
         let count = args.len().to_string();
-        self.arrays
-            .insert("BASH_ARGV".to_string(), ShellArray::from_values(args));
-        self.arrays
-            .insert("BASH_ARGC".to_string(), ShellArray::from_values([count]));
+        self.publish_array("BASH_ARGV", ShellArray::from_values(args));
+        self.publish_array("BASH_ARGC", ShellArray::from_values([count]));
     }
 
-    /// Write `name` straight into the table, past the attribute checks.
+    /// Write `name` straight into the table, past the attribute checks, keeping its attributes.
     fn store_special(&mut self, name: &str, value: &str, exported: bool) {
-        self.vars
-            .insert(name.to_string(), (value.to_string(), exported));
+        let attrs = match exported {
+            true => Attrs::EXPORT,
+            false => Attrs::empty(),
+        };
+        let kept = self
+            .vars
+            .get(name)
+            .map_or(attrs, |var| var.attrs.union(attrs));
+        let mut var = Var::scalar(value, kept);
+        var.attrs.remove(Attrs::UNSET);
+        self.vars.insert(name.to_string(), var);
         if exported {
             super::environ_set(name, value);
         }

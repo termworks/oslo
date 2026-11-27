@@ -29,8 +29,8 @@ struct Options {
     delim: u8,
     /// `-n`: stop after this many records. 0 means "all of them".
     count: usize,
-    /// `-O`: the index the first record is stored at.
-    origin: i64,
+    /// `-O`: the index the first record is stored at. Given, the array keeps what it had.
+    origin: Option<i64>,
     /// `-s`: discard this many records before storing any.
     skip: usize,
     /// `-t`: strip the delimiter from each record.
@@ -47,7 +47,7 @@ impl Default for Options {
         Options {
             delim: b'\n',
             count: 0,
-            origin: 0,
+            origin: None,
             skip: 0,
             strip: false,
             fd: 0,
@@ -112,13 +112,25 @@ pub fn builtin_mapfile(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     };
 
+    if env.is_assoc(name) {
+        eprintln!("{}mapfile: {name}: not an indexed array", origin_now());
+        return Ok(1);
+    }
+    // Without `-O` the array is emptied first; with it, the records overwrite from the origin on
+    // and every other element stays.
+    let mut array = match opts.origin {
+        Some(_) => env
+            .get_array(name)
+            .cloned()
+            .unwrap_or_else(|| ShellArray::from_values(env.get_var(name).map(str::to_string))),
+        None => ShellArray::default(),
+    };
+    let origin = opts.origin.unwrap_or(0);
     if let Some(callback) = &opts.callback {
         run_callbacks(env, callback, &opts, &records)?;
     }
-
-    let mut array = ShellArray::default();
     for (offset, record) in records.into_iter().enumerate() {
-        array.set(opts.origin.saturating_add(offset as i64), record);
+        array.set(origin.saturating_add(offset as i64), record);
     }
     // A read-only name is refused by the store, which reports it; the failure is `mapfile`'s.
     Ok(i32::from(!env.set_array(name, array)))
@@ -135,7 +147,7 @@ fn run_callbacks(
         if (offset + 1) % opts.quantum != 0 {
             continue;
         }
-        let index = opts.origin.saturating_add(offset as i64);
+        let index = opts.origin.unwrap_or(0).saturating_add(offset as i64);
         let quoted = format!("'{}'", record.replace('\'', "'\\''"));
         let line = format!("{callback} {index} {quoted}");
         super::builtin_eval(env, &["eval".to_string(), line])?;
@@ -202,7 +214,7 @@ fn apply_valued_flag(
         // bash's `-d ''` is the NUL delimiter, which is what pairs with `find -print0`.
         'd' => opts.delim = value.as_bytes().first().copied().unwrap_or(0),
         'n' => opts.count = number('n', value)?,
-        'O' => opts.origin = number('O', value)?,
+        'O' => opts.origin = Some(number('O', value)?),
         's' => opts.skip = number('s', value)?,
         'u' => opts.fd = number('u', value)?,
         'C' => opts.callback = Some(value.to_string()),

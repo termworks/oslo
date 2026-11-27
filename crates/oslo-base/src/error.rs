@@ -47,6 +47,14 @@ pub enum ShellError {
     /// `return 1 2` — carrying its diagnostic, which the place that catches it prints.
     Discard(String),
 
+    /// An assignment that could not be made — a read-only name, a subscript before the start of
+    /// an array — with its diagnostic already printed.
+    ///
+    /// bash abandons the top-level command it happened in and carries on with the next one, as it
+    /// does for a [`ShellError::NoMatch`]; `eval`, `source`, a subshell and a command substitution
+    /// each end with status 1 instead.
+    Abandoned,
+
     ExecutionError(String),
 
     Io(std::io::Error),
@@ -144,6 +152,7 @@ impl std::fmt::Display for ShellError {
             | ShellError::UnsetParameter(m)
             | ShellError::MalformedExpansion(m) => write!(f, "{m}"),
             ShellError::NoMatch(pattern) => write!(f, "no match: {pattern}"),
+            ShellError::Abandoned => write!(f, "assignment failed"),
             ShellError::Discard(m) | ShellError::ExecutionError(m) => write!(f, "{m}"),
             ShellError::Io(e) => write!(f, "{}", reason(e)),
             ShellError::Lua(e) => write!(f, "Lua error: {e}"),

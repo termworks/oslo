@@ -444,12 +444,12 @@ fn corpus_matches_bash() {
 /// [`mode_args`] sends the same argv to both shells, but a `--posix` that oslo parsed and then
 /// dropped would look identical from here — which is what the suite could not tell apart before
 /// Round 11. So assert the observable difference directly: under POSIX a failed variable
-/// assignment ends the shell, and outside it the shell carries on. Without this, a regression
-/// that made `--posix` inert would show up only as `# mode: posix` cases quietly agreeing with a
-/// bash-mode oslo.
+/// assignment ends the shell, and outside it the shell abandons that line and carries on with the
+/// next. Without this, a regression that made `--posix` inert would show up only as
+/// `# mode: posix` cases quietly agreeing with a bash-mode oslo.
 #[test]
 fn the_posix_flag_changes_what_oslo_does() {
-    const SCRIPT: &str = "readonly r=1; r=2; echo alive";
+    const SCRIPT: &str = "readonly r=1\nr=2\necho alive";
 
     let posix = execute(&common::oslo_bin(), mode_args(Oracle::Posix), SCRIPT).expect("spawn oslo");
     assert_eq!(
@@ -461,7 +461,7 @@ fn the_posix_flag_changes_what_oslo_does() {
     let bash_mode = execute(&common::oslo_bin(), mode_args(Oracle::Bash), SCRIPT).expect("spawn");
     assert_eq!(
         bash_mode.stdout, "alive\n",
-        "without --posix the same refusal is an ordinary failed command"
+        "without --posix the same refusal abandons only its own line"
     );
 }
 

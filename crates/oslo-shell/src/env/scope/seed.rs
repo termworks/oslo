@@ -7,8 +7,19 @@
 
 use super::Environment;
 use super::environ::environ_set;
+use super::value::{Attrs, Var};
 
 impl Environment {
+    /// Put `name` in the table as a plain string, exported or not, replacing what was there.
+    fn seed(&mut self, name: &str, value: String, exported: bool) {
+        let attrs = match exported {
+            true => Attrs::EXPORT,
+            false => Attrs::empty(),
+        };
+        self.vars
+            .insert(name.to_string(), Var::scalar(value, attrs));
+    }
+
     /// The three conveniences oslo ships — `ll`, `la`, `l` — for an interactive session only.
     ///
     /// **They used to be seeded in [`Environment::new`], which is every shell there is.** A script
@@ -51,7 +62,7 @@ impl Environment {
         // environment from `execve`, so a value that lives only in oslo's map would leave every
         // nested shell reading the *grandparent's* depth.
         let shlvl = shlvl.to_string();
-        self.vars.insert("SHLVL".to_string(), (shlvl.clone(), true));
+        self.seed("SHLVL", shlvl.clone(), true);
         environ_set("SHLVL", &shlvl);
 
         // **Which session this is, exported so a child can say so too.** `oslo macros` runs as a
@@ -63,19 +74,16 @@ impl Environment {
         // what starts a session and building an `Environment` is not — a tool builds one too, and a
         // tool that stamped a new session over the inherited one would be talking about itself.
         let session = oslo_base::track::session::id();
-        self.vars
-            .insert("OSLO_SESSION".to_string(), (session.clone(), true));
+        self.seed("OSLO_SESSION", session.clone(), true);
         environ_set("OSLO_SESSION", &session);
         // `PPID` is always this shell's; `UID` and `EUID` keep an inherited value, as bash does,
         // and are read-only integers only when the shell set them.
-        self.vars
-            .insert("PPID".to_string(), (ppid.to_string(), false));
+        self.seed("PPID", ppid.to_string(), false);
         self.set_integer("PPID");
         self.set_readonly("PPID");
         for (name, value) in [("UID", uid), ("EUID", euid)] {
             if !self.vars.contains_key(name) {
-                self.vars
-                    .insert(name.to_string(), (value.to_string(), false));
+                self.seed(name, value.to_string(), false);
                 self.set_integer(name);
                 self.set_readonly(name);
             }
@@ -88,7 +96,7 @@ impl Environment {
             ("BASH_LOADABLES_PATH", LOADABLES_PATH.to_string()),
         ] {
             if !self.vars.contains_key(name) {
-                self.vars.insert(name.to_string(), (value, false));
+                self.seed(name, value, false);
             }
         }
         self.force_var("OPTERR", "1");
@@ -97,9 +105,8 @@ impl Environment {
 
     /// Set `name` to `value` whatever was inherited, keeping an inherited export flag.
     fn force_var(&mut self, name: &str, value: &str) {
-        let exported = self.vars.get(name).is_some_and(|(_, exported)| *exported);
-        self.vars
-            .insert(name.to_string(), (value.to_string(), exported));
+        let exported = self.vars.get(name).is_some_and(Var::exported);
+        self.seed(name, value.to_string(), exported);
         if exported {
             environ_set(name, value);
         }
@@ -123,8 +130,7 @@ impl Environment {
     /// meant it, and POSIX says an inherited value is used.
     pub(super) fn seed_field_separator(&mut self) {
         if !self.vars.contains_key("IFS") {
-            self.vars
-                .insert("IFS".to_string(), (" \t\n".to_string(), false));
+            self.seed("IFS", " \t\n".to_string(), false);
         }
     }
 
@@ -153,7 +159,7 @@ impl Environment {
         let inherited_is_here = self
             .vars
             .get("PWD")
-            .map(|(value, _)| value.as_str())
+            .and_then(Var::text)
             .filter(|value| !value.is_empty())
             .and_then(|value| std::fs::canonicalize(value).ok())
             .is_some_and(|resolved| std::fs::canonicalize(&here).is_ok_and(|now| resolved == now));
@@ -161,15 +167,16 @@ impl Environment {
         // above is: a child's environment comes from `execve` reading `environ`, so a value that
         // lives only in oslo's map is invisible to exactly the programs this exists to serve.
         if !inherited_is_here {
-            self.vars.insert("PWD".to_string(), (here.clone(), true));
+            self.seed("PWD", here.clone(), true);
             environ_set("PWD", &here);
             return;
         }
         // Kept, but exported: an inherited-but-unexported `PWD` is invisible to a child, which is
         // the whole reason this exists.
         if let Some(slot) = self.vars.get_mut("PWD") {
-            slot.1 = true;
-            environ_set("PWD", &slot.0.clone());
+            slot.attrs.insert(Attrs::EXPORT);
+            let value = slot.text().unwrap_or_default().to_string();
+            environ_set("PWD", &value);
         }
     }
 
@@ -203,8 +210,7 @@ impl Environment {
         if !self.vars.contains_key("BASH")
             && let Ok(exe) = std::env::current_exe()
         {
-            self.vars
-                .insert("BASH".to_string(), (exe.display().to_string(), false));
+            self.seed("BASH", exe.display().to_string(), false);
         }
         self.force_var(
             "BASH_VERSION",
@@ -220,8 +226,8 @@ impl Environment {
             machine_type(),
         ];
         self.vars.remove("BASH_VERSINFO");
-        self.arrays.insert(
-            "BASH_VERSINFO".to_string(),
+        self.publish_array(
+            "BASH_VERSINFO",
             crate::env::scope::array::ShellArray::from_values(fields),
         );
         self.set_readonly("BASH_VERSINFO");

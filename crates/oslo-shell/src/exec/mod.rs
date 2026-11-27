@@ -20,5 +20,7 @@ pub mod streams;
 pub mod substitution;
 
 pub use job::JobManager;
-pub use pipeline::{eval_and_or_list, eval_command, eval_command_list, eval_pipeline};
+pub use pipeline::{
+    absorb_abandoned, eval_and_or_list, eval_command, eval_command_list, eval_pipeline,
+};
 pub use substitution::eval_command_substitution;

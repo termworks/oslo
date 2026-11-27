@@ -158,7 +158,7 @@ impl Splitter<'_> {
 /// Split `line` across `names`, giving the last name the unsplit remainder.
 ///
 /// `names` must not be empty; the caller handles `REPLY` and `-N`, neither of which splits.
-pub fn assign_fields(env: &mut Environment, names: &[String], line: &InputLine) {
+pub fn assign_fields(env: &mut Environment, names: &[String], line: &InputLine) -> bool {
     let ifs = ifs_of(env);
     let splitter = Splitter { ifs, line };
 
@@ -177,9 +177,11 @@ pub fn assign_fields(env: &mut Environment, names: &[String], line: &InputLine) 
     }
     values.push(splitter.remainder(pos));
 
+    let mut assigned = true;
     for (name, value) in names.iter().zip(values) {
-        env.set_var(name, &value, false);
+        assigned &= super::read::assign_name(env, name, &value);
     }
+    assigned
 }
 
 /// Every field the line splits into, for `read -a`.
