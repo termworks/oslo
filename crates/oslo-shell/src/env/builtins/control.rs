@@ -277,7 +277,12 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
         match crate::syntax::parse_with_aliases(&code, !env.get_aliases().is_empty(), &|n| {
             env.get_alias(n).map(str::to_string)
         }) {
-            Ok(ast) => eval_command_list(env, &ast),
+            Ok(ast) => {
+                let outer = env.number_lines_from_here();
+                let status = eval_command_list(env, &ast);
+                env.set_line_offset(outer);
+                status
+            }
             // A syntax error in evaluated text is the *builtin's* failure, not the script's:
             // bash reports it, gives `eval` status 2, and carries on with the next command.
             //

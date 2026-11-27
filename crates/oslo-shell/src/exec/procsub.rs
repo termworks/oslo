@@ -87,6 +87,7 @@ pub fn open(
                 let _ = close(theirs);
             }
             env.enter_subshell();
+            env.number_lines_from_here();
             let status = status_of(run(env, &ast));
             flush_stdout();
             std::process::exit(crate::env::builtins::run_exit_trap(env, status));

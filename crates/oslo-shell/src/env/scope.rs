@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use array::{ShellArray, array_literal_body};
+pub use calls::{CallFrame, FrameKind};
 pub use registry::{BuiltinFn, is_special_builtin};
 
 /// One running process substitution: the descriptor the caller was given, and the child feeding it.
@@ -152,6 +153,12 @@ pub struct Environment {
     source_files: Vec<String>,
     /// The `line_offset` each entry of `source_files` displaced, to be put back on the way out.
     source_offsets: Vec<u32>,
+    /// bash's call stack, outermost first; see the `calls` submodule.
+    frames: Vec<CallFrame>,
+    /// The file each function was defined in, for its `BASH_SOURCE` entry.
+    function_files: HashMap<String, String>,
+    /// The line of the command now running, whatever `$LINENO` has been assigned since.
+    current_line: u32,
     /// Whether the command just before this one was an `exit` refused over stopped jobs.
     ///
     /// See `builtins::control::refuse_over_stopped_jobs`. On `Environment` rather than a global
@@ -226,6 +233,9 @@ impl Environment {
             script_frames: Vec::new(),
             source_files: Vec::new(),
             source_offsets: Vec::new(),
+            frames: Vec::new(),
+            function_files: HashMap::new(),
+            current_line: 0,
             exit_warned: false,
             script_depth: DepthGuard::new(MAX_SCRIPT_DEPTH),
             options: ShellOptions::default(),

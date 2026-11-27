@@ -21,6 +21,7 @@ impl Environment {
         // The tree's line, plus however much of the file was consumed before the chunk it came
         // from. See [`Self::set_line_offset`].
         let line = line.saturating_add(self.line_offset);
+        self.current_line = line;
         if line == self.published_line {
             return;
         }
@@ -42,6 +43,13 @@ impl Environment {
     /// chunk would lose it.
     pub fn set_line_offset(&mut self, lines: u32) -> u32 {
         std::mem::replace(&mut self.line_offset, lines)
+    }
+
+    /// Number the lines of text about to be parsed and run from the line of the command now
+    /// running, as bash numbers `eval` and `$(…)` bodies. Answers the previous offset.
+    pub fn number_lines_from_here(&mut self) -> u32 {
+        let here = self.current_line.saturating_sub(1);
+        self.set_line_offset(here)
     }
 
     /// How many lines come before the chunk now running — see [`Self::set_line_offset`].

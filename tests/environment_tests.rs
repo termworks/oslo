@@ -251,9 +251,8 @@ fn a_set_value_beats_the_clock() {
     // And seeding twice the same way gives the same sequence, which is why a script writes it.
     assert_eq!(run("RANDOM=7\necho $RANDOM").out(), seeded);
 
-    // `$EPOCHSECONDS` is oslo's own choice and differs from bash, which ignores the assignment: a
-    // set value wins here so an exported one from a parent is not shadowed by our clock.
-    assert_eq!(run("EPOCHSECONDS=1\necho $EPOCHSECONDS").out(), "1");
+    // An assignment to `$EPOCHSECONDS` is discarded, as bash discards it.
+    assert_ne!(run("EPOCHSECONDS=1\necho $EPOCHSECONDS").out(), "1");
 }
 
 /// `$RANDOM` is a sequence in bash's range, not one number repeated.

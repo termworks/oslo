@@ -52,6 +52,8 @@ impl Environment {
 
     pub fn set_function(&mut self, name: &str, body: Command) {
         self.functions.insert(name.to_string(), Arc::new(body));
+        let file = self.defining_file();
+        self.function_files.insert(name.to_string(), file);
     }
 
     /// Forget the function `name`; `true` if there was one.
@@ -61,6 +63,7 @@ impl Environment {
     /// The answer is not `unset`'s exit status — bash exits 0 for `unset -f nosuchfn` — but it
     /// is what a caller that needs to know would ask for.
     pub fn remove_function(&mut self, name: &str) -> bool {
+        self.function_files.remove(name);
         self.functions.remove(name).is_some()
     }
 
