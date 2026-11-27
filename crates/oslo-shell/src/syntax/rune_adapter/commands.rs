@@ -85,10 +85,24 @@ fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word>
 }
 
 pub(super) fn convert_command(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Command> {
-    if let Some(name) = super::coproc::take_site(command.syntax().span().start) {
-        return Ok(super::coproc::wrap(name, convert_command(tree, command)?));
-    }
     match command {
+        // `coproc [NAME] command`: the array a coprocess publishes into is `COPROC` unless named.
+        Command::Coproc(coproc) => {
+            let name = coproc
+                .name()
+                .map(|word| word_text(tree, word).to_string())
+                .unwrap_or_else(|| "COPROC".to_string());
+            let body = coproc.command().ok_or_else(|| {
+                ShellError::SyntaxError("coproc: a command to run was expected".to_string())
+            })?;
+            Ok(oslo_ast::Command::Compound {
+                kind: oslo_ast::CompoundCommand::Coproc {
+                    name,
+                    body: Box::new(convert_command(tree, body)?),
+                },
+                redirections: Vec::new(),
+            })
+        }
         Command::Simple(simple) => Ok(oslo_ast::Command::Simple(convert_simple(tree, simple)?)),
         Command::Function(function) => {
             let name = function
@@ -177,7 +191,10 @@ fn convert_compound(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Compo
         Command::Arithmetic(arithmetic) => {
             oslo_ast::CompoundCommand::Arithmetic(arithmetic.expression(tree.source()).to_string())
         }
-        Command::Simple(_) | Command::Function(_) | Command::Conditional(_) => {
+        Command::Simple(_)
+        | Command::Function(_)
+        | Command::Conditional(_)
+        | Command::Coproc(_) => {
             return Err(ShellError::SyntaxError(
                 "not a compound command".to_string(),
             ));
@@ -282,10 +299,8 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
     let mut assignments = Vec::new();
     let mut words = Vec::new();
     let mut redirections = Vec::new();
-    let mut fd_var = None;
 
-    let children: Vec<&Node> = simple.syntax().nodes().collect();
-    for (at, child) in children.iter().copied().enumerate() {
+    for child in simple.syntax().nodes() {
         match child.kind() {
             // **Only a *prefix* `name=value` is an assignment.** After the command name it is an
             // ordinary argument — `alias g='echo hi'`, `env FOO=bar`, and `declare -a w=(a b)`,
@@ -302,24 +317,19 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
                 words.extend(words_of(tree, child)?);
             }
             SyntaxKind::Redirect => {
-                if let Some(prefix) = child
-                    .token(SyntaxKind::Text)
-                    .filter(|token| token.text(tree.source()).parse::<i32>().is_err())
+                // A `{name}` prefix belongs to the redirection; any other non-numeric one is a word.
+                let variable = rune::ast::Redirect::cast(child)
+                    .and_then(|redirect| redirect.variable(tree.source()));
+                if variable.is_none()
+                    && let Some(prefix) = child
+                        .token(SyntaxKind::Text)
+                        .filter(|token| token.text(tree.source()).parse::<i32>().is_err())
                 {
                     words.extend(convert_words_from_str(prefix.text(tree.source()))?);
                 }
-                let mut converted = super::redirects::convert_redirect(tree, child)?;
-                if let Some(first) = converted.first_mut() {
-                    first.fd_var = fd_var.take();
-                }
-                redirections.extend(converted);
+                redirections.extend(super::redirects::convert_redirect(tree, child)?);
             }
-            SyntaxKind::Word => {
-                match super::redirects::fd_variable(tree, child, children.get(at + 1).copied()) {
-                    Some(name) => fd_var = Some(name),
-                    None => words.extend(words_of(tree, child)?),
-                }
-            }
+            SyntaxKind::Word => words.extend(words_of(tree, child)?),
             _ => {}
         }
     }

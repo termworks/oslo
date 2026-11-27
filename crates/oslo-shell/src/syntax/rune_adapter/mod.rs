@@ -19,15 +19,12 @@
 //!
 //! - Here-document bodies are carried through verbatim; whether an unquoted body expands is
 //!   decided from the delimiter's quoting, which rune records.
-//! - `coproc` is not a keyword to rune, so the `coproc` submodule blanks its header out of the
-//!   source and wraps the command that is left.
 //! - `time -p` is carried as plain `time`: [`oslo_base::ast::Pipeline`] records *that* a pipeline
 //!   is timed, not which of bash's two report formats was asked for.
 //! - `[[ ... ]]` becomes calls to the `[[` builtin, with `&&`, `||` and `!` expressed using the
 //!   shell's own and-or lists and pipeline negation; see [`super::lower::cond`].
 
 mod commands;
-mod coproc;
 mod redirects;
 
 use oslo_base::ast as oslo_ast;
@@ -43,13 +40,6 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
     // not need the guard; what comes after it does.
     oslo_base::nesting::check_nesting(script)?;
 
-    match coproc::prepare(script) {
-        Some((text, sites)) => coproc::with_sites(sites, || parse_prepared(&text)),
-        None => parse_prepared(script),
-    }
-}
-
-fn parse_prepared(script: &str) -> Result<oslo_ast::CommandList> {
     let parsed = rune::parse(script);
     // **The first error is the one to report, and rune orders them by position.** It finds every
     // mistake in the file, which is what a checker wants; a shell about to run the script wants

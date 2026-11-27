@@ -39,6 +39,10 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         .tokens()
         .find(|token| token.kind() == SyntaxKind::Text)
         .and_then(|token| token.text(tree.source()).parse::<i32>().ok());
+    // `{name}>file`: the shell picks the descriptor and stores it in `name`.
+    let fd_var = rune::ast::Redirect::cast(node)
+        .and_then(|redirect| redirect.variable(tree.source()))
+        .map(str::to_string);
     let target_text = node
         .node(SyntaxKind::Word)
         .map(|word| text_of(tree, word))
@@ -85,7 +89,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                 target: oslo_ast::Word::from_literal(""),
                 heredoc_content: Some(body),
                 here_string: true,
-                fd_var: None,
+                fd_var,
                 ambiguous: false,
             }]);
         }
@@ -107,7 +111,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     target: target.clone(),
                     heredoc_content: None,
                     here_string: false,
-                    fd_var: None,
+                    fd_var,
                     ambiguous,
                 },
                 oslo_ast::Redirection {
@@ -130,7 +134,7 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         target,
         heredoc_content: None,
         here_string: false,
-        fd_var: None,
+        fd_var,
         ambiguous,
     }])
 }
@@ -189,29 +193,6 @@ fn convert_heredoc(
         fd_var: None,
         ambiguous: false,
     }])
-}
-
-/// The `name` of a `{name}` word written touching the redirection after it.
-///
-/// `name` is an identifier, optionally with a subscript; anything else is an ordinary word.
-pub(super) fn fd_variable(tree: &Tree, word: &Node, next: Option<&Node>) -> Option<String> {
-    let next = next.filter(|next| next.kind() == SyntaxKind::Redirect)?;
-    if next.span().start != word.span().end || next.token(SyntaxKind::Text).is_some() {
-        return None;
-    }
-    let inner = text_of(tree, word).strip_prefix('{')?.strip_suffix('}')?;
-    let name = inner
-        .split_once('[')
-        .map_or(inner, |(name, rest)| match rest.ends_with(']') {
-            true => name,
-            false => "",
-        });
-    let mut chars = name.chars();
-    let valid = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    valid.then(|| inner.to_string())
 }
 
 /// The body belonging to this here-document.
