@@ -127,6 +127,15 @@ fn indirect_form(body: &str, ctx: Context) -> Result<WordPart> {
         // `${!}` is the last background pid, not an indirection.
         return reference("!", ParamExpansion::Normal);
     }
+    // `${!prefix@}` and `${!prefix*}` list names; the `@` is not a transformation here.
+    if let Some(prefix) = body.strip_suffix(['@', '*'])
+        && crate::env::scope::is_valid_identifier(prefix)
+    {
+        return reference(
+            body,
+            ParamExpansion::Indirect(Box::new(ParamExpansion::Normal)),
+        );
+    }
     let inner = match find_param_operator(body) {
         Some((idx, op)) => {
             let expansion = operator_expansion(op, &body[idx + op.len()..], ctx)?;

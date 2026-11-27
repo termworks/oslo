@@ -149,6 +149,9 @@ impl Environment {
             .map_or(attrs, |var| var.attrs.union(attrs));
         let mut var = Var::scalar(value, kept);
         var.attrs.remove(Attrs::UNSET);
+        if dynamic::is_integer(name) {
+            var.attrs.insert(Attrs::INTEGER);
+        }
         self.vars.insert(name.to_string(), var);
         if exported {
             super::environ_set(name, value);
