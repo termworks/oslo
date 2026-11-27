@@ -12,7 +12,9 @@ mod quote;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use print::print_matching;
+pub(crate) use print::{print_matching, set_line};
+#[cfg(feature = "universal")]
+pub(crate) use quote::set_style;
 
 use super::arrays::{self, assign_literal, literal_items};
 use crate::env::scope::nameref::is_reference_name;

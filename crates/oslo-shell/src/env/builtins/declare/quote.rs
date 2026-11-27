@@ -88,7 +88,7 @@ pub fn key(text: &str) -> String {
 pub fn set_style(text: &str) -> String {
     if needs_ansi_c(text) {
         ansi_c_quoted(text)
-    } else if text.is_empty() || has_shell_metas(text) {
+    } else if has_shell_metas(text) {
         format!("'{}'", text.replace('\'', "'\\''"))
     } else {
         text.to_string()

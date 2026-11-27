@@ -1,6 +1,5 @@
 //! `set` and `shift`: the shell options, the positional parameters, and the state listing.
 
-use super::quoting::quote_minimal;
 use crate::env::options::{SetError, SetListing, ShellOption, parse_set_args};
 use crate::env::origin_now;
 use crate::env::scope::{Environment, is_valid_identifier};
@@ -161,7 +160,10 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
             return 2;
         }
         for (name, value) in universal::all() {
-            println!("{name}={}", quote_minimal(&value));
+            println!(
+                "{name}={}",
+                crate::env::builtins::declare::set_style(&value)
+            );
         }
         return 0;
     };
@@ -213,14 +215,13 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
 /// Names `environ` accepted but no shell can parse — bash's `BASH_FUNC_x%%` entries arrive this
 /// way — are skipped, because the listing's contract is that a shell can read it back.
 fn print_variables(env: &Environment) {
-    let vars = env.get_all_vars();
-    let mut names: Vec<&String> = vars
-        .keys()
-        .filter(|name| is_valid_identifier(name))
-        .collect();
-    names.sort();
-    for name in names {
-        println!("{}={}", name, quote_minimal(&vars[name]));
+    for (name, var) in env.bindings() {
+        if !is_valid_identifier(name) {
+            continue;
+        }
+        if let Some(line) = crate::env::builtins::declare::set_line(name, var) {
+            println!("{line}");
+        }
     }
 }
 
