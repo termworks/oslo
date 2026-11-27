@@ -19,8 +19,8 @@
 //!
 //! - Here-document bodies are carried through verbatim; whether an unquoted body expands is
 //!   decided from the delimiter's quoting, which rune records.
-//! - `coproc` is not a keyword to rune, so [`coproc`] blanks its header out of the source and
-//!   wraps the command that is left.
+//! - `coproc` is not a keyword to rune, so the `coproc` submodule blanks its header out of the
+//!   source and wraps the command that is left.
 //! - `time -p` is carried as plain `time`: [`oslo_base::ast::Pipeline`] records *that* a pipeline
 //!   is timed, not which of bash's two report formats was asked for.
 //! - `[[ ... ]]` becomes calls to the `[[` builtin, with `&&`, `||` and `!` expressed using the
