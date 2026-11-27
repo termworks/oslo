@@ -156,6 +156,11 @@ impl Environment {
         if name == "PWD" {
             self.publish_dirstack();
         }
+        // `BASH_COMPAT` is the `compatNN` shopt names, spelled as a variable. bash leaves
+        // `BASHOPTS` as the last `shopt` wrote it.
+        if name == "BASH_COMPAT" {
+            crate::env::builtins::shopt::note_compat(value);
+        }
         true
     }
 
@@ -210,6 +215,9 @@ impl Environment {
         // `unset` undoes a pending `export` too, or `export V; unset V; V=1` would still export.
         self.pending_exports.remove(name);
         environ_remove(name);
+        if name == "BASH_COMPAT" {
+            crate::env::builtins::shopt::note_compat("");
+        }
     }
 
     /// Forget any *scalar* under `name`, leaving the array table alone.

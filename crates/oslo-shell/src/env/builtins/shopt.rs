@@ -11,7 +11,7 @@
 
 mod table;
 
-pub use table::{force, on};
+pub use table::{force, note_compat, on};
 
 use crate::env::options::ShellOption;
 use crate::env::scope::Environment;
@@ -124,7 +124,9 @@ pub fn builtin_shopt(env: &mut Environment, args: &[String]) -> Result<i32> {
     for name in names {
         status |= one(args, env, &flags, name);
     }
-    env.publish_option_vars();
+    if flags.set.is_some() {
+        env.publish_option_vars();
+    }
     Ok(status)
 }
 

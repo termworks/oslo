@@ -178,6 +178,18 @@ pub(super) fn set_level(level: u32, on: bool) -> u32 {
     LEVEL.load(Ordering::Relaxed)
 }
 
+/// Follow an assignment to `BASH_COMPAT`: `42` and `4.2` both select `compat42`, and anything
+/// that names no `compatNN` selects the current level.
+pub fn note_compat(value: &str) {
+    let digits: String = value.chars().filter(|c| *c != '.').collect();
+    let level = digits
+        .parse::<u32>()
+        .ok()
+        .filter(|level| OPTIONS.iter().any(|o| matches!(o.support, Support::Compat(l) if l == *level)))
+        .unwrap_or(CURRENT_LEVEL);
+    LEVEL.store(level, Ordering::Relaxed);
+}
+
 /// Whether the option called `name` is on. False for a name bash does not have.
 pub fn on(name: &str) -> bool {
     index_of(name).is_some_and(state_of)

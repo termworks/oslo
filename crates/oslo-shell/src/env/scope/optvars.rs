@@ -45,6 +45,9 @@ impl Environment {
                 let _ = shopt::set_option(name, true);
             }
         }
+        if let Some(level) = self.get_var("BASH_COMPAT") {
+            shopt::note_compat(level);
+        }
         self.publish_option_vars();
     }
 }
