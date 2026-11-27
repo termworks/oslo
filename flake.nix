@@ -52,7 +52,7 @@
         # The CI jobs pin the same version by hand in `.github/workflows/*.yml`; bump them together.
         # The MSRV is separate and lower — `rust-version` in `Cargo.toml` says 1.90, and the `msrv`
         # job installs exactly that.
-        rustChannel = "1.94.0";
+        rustChannel = "1.97.1";
         toolchain = pkgs.rust-bin.stable.${rustChannel}.default.override {
           targets = [ rustTarget ];
           extensions = [

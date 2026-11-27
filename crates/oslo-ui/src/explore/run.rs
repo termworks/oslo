@@ -134,11 +134,9 @@ pub fn open(sheet: Sheet) -> Outcome {
                     last.clear();
                 }
             }
-            Key::Backspace => {
-                if stack.len() > 1 {
-                    stack.pop();
-                    last.clear();
-                }
+            Key::Backspace if stack.len() > 1 => {
+                stack.pop();
+                last.clear();
             }
             _ => {}
         }

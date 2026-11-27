@@ -78,7 +78,7 @@ pub fn ask(dir: PathBuf) -> bool {
     }
     // One byte, and a full pipe is not a failure: it means a wake is already pending, which is the
     // thing this was trying to arrange.
-    let byte = [b'.'];
+    let byte = b".";
     // SAFETY: `write` is a pipe descriptor this module opened and never closes.
     unsafe {
         nix::libc::write(write, byte.as_ptr().cast(), 1);

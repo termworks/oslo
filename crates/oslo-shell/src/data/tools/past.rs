@@ -69,7 +69,7 @@ pub fn rows() -> Vec<Record> {
     let mut commands = track.commands(MOST);
     // Most recent first, which is the order somebody reading their own history expects. A `sort-by`
     // downstream overrides it, and the drawn table shows whichever order arrived.
-    commands.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+    commands.sort_by_key(|command| std::cmp::Reverse(command.last_at));
     commands.into_iter().map(row).collect()
 }
 

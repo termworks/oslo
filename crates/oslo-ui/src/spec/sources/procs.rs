@@ -36,7 +36,7 @@ pub fn pids() -> Vec<Suggestion> {
             Some((pid, Suggestion::new(pid.to_string(), command, "pid")))
         })
         .collect();
-    found.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    found.sort_unstable_by_key(|(pid, _)| std::cmp::Reverse(*pid));
     found.into_iter().map(|(_, one)| one).collect()
 }
 

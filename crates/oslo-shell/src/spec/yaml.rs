@@ -291,10 +291,8 @@ fn key_end(text: &str) -> Option<usize> {
             (None, b'\'' | b'"') => quote = Some(*ch),
             (None, b'[' | b'{') => depth += 1,
             (None, b']' | b'}') => depth = depth.saturating_sub(1),
-            (None, b':') if depth == 0 => {
-                if at + 1 == bytes.len() || bytes[at + 1] == b' ' {
-                    return Some(at);
-                }
+            (None, b':') if depth == 0 && (at + 1 == bytes.len() || bytes[at + 1] == b' ') => {
+                return Some(at);
             }
             _ => {}
         }

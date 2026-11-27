@@ -27,7 +27,7 @@ jobs:
           grep -nE 'path *= *"\.\./\.\.' Cargo.toml || exit 0
           echo "::error::Cargo.toml points outside the repository"
           exit 1
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
       # A lockfile written under a local `[patch]` records the dependency with no source.

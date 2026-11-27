@@ -99,7 +99,7 @@ fn ranking(ui: &mut Table) {
 
         // Descending by score, and ties broken by the order given: a provider that already sorted
         // by recency keeps that inside each score band rather than having it shuffled.
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
         if let Some(limit) = limit {
             scored.truncate(limit);
         }

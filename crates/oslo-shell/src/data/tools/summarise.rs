@@ -269,7 +269,7 @@ pub fn histogram(rows: &[Record], field: &str) -> Vec<Record> {
         })
         .collect();
     // Descending, because a histogram is read from the top.
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     let most = out.first().map(|(_, n)| *n).unwrap_or(0).max(1);
     out.into_iter()
         .map(|(value, n)| {
