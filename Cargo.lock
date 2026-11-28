@@ -813,7 +813,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "oslo"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "argc",
  "nix",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-base"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ariadne",
  "base64",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-luavm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "luna",
  "oslo-base",
@@ -862,11 +862,11 @@ dependencies = [
 
 [[package]]
 name = "oslo-math"
-version = "0.8.1"
+version = "0.8.2"
 
 [[package]]
 name = "oslo-runtime"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "base64",
  "nix",
@@ -883,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-shell"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "argc",
  "nix",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-ui"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "libc",
  "nix",
