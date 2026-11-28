@@ -94,6 +94,8 @@ impl Environment {
             ("MACHTYPE", machine_type()),
             ("PS4", "+ ".to_string()),
             ("BASH_LOADABLES_PATH", LOADABLES_PATH.to_string()),
+            ("HOSTNAME", host_name()),
+            ("_", invoked_as()),
         ] {
             if !self.vars.contains_key(name) {
                 self.seed(name, value, false);
@@ -149,6 +151,14 @@ impl Environment {
     /// inherited one, and a value that survives a `chdir` the shell did not make is a lie: it is
     /// how `$PWD` ends up pointing at where the *parent* was.
     pub(super) fn seed_working_directory(&mut self) {
+        // `OLDPWD` survives only when it names a directory; otherwise it is declared, exported and
+        // without a value, which is what `declare -x` shows of it in bash.
+        let previous = self.vars.get("OLDPWD").and_then(Var::text).map(str::to_string);
+        if !previous.is_some_and(|dir| std::path::Path::new(&dir).is_dir()) {
+            self.vars
+                .insert("OLDPWD".to_string(), Var::unset(Attrs::EXPORT));
+            super::environ::environ_remove("OLDPWD");
+        }
         let Ok(here) = std::env::current_dir() else {
             return;
         };
@@ -250,6 +260,21 @@ fn machine_type() -> String {
         _ => "unknown",
     };
     format!("{arch}-{vendor}-linux-gnu")
+}
+
+/// The name the shell was invoked by, which is what `$_` holds before any command has run.
+fn invoked_as() -> String {
+    std::env::args_os()
+        .next()
+        .map(|name| oslo_base::lossless::encode(&name))
+        .unwrap_or_default()
+}
+
+/// The machine's name, as `gethostname` reports it.
+fn host_name() -> String {
+    nix::unistd::gethostname()
+        .map(|name| oslo_base::lossless::encode(&name))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
