@@ -101,10 +101,17 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
     let mut last_status = 0;
     // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
     let mut abandoned: Option<u32> = None;
+    // Each line of a script's top level is one command read, which `\#` counts.
+    let reading = catches.discard && !env.option(crate::env::options::ShellOption::CommandString);
+    let mut counted: Option<u32> = None;
 
     for (index, item) in cmd_list.items.iter().enumerate() {
         if abandoned.is_some_and(|line| line > 0 && item.line == line) {
             continue;
+        }
+        if reading && counted != Some(item.line) {
+            counted = Some(item.line);
+            crate::expand::prompt::count_command_read();
         }
         let last = index + 1 == cmd_list.items.len();
         crate::exec::simple::oneshot::arm(env, item, last, outermost);

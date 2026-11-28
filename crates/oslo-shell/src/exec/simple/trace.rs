@@ -144,7 +144,7 @@ fn expand_ps4(env: &mut Environment, ps4: &str) -> String {
     }
     let status = env.last_status;
     env.set_option(ShellOption::XTrace, false);
-    let expanded = crate::expand::prompt::expand(env, ps4);
+    let expanded = crate::expand::prompt::expand_ps4(env, ps4);
     env.set_option(ShellOption::XTrace, true);
     env.last_status = status;
     expanded.unwrap_or_else(|_| ps4.to_string())

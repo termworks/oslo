@@ -6,16 +6,36 @@
 
 use crate::env::Environment;
 use oslo_base::error::Result;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Expand `text` as bash expands a prompt string.
+/// How many top-level commands the shell has read from a script or standard input, which `\#`
+/// shows: a `-c` string, an `eval` and a sourced file read none.
+static COMMANDS_READ: AtomicU32 = AtomicU32::new(0);
+
+/// Count one more top-level command read.
+pub(crate) fn count_command_read() {
+    COMMANDS_READ.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Expand `text` as bash expands a prompt string for `${x@P}`.
 pub fn expand(env: &mut Environment, text: &str) -> Result<String> {
-    let decoded = decode(env, text);
+    expand_counting(env, text, 1)
+}
+
+/// Expand `PS4`, whose `\#` does not count the command it traces.
+pub fn expand_ps4(env: &mut Environment, text: &str) -> Result<String> {
+    expand_counting(env, text, 0)
+}
+
+/// `beyond` is what `\#` adds to the commands read so far.
+fn expand_counting(env: &mut Environment, text: &str, beyond: u32) -> Result<String> {
+    let decoded = decode(env, text, COMMANDS_READ.load(Ordering::Relaxed) + beyond);
     let body = crate::lexer::parse_heredoc_body(&decoded)?;
     crate::expand::word::expand_word_to_string(env, &body)
 }
 
 /// Replace the escapes, quoting what they produce for the expansion after.
-fn decode(env: &Environment, raw: &str) -> String {
+fn decode(env: &Environment, raw: &str, number: u32) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -49,8 +69,11 @@ fn decode(env: &Environment, raw: &str) -> String {
                 protect(&mut out, base);
             }
             's' => {
-                let zero = env.get_param("0").unwrap_or_default();
-                protect(&mut out, zero.rsplit('/').next().unwrap_or(&zero));
+                let name = std::env::args_os()
+                    .next()
+                    .map(|name| oslo_base::lossless::encode(&name))
+                    .unwrap_or_default();
+                protect(&mut out, name.rsplit('/').next().unwrap_or(&name));
             }
             'v' | 'V' => protect(&mut out, &version(env, esc == 'V')),
             't' => protect(&mut out, &oslo_base::clock::local("%H:%M:%S")),
@@ -64,7 +87,8 @@ fn decode(env: &Environment, raw: &str) -> String {
                 let format = if format.is_empty() { "%X" } else { &format };
                 protect(&mut out, &oslo_base::clock::local(format));
             }
-            '!' | '#' => out.push('1'),
+            '#' => out.push_str(&number.to_string()),
+            '!' => out.push('1'),
             'j' => out.push('0'),
             d @ '0'..='7' => {
                 let mut value = d.to_digit(8).unwrap_or(0);
