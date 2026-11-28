@@ -13,14 +13,19 @@
 pub const LONGEST: usize = 200;
 
 /// Refuse `name` with the reason, or accept it.
+///
+/// A name holding a private key's prefix is refused too, and named by that prefix alone, so no
+/// message repeats a key pasted where a name belongs.
 pub fn check(name: &str) -> Result<(), String> {
+    let private = super::recipient::shown(name);
     if name.is_empty()
         || name.starts_with('.')
         || name.contains('/')
         || name.len() > LONGEST
         || name.chars().any(refused)
+        || private != name
     {
-        return Err(format!("{name:?} is not a usable name for a secret"));
+        return Err(format!("{private:?} is not a usable name for a secret"));
     }
     Ok(())
 }

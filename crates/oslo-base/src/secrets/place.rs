@@ -126,7 +126,7 @@ pub fn set(name: &str, value: &[u8]) -> Result<(), String> {
 }
 
 /// The value kept under `name` in the `user` store.
-pub fn get(name: &str) -> Result<Vec<u8>, String> {
+pub fn get(name: &str) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
     Store::named(USER)?.get(name)
 }
 

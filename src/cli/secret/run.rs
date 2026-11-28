@@ -22,7 +22,7 @@
 //! file, the file over `--all`. Every secret is opened before the command runs, and the first one
 //! that fails stops it with no child started. See [`envfile`] and [`memfd`].
 
-use oslo::secrets::Store;
+use oslo::secrets::{Store, Zeroizing};
 
 use super::fail;
 use super::help::MENU;
@@ -67,7 +67,7 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
     for (variable, wanted) in plan {
         let (from, name, file) = match wanted {
             Wanted::Plain(value) => {
-                environment.push((variable, value));
+                environment.push((variable, Zeroizing::new(value)));
                 continue;
             }
             Wanted::Secret { store, name, file } => (store, name, file),
@@ -79,13 +79,13 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
         match other.as_ref().unwrap_or(store).get(&name) {
             Ok(value) if file => match memfd::sealed(&value) {
                 Ok(fd) => {
-                    environment.push((variable, memfd::path(&fd)));
+                    environment.push((variable, Zeroizing::new(memfd::path(&fd))));
                     files.push(fd);
                 }
                 Err(e) => return fail(&e),
             },
-            Ok(value) => match String::from_utf8(value) {
-                Ok(value) => environment.push((variable, value)),
+            Ok(value) => match std::str::from_utf8(&value) {
+                Ok(text) => environment.push((variable, Zeroizing::new(text.to_string()))),
                 Err(_) => {
                     return fail(&format!(
                         "{name}: not text, so it cannot be a variable; --file {variable}={name} \
@@ -165,7 +165,7 @@ fn plan(store: &Store, asked: &asked::Asked) -> Result<Vec<(String, Wanted)>, St
 }
 
 /// Replace this process with the command, so nothing is left holding the value.
-fn exec(command: &[String], environment: &[(String, String)]) -> std::io::Error {
+fn exec(command: &[String], environment: &[(String, Zeroizing<String>)]) -> std::io::Error {
     use std::os::unix::process::CommandExt;
     std::process::Command::new(&command[0])
         .args(&command[1..])

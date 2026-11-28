@@ -25,6 +25,9 @@ mod recipient;
 mod run;
 
 pub fn run(args: &[String]) -> i32 {
+    // No core file and no ptrace attach for as long as this process holds a key; it exits or
+    // execs, and an exec'd command is dumpable again.
+    secrets::dumpable::for_good();
     if let Some(page) = MENU.asked(args, Paint::detect()) {
         print!("{page}");
         return 0;
@@ -51,7 +54,7 @@ pub fn run(args: &[String]) -> i32 {
             name,
             "list" | "ls" | "stores" | "where" | "paths" | "rotate"
         )
-        && let Some(bad) = MENU.extra(name, &args, 0)
+        && let Some(bad) = MENU.extra(name, &shown(&args), 0)
     {
         return bad;
     }
@@ -162,7 +165,7 @@ pub fn run(args: &[String]) -> i32 {
             }
             Err(code) => code,
         },
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&secrets::recipient::shown(other)),
     }
 }
 
@@ -221,7 +224,7 @@ fn store_argument(args: &[String]) -> Result<(Option<String>, Vec<String>), Stri
 fn with_name(args: &[String], then: impl FnOnce(&str) -> i32) -> i32 {
     let command = args.first().map(String::as_str);
     match args.get(1) {
-        Some(name) => match command.and_then(|c| MENU.extra(c, args, 1)) {
+        Some(name) => match command.and_then(|c| MENU.extra(c, &shown(args), 1)) {
             Some(bad) => bad,
             None => then(name),
         },
@@ -243,7 +246,8 @@ fn with_name(args: &[String], then: impl FnOnce(&str) -> i32) -> i32 {
 /// the scrollback, and finished with a Ctrl-D nobody is told about.
 fn set(store: &Store, name: &str) -> i32 {
     use std::io::{IsTerminal, Read};
-    let mut value = Vec::new();
+    // Room for an ordinary secret up front, so reading it does not leave grown-out-of copies.
+    let mut value = secrets::Zeroizing::new(Vec::with_capacity(8192));
     if std::io::stdin().is_terminal() {
         let asked = oslo_ui::ask::input(&oslo_ui::ask::Input {
             prompt: format!("{name}: "),
@@ -252,7 +256,7 @@ fn set(store: &Store, name: &str) -> i32 {
             ..Default::default()
         });
         match asked {
-            oslo_ui::ask::Answer::Given(typed) => value = typed.into_bytes(),
+            oslo_ui::ask::Answer::Given(typed) => *value = typed.into_bytes(),
             oslo_ui::ask::Answer::Cancelled => return 1,
             oslo_ui::ask::Answer::NoTerminal => return fail("nothing to read the value from"),
         }
@@ -309,4 +313,11 @@ fn stores() -> i32 {
 pub fn fail(message: &str) -> i32 {
     eprintln!("oslo secret: {message}");
     1
+}
+
+/// The arguments as an error may repeat them: a private key by its prefix alone.
+fn shown(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|arg| secrets::recipient::shown(arg))
+        .collect()
 }

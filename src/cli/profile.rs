@@ -159,7 +159,7 @@ fn key(args: &[String]) -> i32 {
 fn export(name: &str) -> i32 {
     match profile::key::read(name) {
         Ok(Some(key)) => {
-            print!("{}", profile::key::encode(&key));
+            print!("{}", profile::key::encode(&key).as_str());
             0
         }
         Ok(None) => fail(&format!(

@@ -29,6 +29,10 @@
 //! renamed or linked into place, never half there after a crash.
 
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
+
+/// A profile key held in memory, wiped when it is dropped.
+pub type ProfileKey = Zeroizing<[u8; KEY]>;
 
 /// What a profile key file holds, so one is recognisable on sight.
 const PREFIX: &str = "OSLO-PROFILE-1:";
@@ -59,10 +63,10 @@ pub fn path(name: &str) -> Option<PathBuf> {
 /// The key `name` holds, or `None` when it has none yet.
 ///
 /// Only a regular file is read, at most [`crate::private::SMALL`] bytes; a link to one is followed.
-pub fn read(name: &str) -> Result<Option<[u8; KEY]>, String> {
+pub fn read(name: &str) -> Result<Option<ProfileKey>, String> {
     use crate::private::{Links, SMALL};
     let path = located(name)?;
-    let Some(bytes) = crate::private::read(&path, SMALL, Links::Follow)? else {
+    let Some(bytes) = crate::private::read(&path, SMALL, Links::Follow)?.map(Zeroizing::new) else {
         return Ok(None);
     };
     std::str::from_utf8(&bytes)
@@ -78,7 +82,7 @@ pub fn read(name: &str) -> Result<Option<[u8; KEY]>, String> {
 /// second `init` that quietly replaced it would leave a profile that syncs with nothing and says
 /// nothing about why. The refusal is the filesystem's — the key is linked into place without
 /// replacing — so two processes making the first key at once cannot both win.
-pub fn generate(name: &str) -> Result<[u8; KEY], String> {
+pub fn generate(name: &str) -> Result<ProfileKey, String> {
     let path = located(name)?;
     let key = fresh()?;
     prepare(&path)?;
@@ -93,7 +97,7 @@ pub fn generate(name: &str) -> Result<[u8; KEY], String> {
 
 /// The key `name` holds, made now if it has none: whichever process links one into place first,
 /// every other one reads.
-pub fn obtain(name: &str) -> Result<[u8; KEY], String> {
+pub fn obtain(name: &str) -> Result<ProfileKey, String> {
     if let Some(key) = read(name)? {
         return Ok(key);
     }
@@ -123,9 +127,9 @@ fn located(name: &str) -> Result<PathBuf, String> {
     path(name).ok_or_else(|| format!("{name:?} is not a usable profile name"))
 }
 
-fn fresh() -> Result<[u8; KEY], String> {
-    let mut key = [0u8; KEY];
-    getrandom::fill(&mut key).map_err(|e| format!("no randomness from the system: {e}"))?;
+fn fresh() -> Result<ProfileKey, String> {
+    let mut key = Zeroizing::new([0u8; KEY]);
+    getrandom::fill(&mut key[..]).map_err(|e| format!("no randomness from the system: {e}"))?;
     Ok(key)
 }
 
@@ -161,18 +165,20 @@ pub fn fingerprint(key: &[u8; KEY]) -> String {
 /// **Hex, not base64.** `base64` is a dependency of the secrets feature and this has to work in a
 /// build that has no secrets at all — and sixty-four hex characters is a thing somebody can read
 /// down a phone line, which is exactly how a profile key gets to the second machine.
-pub fn encode(key: &[u8; KEY]) -> String {
-    let mut text = String::with_capacity(PREFIX.len() + KEY * 2 + 1);
+pub fn encode(key: &[u8; KEY]) -> Zeroizing<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut text = Zeroizing::new(String::with_capacity(PREFIX.len() + KEY * 2 + 1));
     text.push_str(PREFIX);
     for byte in key {
-        text.push_str(&format!("{byte:02x}"));
+        text.push(HEX[(byte >> 4) as usize] as char);
+        text.push(HEX[(byte & 0xf) as usize] as char);
     }
     text.push('\n');
     text
 }
 
 /// The first key in what a file or a person gave us.
-pub fn decode(text: &str) -> Result<[u8; KEY], String> {
+pub fn decode(text: &str) -> Result<ProfileKey, String> {
     let line = text
         .lines()
         .map(str::trim)
@@ -189,7 +195,7 @@ pub fn decode(text: &str) -> Result<[u8; KEY], String> {
             body.len()
         ));
     }
-    let mut key = [0u8; KEY];
+    let mut key = Zeroizing::new([0u8; KEY]);
     for (at, byte) in key.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&body[at * 2..at * 2 + 2], 16)
             .map_err(|_| "the key is not hexadecimal".to_string())?;
@@ -206,9 +212,9 @@ mod tests {
         let key = [7u8; KEY];
         let text = encode(&key);
         assert!(text.starts_with(PREFIX));
-        assert_eq!(decode(&text).expect("read"), key);
+        assert_eq!(*decode(&text).expect("read"), key);
         assert_eq!(
-            decode(&format!("# carried by hand\n{text}")).expect("read"),
+            *decode(&format!("# carried by hand\n{}", text.as_str())).expect("read"),
             key
         );
 

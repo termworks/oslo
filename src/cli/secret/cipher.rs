@@ -29,7 +29,7 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
         }
         Some(half @ ("encrypt" | "decrypt")) => set(store, half, &args[1..]),
         Some("rm" | "remove") => remove(store),
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&secrets::recipient::shown(other)),
     }
 }
 

@@ -15,6 +15,7 @@ fn store_with(at: &Path, keys: Vec<KeySource>, crypto: Crypto) -> Store {
         recipients: Vec::new(),
         crypto,
         timeout: child::DEFAULT_TIMEOUT,
+        reads_oslo2: true,
     }
 }
 
@@ -156,7 +157,7 @@ fn a_merge_refuses_a_pinned_tombstone() {
 
     let refused = sync::merge(&here, &there, false).expect_err("merged");
     assert!(refused.contains("damaged header"), "{refused}");
-    assert_eq!(here.get("tok").expect("get"), b"mine");
+    assert_eq!(*here.get("tok").expect("get"), b"mine");
 }
 
 /// The audit's h8: many writers at once. Every file stays whole, and the revision counts every
@@ -177,7 +178,7 @@ fn parallel_sets_leave_every_value_readable() {
             });
         }
     });
-    let value = String::from_utf8(store.get("c").expect("readable")).expect("text");
+    let value = String::from_utf8(store.get("c").expect("readable").to_vec()).expect("text");
     assert!(value.contains('-'), "{value}");
     let kept = sync::read_kept(&store.path("c").expect("path"))
         .expect("read")
@@ -220,7 +221,7 @@ fn a_planted_link_does_not_carry_a_write_elsewhere() {
     std::fs::write(&target, original).expect("write");
     std::os::unix::fs::symlink(&target, store.directory.join("deploy.new")).expect("link");
     store.set("deploy", b"value").expect("set");
-    assert_eq!(store.get("deploy").expect("get"), b"value");
+    assert_eq!(*store.get("deploy").expect("get"), b"value");
 
     std::os::unix::fs::symlink(&target, store.directory.join("other.sealed")).expect("link");
     let refused = store.set("other", b"value").expect_err("written through");

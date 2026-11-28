@@ -31,6 +31,8 @@
 use std::path::PathBuf;
 #[cfg(feature = "crypt")]
 use std::time::Duration;
+#[cfg(feature = "crypt")]
+use zeroize::Zeroizing;
 
 /// The most a key file, or a key command's output, may hold.
 #[cfg(feature = "crypt")]
@@ -65,7 +67,8 @@ impl KeySource {
             }
             "file" | "command" => Err(format!("`key {kind}` needs something after it")),
             other => Err(format!(
-                "a key is `profile`, `file` or `command`, not {other:?}"
+                "a key is `profile`, `file` or `command`, not {:?}",
+                super::recipient::shown(other)
             )),
         }
     }
@@ -99,11 +102,11 @@ impl KeySource {
     /// of places to look, and a laptop that has one of them is not misconfigured. Anything else —
     /// unreadable, not a regular file, not a key — is an error, and is never read as "not there".
     #[cfg(feature = "crypt")]
-    pub fn key(&self, timeout: Duration) -> Result<Option<[u8; 32]>, String> {
+    pub fn key(&self, timeout: Duration) -> Result<Option<super::native::SecretKey>, String> {
         use crate::private::{Links, read};
         match self {
             KeySource::Profile => Ok(None),
-            KeySource::File(path) => match read(path, SMALL, Links::Follow)? {
+            KeySource::File(path) => match read(path, SMALL, Links::Follow)?.map(Zeroizing::new) {
                 Some(bytes) => std::str::from_utf8(&bytes)
                     .map_err(|_| "not text".to_string())
                     .and_then(super::native::read_secret)
@@ -116,7 +119,7 @@ impl KeySource {
     }
 
     #[cfg(feature = "crypt")]
-    fn run(argv: &[String], timeout: Duration) -> Result<[u8; 32], String> {
+    fn run(argv: &[String], timeout: Duration) -> Result<super::native::SecretKey, String> {
         if no_exec() {
             return Err(format!(
                 "$OSLO_SECRET_NO_EXEC is set, so `{}` was not run",
@@ -125,8 +128,10 @@ impl KeySource {
         }
         let program = argv.first().map_or("", String::as_str);
         let output = super::child::run(argv, None, timeout, SMALL as usize)?;
-        let text = String::from_utf8(output)
-            .map_err(|_| format!("{program}: what it printed is not a key"))?;
+        let text = Zeroizing::new(
+            String::from_utf8(output)
+                .map_err(|_| format!("{program}: what it printed is not a key"))?,
+        );
         super::native::read_secret(&text).map_err(|e| format!("{program}: {e}"))
     }
 }
@@ -142,7 +147,7 @@ pub fn no_exec() -> bool {
 /// already there — readable or not, a file or a link — is refused rather than destroyed. Missing
 /// directories are made at `0700`; an existing one is left as its owner made it.
 #[cfg(feature = "crypt")]
-pub fn generate(path: &std::path::Path) -> Result<[u8; 32], String> {
+pub fn generate(path: &std::path::Path) -> Result<super::native::SecretKey, String> {
     let directory = path
         .parent()
         .ok_or_else(|| format!("{}: has no directory to be in", path.display()))?;

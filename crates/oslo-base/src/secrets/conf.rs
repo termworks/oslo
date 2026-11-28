@@ -76,6 +76,8 @@ pub struct Section {
     pub hooked: bool,
     /// `key timeout`: how long a key or cipher command may take.
     pub timeout: Option<Duration>,
+    /// `refuse OSLO2`: a file in the format before writers were authenticated is refused.
+    pub refuses_oslo2: bool,
 }
 
 /// The whole file: the lines as written, and what they mean.
@@ -129,8 +131,10 @@ pub fn parse(text: &str) -> Result<Conf, String> {
             continue;
         }
 
-        let (verb, rest) = split_word(line);
-        match (verb, here.as_mut()) {
+        let (word, rest) = split_word(line);
+        let shown = super::recipient::shown(word);
+        let verb = shown.as_str();
+        match (word, here.as_mut()) {
             ("default", None) => conf.default = Some(rest.to_string()),
             ("default", Some(_)) => {
                 return Err(format!(
@@ -154,7 +158,7 @@ pub fn parse(text: &str) -> Result<Conf, String> {
             // nothing — the key and the recipients belong to whatever program the store names — and
             // a line that quietly did nothing is how somebody comes to believe a colleague can read
             // a store they cannot.
-            ("key" | "recipient", Some(_)) if !cfg!(feature = "crypt") => {
+            ("key" | "recipient" | "refuse", Some(_)) if !cfg!(feature = "crypt") => {
                 return Err(format!(
                     "line {at}: this oslo has no built-in crypto, so `{verb}` means nothing here — \
                      the key and the recipients are the business of the `encrypt`/`decrypt command` \
@@ -162,6 +166,10 @@ pub fn parse(text: &str) -> Result<Conf, String> {
                 ));
             }
             ("recipient", Some(section)) => section.recipients.push(rest.to_string()),
+            ("refuse", Some(section)) => match rest {
+                "OSLO2" => section.refuses_oslo2 = true,
+                _ => return Err(format!("line {at}: `refuse` takes OSLO2 and nothing else")),
+            },
             ("key", Some(section)) => section
                 .keys
                 .push(KeySource::parse(rest).map_err(|e| format!("line {at}: {e}"))?),
@@ -182,7 +190,7 @@ pub fn parse(text: &str) -> Result<Conf, String> {
                 section.cipher.decrypt =
                     Some(cipher::parse(verb, rest).map_err(|e| format!("line {at}: {e}"))?);
             }
-            (other, _) => return Err(format!("line {at}: {other:?} is not a thing to say here")),
+            (_, _) => return Err(format!("line {at}: {verb:?} is not a thing to say here")),
         }
     }
     if let Some(done) = here {
@@ -295,7 +303,10 @@ pub fn valid_store_name(name: &str) -> Result<(), String> {
         || name.starts_with('.')
         || name.contains("..")
     {
-        return Err(format!("{name:?} is not a usable name for a store"));
+        return Err(format!(
+            "{:?} is not a usable name for a store",
+            super::recipient::shown(name)
+        ));
     }
     Ok(())
 }

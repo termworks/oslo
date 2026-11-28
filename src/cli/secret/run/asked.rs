@@ -60,7 +60,10 @@ pub fn parse(words: &[String]) -> Result<Asked, String> {
                 asked.env_file = Some(value("a file")?);
             }
             "--file" => asked.pairs.push(pair(&value("VAR=NAME")?, true)?),
-            other if other.starts_with('-') => return Err(format!("{word}: not an option of run")),
+            other if other.starts_with('-') => {
+                let shown = oslo::secrets::recipient::shown(word);
+                return Err(format!("{shown}: not an option of run"));
+            }
             _ => asked.pairs.push(pair(word, false)?),
         }
     }
@@ -72,11 +75,12 @@ pub fn parse(words: &[String]) -> Result<Asked, String> {
 
 /// `VAR=NAME`, with an empty `NAME` meaning the one `VAR` reads as.
 fn pair(word: &str, file: bool) -> Result<Pair, String> {
+    let shown = oslo::secrets::recipient::shown(word);
     let Some((variable, name)) = word.split_once('=') else {
-        return Err(format!("{word:?} is not VAR=NAME"));
+        return Err(format!("{shown:?} is not VAR=NAME"));
     };
     if variable.is_empty() {
-        return Err(format!("{word:?} has no variable to set"));
+        return Err(format!("{shown:?} has no variable to set"));
     }
     let name = match name.is_empty() {
         true => variable.to_lowercase().replace('_', "-"),

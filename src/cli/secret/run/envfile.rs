@@ -87,7 +87,8 @@ fn line(raw: &str) -> Result<Option<(String, Value)>, String> {
         _ => text,
     };
     let Some((name, rest)) = text.split_once('=') else {
-        return Err(format!("{text:?} is not NAME=VALUE"));
+        let shown = oslo::secrets::recipient::shown(text);
+        return Err(format!("{shown:?} is not NAME=VALUE"));
     };
     let name = name.trim_end_matches([' ', '\t']);
     if !super::asked::is_identifier(name) {

@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use super::sync::{self, Kept, Stamp};
-use super::{Store, hooked, place};
+use super::{Store, Zeroizing, hooked, place};
 
 impl Store {
     /// This store's directory made ready, and its `.lock` held until the answer is dropped.
@@ -25,7 +25,7 @@ impl Store {
     }
 
     /// Open `sealed` as `name`'s, telling anything watching before and after.
-    pub(super) fn opened(&self, name: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+    pub(super) fn opened(&self, name: &str, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
         hooked::touched(true, &self.name, name, false);
         let value = self.unseal_named(name, sealed);
         hooked::touched(false, &self.name, name, false);
@@ -70,6 +70,9 @@ impl Store {
     /// Every value is opened before any is written, so a file no key opens stops the rotation with
     /// nothing changed. A file written by somebody else between the two is left as they wrote it,
     /// and is not counted: it was sealed to the same list.
+    ///
+    /// Every file is written in the current format, so a store with the built-in crypto refuses
+    /// `OSLO2` once this has finished.
     pub fn rotate(&self) -> Result<usize, String> {
         let mut values = Vec::new();
         for name in self.names() {
@@ -86,6 +89,10 @@ impl Store {
             if self.put(&path, sealed, Some(&stamp))? {
                 moved += 1;
             }
+        }
+        #[cfg(feature = "crypt")]
+        if self.crypto == super::Crypto::Native && self.reads_oslo2 {
+            self.refuse_oslo2()?;
         }
         Ok(moved)
     }

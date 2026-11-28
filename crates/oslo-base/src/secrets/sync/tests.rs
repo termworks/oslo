@@ -14,19 +14,17 @@ fn store(at: &Path, name: &str) -> Store {
         recipients: Vec::new(),
         crypto: Crypto::Native,
         timeout: crate::secrets::child::DEFAULT_TIMEOUT,
+        reads_oslo2: true,
     }
 }
 
-/// The same store on two machines: one key, two directories, so what one seals the other opens.
+/// The same store on two machines: one name, one key, two directories, so what one seals the other
+/// opens.
 fn pair(at: &Path) -> (Store, Store) {
     let here = store(at, "here");
     let there = Store {
-        name: "there".to_string(),
         directory: at.join("there"),
-        keys: here.keys.clone(),
-        recipients: here.recipients.clone(),
-        crypto: Crypto::Native,
-        timeout: here.timeout,
+        ..here.clone()
     };
     std::fs::create_dir_all(&there.directory).expect("directory");
     (here, there)
@@ -85,8 +83,8 @@ fn both_ends_hold_the_union_and_the_values_open() {
     assert_eq!(report.added_right, 1, "{report:?}");
 
     // Carried as ciphertext, and still openable on the machine that received it.
-    assert_eq!(there.get("deploy").expect("get"), b"one");
-    assert_eq!(here.get("api").expect("get"), b"two");
+    assert_eq!(*there.get("deploy").expect("get"), b"one");
+    assert_eq!(*here.get("api").expect("get"), b"two");
 }
 
 /// The question the whole design exists for.
@@ -96,7 +94,7 @@ fn a_deletion_travels_and_stays_gone() {
     let (here, there) = pair(dir.path());
     here.set("deploy", b"one").expect("set");
     merge(&here, &there, false).expect("first");
-    assert_eq!(there.get("deploy").expect("get"), b"one");
+    assert_eq!(*there.get("deploy").expect("get"), b"one");
 
     here.forget("deploy").expect("forget");
     let report = merge(&here, &there, false).expect("second");
@@ -130,7 +128,7 @@ fn the_later_write_wins() {
 
     there.set("deploy", b"two").expect("set");
     merge(&here, &there, false).expect("second");
-    assert_eq!(here.get("deploy").expect("get"), b"two");
+    assert_eq!(*here.get("deploy").expect("get"), b"two");
 }
 
 /// Writing a name somebody deleted brings it back rather than being undone by the next sync.
@@ -145,7 +143,7 @@ fn writing_over_a_tombstone_revives_it() {
 
     there.set("deploy", b"three").expect("set");
     merge(&here, &there, false).expect("third");
-    assert_eq!(here.get("deploy").expect("get"), b"three");
+    assert_eq!(*here.get("deploy").expect("get"), b"three");
 }
 
 #[test]

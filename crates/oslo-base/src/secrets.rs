@@ -55,11 +55,14 @@ pub mod child;
 pub mod cipher;
 pub mod conf;
 pub mod crypto;
+pub mod dumpable;
 pub mod hooked;
 pub mod key;
 pub mod name;
 #[cfg(feature = "crypt")]
 pub mod native;
+#[cfg(feature = "crypt")]
+mod natively;
 // Where the files are: the store, the key, and why those are two different directories.
 pub mod place;
 pub mod recipient;
@@ -73,6 +76,7 @@ pub use place::{directory, forget, get, identity_path, in_a_repository, names, p
 
 use std::path::PathBuf;
 use std::time::Duration;
+pub use zeroize::Zeroizing;
 
 pub use cipher::Cipher;
 pub use crypto::Crypto;
@@ -107,6 +111,8 @@ pub struct Store {
     pub crypto: Crypto,
     /// How long a key or cipher command may run: `key timeout`, else [`child::DEFAULT_TIMEOUT`].
     pub timeout: Duration,
+    /// Whether an `OSLO2` file is still read. `rotate` ends it with `refuse OSLO2`.
+    pub reads_oslo2: bool,
 }
 
 impl Store {
@@ -164,6 +170,7 @@ impl Store {
             timeout: section
                 .and_then(|s| s.timeout)
                 .unwrap_or(child::DEFAULT_TIMEOUT),
+            reads_oslo2: !section.is_some_and(|s| s.refuses_oslo2),
         })
     }
 
@@ -216,8 +223,8 @@ impl Store {
         self.put(&path, sealed, None).map(|_| ())
     }
 
-    /// The value kept under `name`.
-    pub fn get(&self, name: &str) -> Result<Vec<u8>, String> {
+    /// The value kept under `name`, wiped when it is dropped.
+    pub fn get(&self, name: &str) -> Result<Zeroizing<Vec<u8>>, String> {
         if let Some(why) = self.unreachable_here() {
             return Err(why);
         }
@@ -277,25 +284,30 @@ impl Store {
     /// **A store with an `encrypt command` never reaches oslo's own age**: who that program
     /// encrypts to, and in what format, is its business. That is what makes a key oslo cannot
     /// compute — one held in hardware — usable at all.
+    ///
+    /// **Anonymous**: `oslo.secret.seal`, which encrypts something the caller keeps somewhere else
+    /// of its own. The built-in crypto binds it to a fixed label rather than to a store and a name,
+    /// and a hook is handed an empty name.
     pub fn seal(&self, value: &[u8]) -> Result<Vec<u8>, String> {
-        self.seal_named("", value)
+        self.seal_as(None, value)
     }
 
-    /// The same, telling whatever does the work which secret this is.
-    ///
-    /// The name is empty for an anonymous seal — `oslo.secret.seal`, which encrypts something the
-    /// caller keeps somewhere else of its own.
+    /// The same for one named secret, which the built-in crypto binds to this store and that name.
     ///
     /// **A store with only a `decrypt command` cannot write**, rather than writing with oslo's own
     /// crypto: what that store's files are sealed to is the other program's business.
     pub fn seal_named(&self, name: &str, value: &[u8]) -> Result<Vec<u8>, String> {
+        self.seal_as(Some(name), value)
+    }
+
+    fn seal_as(&self, name: Option<&str>, value: &[u8]) -> Result<Vec<u8>, String> {
         match &self.crypto {
-            Crypto::Hook => hooked::encrypt(&self.name, name, value),
+            Crypto::Hook => hooked::encrypt(&self.name, name.unwrap_or(""), value),
             Crypto::Command(cipher) => match &cipher.encrypt {
                 Some(argv) => cipher::through_within(argv, value, self.timeout),
                 None => Err(self.half("decrypt", "encrypt", "write")),
             },
-            Crypto::Native => self.seal_natively(value),
+            Crypto::Native => self.seal_natively(name, value),
         }
     }
 
@@ -308,15 +320,9 @@ impl Store {
         )
     }
 
-    /// oslo's own, in this process.
-    #[cfg(feature = "crypt")]
-    fn seal_natively(&self, value: &[u8]) -> Result<Vec<u8>, String> {
-        native::seal(&self.encrypt_to()?, value)
-    }
-
     /// This build carries no crypto of its own, so a store has to name one.
     #[cfg(not(feature = "crypt"))]
-    fn seal_natively(&self, _value: &[u8]) -> Result<Vec<u8>, String> {
+    fn seal_natively(&self, _name: Option<&str>, _value: &[u8]) -> Result<Vec<u8>, String> {
         Err(no_native(&self.name))
     }
 
@@ -326,54 +332,54 @@ impl Store {
     /// first identity that fits, so a store whose file key opens the file never runs the program
     /// another key source names — no `$PATH` walk, no fork, and a cron job on a machine that cannot
     /// reach the other key degrades instead of hanging on it.
-    pub fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
-        self.unseal_named("", ciphertext)
+    pub fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+        self.unseal_as(None, ciphertext)
     }
 
-    /// The same, telling whatever does the work which secret this is.
-    pub fn unseal_named(&self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    /// The same for one named secret.
+    pub fn unseal_named(
+        &self,
+        name: &str,
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
+        self.unseal_as(Some(name), ciphertext)
+    }
+
+    fn unseal_as(
+        &self,
+        name: Option<&str>,
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
         match &self.crypto {
-            Crypto::Hook => hooked::decrypt(&self.name, name, ciphertext),
+            Crypto::Hook => {
+                hooked::decrypt(&self.name, name.unwrap_or(""), ciphertext).map(Zeroizing::new)
+            }
             Crypto::Command(cipher) => match &cipher.decrypt {
-                Some(argv) => cipher::through_within(argv, ciphertext, self.timeout),
+                Some(argv) => {
+                    cipher::through_within(argv, ciphertext, self.timeout).map(Zeroizing::new)
+                }
                 None => Err(self.half("encrypt", "decrypt", "read")),
             },
-            Crypto::Native => self.unseal_natively(ciphertext),
+            Crypto::Native => self.unseal_natively(name, ciphertext),
         }
-    }
-
-    /// oslo's own, in this process.
-    ///
-    /// **File keys before program keys**, so a store that opens with a file never runs the program
-    /// another key source names: no `$PATH` walk, no fork, and a cron job on a machine that cannot
-    /// reach the other key degrades instead of hanging on it.
-    #[cfg(feature = "crypt")]
-    fn unseal_natively(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
-        let mut tried = 0;
-        let mut failed = Vec::new();
-        for external in [false, true] {
-            for answer in self.keys_of(external) {
-                let Ok(key) = answer.map_err(|e| failed.push(e)) else {
-                    continue;
-                };
-                tried += 1;
-                if let Ok(value) = native::unseal(&key, ciphertext) {
-                    return Ok(value);
-                }
-            }
-        }
-        Err(self.why_it_did_not_open(tried, &failed))
     }
 
     #[cfg(not(feature = "crypt"))]
-    fn unseal_natively(&self, _ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    fn unseal_natively(
+        &self,
+        _name: Option<&str>,
+        _ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
         Err(no_native(&self.name))
     }
 
     /// What each key source of one kind answers, in order, run only as far as it is read: a key, or
     /// what went wrong, labelled with the source. A source with nothing there answers nothing.
     #[cfg(feature = "crypt")]
-    pub fn keys_of(&self, external: bool) -> impl Iterator<Item = Result<[u8; 32], String>> + '_ {
+    pub fn keys_of(
+        &self,
+        external: bool,
+    ) -> impl Iterator<Item = Result<native::SecretKey, String>> + '_ {
         self.keys
             .iter()
             .filter(move |source| source.is_external() == external)
@@ -403,25 +409,12 @@ impl Store {
         })
     }
 
-    /// Who this store writes for.
-    ///
-    /// **A store with no `recipient` line is written for its own key**, which is what makes a fresh
-    /// install work without being told anything — and adding the first recipient is the moment that
-    /// stops being implied, which is why the command writes the implied one down first.
-    #[cfg(feature = "crypt")]
-    pub fn encrypt_to(&self) -> Result<Vec<[u8; 32]>, String> {
-        if !self.recipients.is_empty() {
-            return self.recipients.iter().map(Recipient::public).collect();
-        }
-        Ok(vec![native::public_of(&self.key_to_write_with()?)])
-    }
-
     /// This profile's key, if it has one.
     ///
     /// A plugin's store belongs to the same profile as everything else: the prefix names which
     /// plugin, not which identity.
     #[cfg(feature = "crypt")]
-    fn profile_key(&self) -> Result<Option<[u8; 32]>, String> {
+    fn profile_key(&self) -> Result<Option<native::SecretKey>, String> {
         crate::track::profile::key::read(&crate::track::profile::current())
     }
 
@@ -435,7 +428,7 @@ impl Store {
     /// **A key is made only when every source said "not there".** Never over a file that failed to
     /// read, and never for a store with a `key command`: that key lives somewhere oslo cannot see.
     #[cfg(feature = "crypt")]
-    pub fn key_to_write_with(&self) -> Result<[u8; 32], String> {
+    pub fn key_to_write_with(&self) -> Result<native::SecretKey, String> {
         for external in [false, true] {
             if let Some(answer) = self.keys_of(external).next() {
                 return answer.map_err(|e| {
@@ -494,28 +487,6 @@ impl Store {
                 KeySource::Command(_) => None,
             })
             .collect()
-    }
-
-    /// Why nothing opened it, in the terms of what this store was told to try, naming every source
-    /// that failed rather than answered.
-    #[cfg(feature = "crypt")]
-    fn why_it_did_not_open(&self, tried: usize, failed: &[String]) -> String {
-        let skipped = key::no_exec() && self.keys.iter().any(KeySource::is_external);
-        if skipped {
-            return format!(
-                "no key opened it. $OSLO_SECRET_NO_EXEC is set, so {} of {} key sources were not run",
-                self.keys.iter().filter(|s| s.is_external()).count(),
-                self.keys.len()
-            );
-        }
-        let said = match tried {
-            0 => format!("{}: no key to open it with", self.name),
-            _ => format!("no key opened it, of the {tried} this store has"),
-        };
-        match failed.is_empty() {
-            true => said,
-            false => format!("{said}; {}", failed.join("; ")),
-        }
     }
 }
 

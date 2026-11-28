@@ -43,7 +43,7 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
             Ok(source) => remove(store, &source),
             Err(e) => fail(&e),
         },
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&secrets::recipient::shown(other)),
     }
 }
 
