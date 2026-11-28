@@ -1,5 +1,196 @@
 # Changelog
 
+## [0.8.0] - 2026-11-28
+
+### <!-- 0 -->⛰️  Features
+
+- Add byte helpers for shell data
+- Add @K, @k, @a and @A on assoc arrays
+- Send functions in bash's exported form
+- Add assoc arrays, namerefs and attributes
+- Honour shopt xpg_echo
+- Follow BASH_COMPAT in the compat names
+- Implement globskipdots
+- Implement checkhash, cdable_vars and more
+- Implement set -v and set -t for scripts
+- Report signal deaths and honour TIMEFORMAT
+- Add command_not_found_handle and 126 rules
+- Implement |&, set +B, set -k and set -P
+- Honour expand_aliases in scripts
+- Add RETURN, errtrace, functrace, BASH_COMMAND
+- Add bash's full set -o and shopt tables
+- Reprint functions with bash's layout
+- Trace commands the way bash 5.3 does
+- Publish bash's call stack and caller
+- Seed bash 5.3 special variables
+- Add @ transforms, ~ toggles and funsubs
+- Add enable, help, complete and fc
+- Add select, coproc and fd redirects
+- Match bash 5.3 output byte for byte
+- Format raw bytes after tzset
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Take -a and -A as bash does
+- List computed vars, mirror BASH_ALIASES
+- Refuse a bare assoc element as bash does
+- Keep escapes in a [[ -v ]] subscript
+- Keep the status a refused := leaves
+- Match glibc POSIX classes in UTF-8 regexes
+- Expand an indexed subscript once
+- Expand <( ) in keyed array elements
+- Split on IFS bytes in the C locale
+- Read option letters as bytes
+- Lower SHLVL on exec as bash does
+- Seed SHELL from the password database
+- Lower SHLVL and publish $_ on exec
+- Keep signals ignored at entry ignored
+- Count bytes in the C locale
+- Keep \u past ASCII literal outside UTF-8
+- Widen regex POSIX classes in UTF-8
+- Match bash's forks, fds and job notices
+- Expand <( ) in assignment values
+- Warn before printing --help
+- Print -lt as hash -p commands
+- Count commands read for \#
+- Seed HOSTNAME, $_ and an exported OLDPWD
+- Turn the stack as bash does
+- Keep the logical path when getcwd fails
+- Read an indexed subscript as arithmetic
+- Refuse a dquoted payload quote left open
+- Expand aliases named after reserved words
+- Assign compounds before a declare function
+- Let functions and aliases shadow verbs
+- Read scripts, stdin and argv losslessly
+- Refuse an unset array count under -u
+- Match bash usage statuses
+- Point new diagnostics at their word
+- Decide extglob when each command is read
+- Trace declared lists as bash does
+- Decode prompt escapes in PS4
+- Evaluate a -v element subscript
+- Print the usage line once
+- Answer --help as bash does
+- Let set -u count a missing element
+- Allocate fds from 63 downward
+- Start a subshell with no jobs
+- Make prefix assignments left to right
+- Abandon the line on an expansion error
+- Read -c and source a command at a time
+- Carry a carrier code point as bytes
+- Count bytes for -n in the C locale
+- Keep raw bytes in home and cwd
+- List raw-byte names by their bytes
+- Match =~ over bytes as bash does
+- Join split characters on +=
+- Reach raw-byte paths by their bytes
+- Keep raw bytes in PWD and pwd
+- Quote and write raw bytes as bash
+- Restore raw bytes in builtin output
+- Count raw bytes and join split chars
+- Read sourced files losslessly
+- Write carried bytes as raw bytes
+- Carry raw bytes through the environment
+- Keep raw bytes and drop NULs as bash
+- Keep raw bytes in captured output
+- Make $'\xHH' escapes produce bytes
+- Keep a quoted compound operand scalar
+- Honour localvar_inherit and localvar_unset
+- Read literal subscripts as bash does
+- Declare the call stack arrays at startup
+- Keep special integers and prefix lists
+- Abandon the line on a bad literal
+- List function attributes after bodies
+- Treat a bad name as a function name
+- Satisfy clippy, rustdoc and readme gates
+- List arrays and maps as bash does
+- Match subscript brackets like bash
+- Point diagnostics at the operand
+- Check the name after scanning
+- Abandon a line on a refused assignment
+- Give select the shared header hooks
+- Run the last -c command's handler unforked
+- Give the |& redirection the new fields
+- Flush a stage's DEBUG output before forking
+- Point the new reports at their word
+- Abandon the command on too many operands
+- Match bash on control builtin operands
+- Match bash on errexit, PIPESTATUS and exec
+- Expand coordinates only at a prompt
+- Reprint coproc; read {fd} from rune
+- Join a chain of && or || in [[ ]]
+- Lower coproc and {name} from rune nodes
+- Read an array literal as assignments do
+- Refuse an extglob group at parse time
+- Lower the forms rune now parses
+- Ask rune where a substitution ends
+- Match leading dots and [[:word:]] as bash
+- Brace-expand redirect targets
+- Honour backslashes in names and quotes
+- Evaluate [[ ]] integer operands as arithmetic
+- Join lists as bash does in one-string spots
+- Follow bash's tilde-expansion contexts
+- Keep $@ a list under default operators
+- Pipe small heredocs; getopts name checks
+- Match bash for ulimit, cd, wait, mapfile
+
+### <!-- 2 -->🚜 Refactor
+
+- Move eval units into interrupt.rs
+- Split source and alias definitions
+
+### <!-- 3 -->📚 Documentation
+
+- Close the associative array gap
+- Name private modules without links
+- Tighten new comments
+- Unlink private coproc module
+- Move select and coproc to closed gaps
+
+### <!-- 4 -->⚡ Performance
+
+- Ignore comments when choosing chunks
+- Scan for a lead byte before windows
+
+### <!-- 5 -->🎨 Styling
+
+- Drop two needless copies in listings
+- Drop a redundant slice in the class scan
+- Format the verb and seed changes
+- Format the byte changes
+- Format the subscript test
+- Format the merged control builtins
+- Format and fix doc links
+
+### <!-- 6 -->🧪 Testing
+
+- Cover an array value read in chunks
+- Share the globstar lock with shopt
+- Give each byte-path script its own directory
+- Match kill -s status and keep source usage
+- Cover an arithmetic command in a subshell
+- Follow coproc, select, bind and wait to bash
+- Expect status 1 for no aliases
+- Expect raw bytes from the environment
+- Cover paths, xtrace, regex and +=
+- Add corpus cases for byte fidelity
+- Compare stdout as bytes
+- Leave DIRSTACK out of the determinism check
+- Pin associative subscripts in assignments
+- Refuse a bad name under -v only
+- Add corpus cases for the variable model
+- Follow bash in the builtin tests
+- Keep the keyword probe free of assignments
+- Add the parser bash-compat cases
+- Cover printf and echo against bash
+
+### Build
+
+- Move luna to v0.7.0
+- Rebuild when a crate manifest changes
+- Move rune to v0.1.7
+- Move rune to v0.1.6
+
 ## [0.7.9] - 2026-11-27
 
 ### <!-- 0 -->⛰️  Features
