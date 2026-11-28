@@ -96,6 +96,7 @@ impl Environment {
             ("BASH_LOADABLES_PATH", LOADABLES_PATH.to_string()),
             ("HOSTNAME", host_name()),
             ("_", invoked_as()),
+            ("SHELL", login_shell(uid)),
         ] {
             if !self.vars.contains_key(name) {
                 self.seed(name, value, false);
@@ -271,6 +272,15 @@ fn invoked_as() -> String {
     std::env::args_os()
         .next()
         .map(|name| oslo_base::lossless::encode(&name))
+        .unwrap_or_default()
+}
+
+/// The user's login shell from the password database, which bash gives `$SHELL` when unset.
+fn login_shell(uid: u32) -> String {
+    nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|user| oslo_base::lossless::encode(user.shell.as_os_str()))
         .unwrap_or_default()
 }
 
