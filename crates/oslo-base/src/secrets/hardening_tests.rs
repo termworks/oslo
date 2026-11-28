@@ -3,6 +3,7 @@
 
 use super::*;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 fn store_with(at: &Path, keys: Vec<KeySource>, crypto: Crypto) -> Store {
     let directory = at.join("store");
