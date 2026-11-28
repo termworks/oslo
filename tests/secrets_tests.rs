@@ -24,6 +24,8 @@ fn secret(store: &std::path::Path, args: &[&str], input: &[u8]) -> (String, Stri
         .env("XDG_DATA_HOME", store)
         .env("XDG_STATE_HOME", store.join("state"))
         .env_remove("OSLO_SECRET_IDENTITY")
+        .env_remove("OSLO_SECRET_CONF")
+        .env_remove("OSLO_SECRET_STORE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
