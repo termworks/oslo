@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// printed `yes: standard output: Broken pipe` instead of dying quietly on the closed pipe.
 /// SIGHUP and SIGTERM are here for [`catch_fatal_for_exit_trap`]: `exec` would reset a *handled*
 /// signal on its own, but a forked subshell never execs, and one carrying the parent's handler
-/// would record a fatal signal instead of dying of it.
-const RESET_IN_CHILD: [Signal; 8] = [
+/// would record a fatal signal instead of dying of it. SIGSEGV and SIGBUS carry the runtime's
+/// stack-overflow handler, which survives a `kill -SEGV` sent before the child execs.
+const RESET_IN_CHILD: [Signal; 10] = [
     Signal::SIGPIPE,
     Signal::SIGINT,
     Signal::SIGQUIT,
@@ -27,6 +28,8 @@ const RESET_IN_CHILD: [Signal; 8] = [
     Signal::SIGTTOU,
     Signal::SIGHUP,
     Signal::SIGTERM,
+    Signal::SIGSEGV,
+    Signal::SIGBUS,
 ];
 
 /// The signals a `trap '' SIG` has deliberately ignored, one bit per signal number.
@@ -163,6 +166,37 @@ pub fn fatal_signal_pending() -> Option<i32> {
         0 => None,
         signum => Some(signum),
     }
+}
+
+/// End this process by `signum` at its default action; returns only if that did not kill it.
+pub fn die_of(signum: i32) {
+    let Ok(signal) = Signal::try_from(signum) else {
+        return;
+    };
+    let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+    let mut only = SigSet::empty();
+    only.add(signal);
+    unsafe {
+        let _ = signal::sigaction(signal, &dfl);
+    }
+    let _ = signal::sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&only), None);
+    let _ = signal::raise(signal);
+}
+
+/// Set when a foreground wait returned with a fatal signal standing.
+static IN_WAIT: AtomicBool = AtomicBool::new(false);
+
+/// Note that a foreground wait has just returned, so a fatal signal standing arrived during it.
+pub fn note_wait_returned() {
+    if FATAL_RECEIVED.load(Ordering::SeqCst) != 0 {
+        IN_WAIT.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether the fatal signal arrived during a foreground wait, whose command's status bash has not
+/// yet made `$?` when it runs the EXIT trap. Cleared as it is taken.
+pub fn fatal_arrived_in_wait() -> bool {
+    IN_WAIT.swap(false, Ordering::SeqCst)
 }
 
 /// Whether a fatal signal is waiting, **without** taking it.

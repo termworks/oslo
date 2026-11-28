@@ -54,6 +54,8 @@ pub struct Job {
     /// The text the user typed, for `jobs` and for the `[1]+ Done` notice.
     pub command: String,
     pub state: JobState,
+    /// The signal that ended the job's last process, and whether it dumped core.
+    pub signal: Option<(i32, bool)>,
     /// Whether the user has already been told about the state this entry is in.
     ///
     /// A finished job is not dropped the instant it is reaped: bash reports it once — `jobs`
@@ -227,6 +229,7 @@ impl JobTable {
             ended: Vec::new(),
             command,
             state,
+            signal: None,
             notified: false,
             background,
         });

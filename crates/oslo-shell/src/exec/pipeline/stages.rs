@@ -66,6 +66,10 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
                     if traced {
                         crate::env::builtins::skip_next_debug_trap();
                     }
+                    // A simple command is the stage itself: a program it names replaces it.
+                    if let Command::Simple(simple) = cmd {
+                        crate::exec::simple::oneshot::mark(simple);
+                    }
                     // `echo x | exit 3` exits the stage with 3, not with 1.
                     let status = status_of(eval_command(env, cmd));
                     flush_stdout();

@@ -45,6 +45,10 @@ pub(super) fn call_function_command(
     env.restore_loops(loops);
     env.leave_trap_frame(traps);
     env.exit_function();
+    // Back at the top level, every substitution still open is closed.
+    if !env.in_function() {
+        crate::exec::procsub::finish_from(env, 0);
+    }
 
     // **A call is judged on its own, whatever the body did.** The `set -e` exemption a compound
     // inherits from its last command stops at the function boundary: `set -e; f() { false && :; };

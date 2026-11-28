@@ -286,6 +286,7 @@ impl Environment {
 
     fn enter_subshell_counted(&mut self, counted: bool) {
         self.current_pid = std::process::id();
+        crate::exec::job::forget_background_deaths();
         // Moved rather than dropped: the actions stop applying, but `$(trap)` still has to be
         // able to report them. See [`Self::inherited_traps`].
         self.inherited_traps = std::mem::take(&mut self.signal_traps);

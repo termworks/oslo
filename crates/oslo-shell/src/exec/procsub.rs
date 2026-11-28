@@ -90,6 +90,8 @@ pub fn open(
             env.number_lines_from_here();
             crate::exec::simple::trace::nest();
             crate::exec::pipeline::quiet_deaths();
+            use crate::exec::simple::oneshot::{Tail, tail_list_next};
+            tail_list_next(Tail::ProcSub);
             let status = status_of(run(env, &ast));
             flush_stdout();
             std::process::exit(crate::env::builtins::run_exit_trap(env, status));
@@ -139,6 +141,23 @@ fn above_the_scripts_range(fd: RawFd) -> RawFd {
         }
         Err(_) => fd,
     }
+}
+
+thread_local! {
+    /// The address of a simple command whose substitutions stay open after it.
+    static KEPT_BY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A top-level command of a `-c`, `eval` or `source` string that stands alone keeps its
+/// substitutions open after it, as bash's string reader does: a later line sees `/dev/fd/62`.
+pub(crate) fn keep_after(simple: &oslo_base::ast::SimpleCommand) {
+    KEPT_BY.with(|kept| kept.set(std::ptr::from_ref(simple) as usize));
+}
+
+/// Whether `simple` is the command [`keep_after`] named.
+pub(crate) fn kept_after(simple: &oslo_base::ast::SimpleCommand) -> bool {
+    let kept = KEPT_BY.with(|kept| kept.get());
+    kept != 0 && kept == std::ptr::from_ref(simple) as usize
 }
 
 /// Close the substitutions opened since `env.procsubs` held `before` of them.

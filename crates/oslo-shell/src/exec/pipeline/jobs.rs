@@ -16,7 +16,7 @@ use crate::exec::job;
 use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
 use nix::unistd::{ForkResult, Pid, close, dup2, fork};
-use oslo_base::ast::{AndOrList, Pipeline};
+use oslo_base::ast::{AndOrList, Command, Pipeline};
 use oslo_base::error::{Result, ShellError};
 
 /// Start `and_or` in the background, record it as `$!` and as a job.
@@ -41,6 +41,14 @@ pub(super) fn spawn_background(env: &mut Environment, and_or: &AndOrList) -> Res
                 env.enter_subshell();
                 super::quiet_deaths();
                 detach_stdin();
+                // A lone simple command is this child: a program it names replaces it.
+                if let ([Command::Simple(simple)], true) =
+                    (and_or.first.commands.as_slice(), and_or.rest.is_empty())
+                    && !and_or.first.negated
+                    && !and_or.first.timed
+                {
+                    crate::exec::simple::oneshot::mark(simple);
+                }
                 let res = status_of(eval_and_or_list(env, and_or));
                 flush_stdout();
                 // A background job is a subshell too: `{ trap ... EXIT; ...; } &` must clean up.

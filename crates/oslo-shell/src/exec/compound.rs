@@ -433,6 +433,14 @@ pub(crate) fn eval_compound_command(
             body,
         } => eval_arithmetic_for(env, init.as_deref(), cond.as_deref(), step.as_deref(), body),
         CompoundCommand::Subshell(body) => {
+            use crate::exec::simple::oneshot::{Tail, mark_lone_subshell, tail_list_next};
+            // `( ( … ) )`: the inner one is this process already.
+            if crate::exec::simple::oneshot::runs_in_place(body) {
+                env.enter_subshell();
+                mark_lone_subshell(body);
+                tail_list_next(Tail::Subshell);
+                return eval_command_list(env, body);
+            }
             // Anything this shell has buffered would be duplicated by the fork and printed twice.
             flush_stdout();
             unsafe {
@@ -448,6 +456,8 @@ pub(crate) fn eval_compound_command(
                         // private is force-exported. Only subshell-local state is refreshed.
                         env.enter_subshell();
                         crate::exec::job::enter_child(false);
+                        mark_lone_subshell(body);
+                        tail_list_next(Tail::Subshell);
                         // `status_of`, not `unwrap_or(1)`: `( exit 3 )` unwinds as an error
                         // carrying its code, and the exit status is the only channel left here.
                         let res = status_of(eval_command_list(env, body));

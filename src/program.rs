@@ -68,6 +68,9 @@ fn run_streamed(env: &mut Environment, script: &str) -> i32 {
             env.get_alias(n).map(str::to_string)
         })
     {
+        if env.option(ShellOption::CommandString) {
+            oslo::exec::simple::program_ends_the_shell();
+        }
         return match absorb_loop_control(eval_command_list(env, &ast)) {
             Ok(status) => status,
             Err(e) => exit_error_status(env, e),

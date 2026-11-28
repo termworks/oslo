@@ -98,23 +98,49 @@ fn abandons_line(env: &Environment, err: &ShellError) -> bool {
 
 fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catches) -> Result<i32> {
     let outermost = catches.line;
+    // Whether this process ends with this list, which lets its last command run unforked.
+    let tail = crate::exec::simple::oneshot::take_tail_list();
     let mut last_status = 0;
     // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
     let mut abandoned: Option<u32> = None;
-    // Each line of a script's top level is one command read, which `\#` counts.
+    // Each line of the top level is one command read: `\#` counts those of a script, and a
+    // background job a signal killed is announced before the next one.
     let reading = catches.discard && !env.option(crate::env::options::ShellOption::CommandString);
-    let mut counted: Option<u32> = None;
+    let mut read: Option<u32> = None;
+    // `$?` before the item now running, for an EXIT trap a fatal signal runs during it.
+    let mut before = env.last_status;
 
     for (index, item) in cmd_list.items.iter().enumerate() {
         if abandoned.is_some_and(|line| line > 0 && item.line == line) {
             continue;
         }
-        if reading && counted != Some(item.line) {
-            counted = Some(item.line);
-            crate::expand::prompt::count_command_read();
+        let new_line = catches.discard && read != Some(item.line);
+        if new_line {
+            read = Some(item.line);
+            if reading {
+                crate::expand::prompt::count_command_read();
+            }
         }
-        let last = index + 1 == cmd_list.items.len();
-        crate::exec::simple::oneshot::arm(env, item, last, outermost);
+        if index + 1 == cmd_list.items.len()
+            && let Some(kind) = tail
+        {
+            crate::exec::simple::oneshot::arm(env, item, kind, cmd_list.items.len() == 1);
+        }
+        // A string's top-level line that is one simple command keeps its `<( )` open.
+        let alone = (index == 0 || cmd_list.items[index - 1].line != item.line)
+            && cmd_list
+                .items
+                .get(index + 1)
+                .is_none_or(|next| next.line != item.line);
+        if alone
+            && catches.line
+            && (!catches.discard || env.option(crate::env::options::ShellOption::CommandString))
+            && item.op != ListOp::Background
+            && item.and_or.rest.is_empty()
+            && let [Command::Simple(simple)] = item.and_or.first.commands.as_slice()
+        {
+            crate::exec::procsub::keep_after(simple);
+        }
         // `set -n`: read the program, run none of it. Checked per command rather than once before
         // the list so that `set -n` *within* a script stops execution from that point, which is
         // where bash stops too — and so that `oslo -n script` never reaches a command at all.
@@ -138,6 +164,9 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
         // R7.4: a command boundary is the one moment the shell is provably not waiting for a
         // foreground child, which is what makes reaping every finished background job here safe.
         job::reap_background_jobs();
+        if new_line {
+            job::announce_background_deaths(env);
+        }
         crate::exec::coproc::reap(env);
         // R7.2: and the one moment a Ctrl-C can be acted on when nothing has entered the kernel —
         // `while true; do :; done` never blocks, so polling is the only way out of it.
@@ -148,8 +177,9 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
         // `exit 128 + signo` is what runs that trap: the shell dies of the signal either way, and
         // this is the difference between the cleanup happening and not.
         if let Some(signum) = job::fatal_signal_pending() {
-            return Err(die_of_signal(env, signum));
+            return Err(die_of_signal(env, signum, before));
         }
+        before = env.last_status;
 
         if item.op == ListOp::Background {
             jobs::spawn_background(env, &item.and_or)?;
@@ -194,7 +224,7 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
     // list: there is no boundary after it, and the shell would otherwise end normally and report
     // the command's status rather than the signal's.
     if let Some(signum) = job::fatal_signal_pending() {
-        return Err(die_of_signal(env, signum));
+        return Err(die_of_signal(env, signum, before));
     }
 
     Ok(last_status)
@@ -202,12 +232,25 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
 
 /// End the shell over a fatal signal that arrived while an EXIT trap was set.
 ///
-/// The trap sees `$?` as the last command left it, and the shell ends with `128 + signo` unless
-/// the trap exits with something else.
-fn die_of_signal(env: &mut Environment, signum: i32) -> ShellError {
-    let last = env.last_status;
-    let code = crate::env::builtins::run_exit_trap(env, last);
-    ShellError::Exit(if code == last { 128 + signum } else { code })
+/// A signal that arrived during a foreground wait leaves `$?` as the command *before* the waited
+/// one left it, since bash runs the trap from inside that wait. The shell ends with `128 + signo`
+/// whatever the trap exits with.
+fn die_of_signal(env: &mut Environment, signum: i32, before: i32) -> ShellError {
+    let status = match job::fatal_arrived_in_wait() {
+        true => before,
+        false => env.last_status,
+    };
+    env.last_status = status;
+    crate::env::builtins::run_exit_trap(env, status);
+    // A subshell then dies of the signal itself, as bash's does, so its parent sees the signal.
+    if env
+        .get_param("$")
+        .is_some_and(|shell| shell != std::process::id().to_string())
+    {
+        crate::exec::compound::flush_stdout();
+        job::die_of(signum);
+    }
+    ShellError::Exit(128 + signum)
 }
 
 pub fn eval_and_or_list(env: &mut Environment, and_or: &AndOrList) -> Result<i32> {

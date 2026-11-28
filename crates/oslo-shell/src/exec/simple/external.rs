@@ -107,6 +107,13 @@ pub(crate) fn run_external(
         .map(|w| exec_cstring(&oslo_base::lossless::decode(w)))
         .collect();
 
+    // The command this process ends with replaces it rather than becoming its child, unless a
+    // process substitution is still open for it to clean up afterwards.
+    if super::oneshot::current() && env.procsubs.is_empty() {
+        crate::exec::compound::flush_stdout();
+        exec_program(env, path, cmd_name, &c_path, &c_args, redirections);
+    }
+
     unsafe {
         match oslo_base::forksafe::quiesced(|| fork()) {
             Ok(ForkResult::Child) => {
@@ -115,32 +122,7 @@ pub(crate) fn run_external(
                 // until this call lands the child is a background process as far as the tty
                 // driver is concerned.
                 job::join_foreground_group(None);
-                // Before anything else, and in particular before `execv`: the program about to
-                // replace this process must not inherit the shell's own signal policy.
-                crate::exec::job::reset_signals_for_child();
-
-                // Nothing in this process will ever restore a descriptor — `execv` replaces the
-                // whole table — so the guard saves no copies for the new program to inherit.
-                let mut guard = RedirectGuard::for_exec();
-                if let Err(e) = guard.apply(env, redirections) {
-                    std::process::exit(report_redirect_failure(&env.origin(), &e));
-                }
-
-                // Including the shell-script fallback for a file with no `#!` line; see there.
-                let failure =
-                    crate::env::builtins::spawn::exec_or_interpret(&c_path, &c_args, None);
-                // A file that is there but answers ENOENT names an interpreter that is not.
-                let bad_interpreter = failure == nix::errno::Errno::ENOENT && path.exists();
-                let why = match failure {
-                    nix::errno::Errno::ENOEXEC => "cannot execute binary file: Exec format error",
-                    _ if bad_interpreter => "bad interpreter: No such file or directory",
-                    other => other.desc(),
-                };
-                eprintln!("{}{}: {why}", env.origin(), cmd_name);
-                std::process::exit(match failure {
-                    nix::errno::Errno::ENOENT if !bad_interpreter => 127,
-                    _ => 126,
-                });
+                exec_program(env, path, cmd_name, &c_path, &c_args, redirections);
             }
             Ok(ForkResult::Parent { child }) => {
                 // `None` when job control is off, which is when the child is still in the
@@ -189,6 +171,40 @@ pub(crate) fn run_external(
     }
 }
 
+/// Apply `redirections` and exec `path` in this process, reporting a failure as bash does.
+fn exec_program(
+    env: &mut Environment,
+    path: &Path,
+    cmd_name: &str,
+    c_path: &CString,
+    c_args: &[CString],
+    redirections: &[Redirection],
+) -> ! {
+    // Before `execv`: the program about to replace this process must not inherit the shell's own
+    // signal policy.
+    crate::exec::job::reset_signals_for_child();
+    // Nothing in this process will ever restore a descriptor — `execv` replaces the whole table —
+    // so the guard saves no copies for the new program to inherit.
+    let mut guard = RedirectGuard::for_exec();
+    if let Err(e) = guard.apply(env, redirections) {
+        std::process::exit(report_redirect_failure(&env.origin(), &e));
+    }
+    // Including the shell-script fallback for a file with no `#!` line; see there.
+    let failure = crate::env::builtins::spawn::exec_or_interpret(c_path, c_args, None);
+    // A file that is there but answers ENOENT names an interpreter that is not.
+    let bad_interpreter = failure == nix::errno::Errno::ENOENT && path.exists();
+    let why = match failure {
+        nix::errno::Errno::ENOEXEC => "cannot execute binary file: Exec format error",
+        _ if bad_interpreter => "bad interpreter: No such file or directory",
+        other => other.desc(),
+    };
+    eprintln!("{}{}: {why}", env.origin(), cmd_name);
+    std::process::exit(match failure {
+        nix::errno::Errno::ENOENT if !bad_interpreter => 127,
+        _ => 126,
+    });
+}
+
 /// Wait for a foreground child and turn its wait status into an exit status.
 ///
 /// `WUNTRACED` is not optional now that children are started with SIGTSTP at `SIG_DFL`
@@ -205,7 +221,9 @@ pub(crate) fn run_external(
 /// where the oracle's behaviour is indistinguishable from a deadlock.
 fn wait_for_child(child: Pid, cmd_name: &str, words: &[String]) -> i32 {
     loop {
-        match waitpid(child, Some(WaitPidFlag::WUNTRACED)) {
+        let waited = waitpid(child, Some(WaitPidFlag::WUNTRACED));
+        job::note_wait_returned();
+        match waited {
             Ok(WaitStatus::Exited(_, code)) => {
                 crate::exec::argv::note_signal(None);
                 return code;

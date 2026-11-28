@@ -34,12 +34,15 @@ pub use control::{
     enable_job_control, init_job_control, job_control_active, leave_job_control, shell_pgid,
 };
 pub use reap::reap_background_jobs;
-pub use report::describe;
+pub use report::{
+    announce_background_deaths, describe, forget_background_deaths, note_background_death,
+};
 pub use resume::{continue_in_background, foreground_job};
 pub use signals::{
-    catch_fatal_for_exit_trap, drain_interrupt_fd, fatal_signal_pending, fatal_signal_waiting,
-    forget_interrupt, install_shell_signals, interrupt_fd, interrupt_pending, interrupt_waiting,
-    note_deliberate_ignore, note_interrupt, reset_signals_for_child, restore_shell_signal,
+    catch_fatal_for_exit_trap, die_of, drain_interrupt_fd, fatal_arrived_in_wait,
+    fatal_signal_pending, fatal_signal_waiting, forget_interrupt, install_shell_signals,
+    interrupt_fd, interrupt_pending, interrupt_waiting, note_deliberate_ignore, note_interrupt,
+    note_wait_returned, reset_signals_for_child, restore_shell_signal,
 };
 pub use table::{Job, JobState, JobTable, with_jobs};
 

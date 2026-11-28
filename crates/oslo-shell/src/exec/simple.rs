@@ -25,6 +25,11 @@ pub(crate) mod trace;
 
 pub use autocd::set_autocd;
 
+/// The `-c` program about to run is the shell's last, so its final command is not forked.
+pub fn program_ends_the_shell() {
+    oneshot::tail_list_next(oneshot::Tail::Program);
+}
+
 use crate::env::Environment;
 use crate::exec::redirect::RedirectGuard;
 use crate::exec::simple::declare::{is_declaration_builtin, looks_like_an_assignment};
@@ -37,11 +42,13 @@ pub(crate) fn eval_simple_command(env: &mut Environment, simple: &SimpleCommand)
     // until the command has run and be closed afterwards, whichever way the command ends. The
     // wrapper is what guarantees the second half on the error paths too.
     let opened_before = env.procsubs.len();
-    oneshot::begin();
+    oneshot::begin(simple);
     crate::env::scope::take_integer_failure();
     let result = eval_simple_command_inner(env, simple);
     oneshot::end();
-    crate::exec::procsub::finish_from(env, opened_before);
+    if !crate::exec::procsub::kept_after(simple) {
+        crate::exec::procsub::finish_from(env, opened_before);
+    }
     // An integer variable's value that did not evaluate abandons the command it was assigned in.
     match crate::env::scope::take_integer_failure() {
         Some(failure) => Err(failure),

@@ -62,6 +62,13 @@ fn interrupted_status(env: &mut Environment, Interrupted(signum): Interrupted) -
 
 /// `wait [-fn] [-p var] [id …]`.
 pub fn builtin_wait(env: &mut Environment, args: &[String]) -> Result<i32> {
+    let result = wait_for_operands(env, args);
+    // A background job a signal ended is announced once `wait` has collected it.
+    crate::exec::job::announce_background_deaths(env);
+    result
+}
+
+fn wait_for_operands(env: &mut Environment, args: &[String]) -> Result<i32> {
     let opts = match Options::parse(&args[1..]) {
         Ok(opts) => opts,
         Err(bad) => {
@@ -323,6 +330,7 @@ fn wait_for_pid(pid: Pid) -> std::result::Result<Option<i32>, Interrupted> {
             Ok(WaitStatus::StillAlive) => return Ok(None),
             Ok(status) => {
                 if let Some(code) = exit_status(status) {
+                    note_if_killed(status);
                     note_reaped(pid);
                     return Ok(Some(code));
                 }
@@ -365,6 +373,7 @@ fn wait_for_everything() -> std::result::Result<(), Interrupted> {
             Ok(WaitStatus::StillAlive) => break,
             Ok(status) => {
                 if let (Some(pid), Some(_)) = (status.pid(), exit_status(status)) {
+                    note_if_killed(status);
                     note_reaped(pid);
                 }
             }
@@ -406,6 +415,7 @@ fn wait_first_of(targets: &[Pid]) -> std::result::Result<Option<(Pid, i32)>, Int
                     continue;
                 };
                 if targets.is_empty() || targets.contains(&pid) {
+                    note_if_killed(status);
                     note_reaped(pid);
                     return Ok(Some((pid, code)));
                 }
@@ -414,7 +424,7 @@ fn wait_first_of(targets: &[Pid]) -> std::result::Result<Option<(Pid, i32)>, Int
                 // later `wait $that` has nowhere but the table to find it. Dropping it here is what
                 // made that wait answer 127 and "not a child of this shell".
                 let signal = match status {
-                    WaitStatus::Signaled(_, sig, _) => Some(sig as i32),
+                    WaitStatus::Signaled(_, sig, core) => Some((sig as i32, core)),
                     _ => None,
                 };
                 with_jobs(|jobs| jobs.keep_status(pid, code, signal));
@@ -438,6 +448,20 @@ fn take_finished_job() -> Option<(Pid, i32)> {
         jobs.remove(id);
         Some((pgid, status))
     })
+}
+
+/// Queue the notice for a background job's process a signal ended, while its job still names it.
+fn note_if_killed(status: WaitStatus) {
+    let WaitStatus::Signaled(pid, signal, core) = status else {
+        return;
+    };
+    let command = with_jobs(|jobs| {
+        let id = jobs.job_of_pid(pid)?;
+        jobs.get(id).map(|job| job.command.clone())
+    });
+    if let Some(command) = command {
+        crate::exec::job::note_background_death(pid.as_raw(), signal as i32, core, &command);
+    }
 }
 
 /// Tell the job table that `wait` has accounted for `pid`, so nothing reports it twice.

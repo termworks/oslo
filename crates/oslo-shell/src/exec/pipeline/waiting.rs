@@ -128,7 +128,9 @@ pub fn wait_for_status(pid: Pid) -> i32 {
 /// a killed one is simply over.
 pub(crate) fn wait_for_child(pid: Pid) -> (i32, bool) {
     loop {
-        return match waitpid(pid, Some(WaitPidFlag::WUNTRACED)) {
+        let waited = waitpid(pid, Some(WaitPidFlag::WUNTRACED));
+        crate::exec::job::note_wait_returned();
+        return match waited {
             Ok(WaitStatus::Exited(_, code)) => (code, false),
             Ok(WaitStatus::Signaled(_, sig, core)) => {
                 note_death(pid, sig as i32, core);
