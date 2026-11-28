@@ -79,8 +79,10 @@ impl Run {
 pub type Field = Vec<Run>;
 
 /// The text a field carries, with quoting forgotten.
+///
+/// Carried bytes from neighbouring runs that together spell a character become that character.
 pub fn field_text(field: &[Run]) -> String {
-    field.iter().map(|r| r.text.as_str()).collect()
+    oslo_base::lossless::normalize(field.iter().map(|r| r.text.as_str()).collect())
 }
 
 /// Accumulates parts into fields, splicing a multi-field part into its neighbours.

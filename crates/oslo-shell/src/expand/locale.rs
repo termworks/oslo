@@ -21,6 +21,6 @@ pub fn is_utf8(env: &Environment) -> bool {
 pub fn length(env: &Environment, value: &str) -> usize {
     match is_utf8(env) {
         true => value.chars().count(),
-        false => value.len(),
+        false => oslo_base::lossless::byte_len(value),
     }
 }
