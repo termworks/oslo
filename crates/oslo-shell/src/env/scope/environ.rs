@@ -52,7 +52,7 @@ pub(super) fn environ_set(name: &str, value: &str) {
     // interpreter, builtins and Lua engine all run on the main thread, and a forked child starts
     // with only the forking thread alive. The guard above rules out the other failure mode — the
     // call panics on an empty name, a `=` in the name, or a NUL in either half.
-    unsafe { env::set_var(name, value) }
+    unsafe { env::set_var(name, oslo_base::lossless::to_os(value)) }
 }
 
 /// Drop `name` from the process environment; a name `environ` cannot hold is ignored.
