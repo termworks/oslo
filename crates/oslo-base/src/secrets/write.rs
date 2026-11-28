@@ -72,10 +72,13 @@ impl Store {
     /// and is not counted: it was sealed to the same list.
     ///
     /// Every file is written in the current format, so a store with the built-in crypto refuses
-    /// `OSLO2` once this has finished.
+    /// `OSLO2` once this has finished, and names the `OSLO2` files it rewrote.
     pub fn rotate(&self) -> Result<usize, String> {
+        let names = self.names();
+        #[cfg(feature = "crypt")]
+        let upgrading = self.oslo2_names(&names);
         let mut values = Vec::new();
-        for name in self.names() {
+        for name in names {
             let path = self.path(&name)?;
             let Some(kept) = sync::read_kept(&path)?.filter(|kept| !kept.stamp.deleted) else {
                 continue;
@@ -91,8 +94,8 @@ impl Store {
             }
         }
         #[cfg(feature = "crypt")]
-        if self.crypto == super::Crypto::Native && self.reads_oslo2 {
-            self.refuse_oslo2()?;
+        if self.crypto == super::Crypto::Native {
+            self.upgraded(&upgrading)?;
         }
         Ok(moved)
     }

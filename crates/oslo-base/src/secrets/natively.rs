@@ -9,10 +9,11 @@
 //! * **The context** is the store's name and the secret's, so a file renamed, swapped for another
 //!   or moved to another store does not open. A seal with no name is bound to a fixed label.
 //! * **`OSLO2`** is read with one warning per process until the store has been rotated, and
-//!   refused after: `rotate` writes `refuse OSLO2` into the store's section of `secrets.conf`.
+//!   refused after: `rotate` writes `refuse OSLO2` into the store's section of `secrets.conf`, and
+//!   names every `OSLO2` file it rewrote, since nothing could check who wrote any of them.
 
 use super::native::{self, Context, Plain, Refused, SecretKey};
-use super::{KeySource, Recipient, Store, conf, dumpable, key};
+use super::{Crypto, KeySource, Recipient, Store, conf, dumpable, key, sync};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What `rotate` writes into a store's section once nothing in it is `OSLO2`.
@@ -127,8 +128,46 @@ impl Store {
         );
     }
 
+    /// The names among `names` whose file is `OSLO2`. The warning a read of one prints is held
+    /// back from here on, because [`Store::upgraded`] names them all at once.
+    pub(super) fn oslo2_names(&self, names: &[String]) -> Vec<String> {
+        if self.crypto != Crypto::Native {
+            return Vec::new();
+        }
+        WARNED.store(true, Ordering::Relaxed);
+        names
+            .iter()
+            .filter(|name| {
+                let path = self.path(name).ok();
+                let kept = path.and_then(|path| sync::read_kept(&path).ok().flatten());
+                kept.is_some_and(|kept| native::parse(&kept.sealed).is_ok_and(|p| p.legacy()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// After a rotate: name every `OSLO2` file it rewrote, and refuse `OSLO2` from now on.
+    pub(super) fn upgraded(&self, names: &[String]) -> Result<(), String> {
+        if !names.is_empty() {
+            crate::messages::warn(
+                "secret",
+                format!(
+                    "{}: {} OSLO2 file(s) rewritten as OSLO3, and nothing could check who wrote \
+                     them; a value here you do not recognise was planted: {}",
+                    self.name,
+                    names.len(),
+                    names.join(", ")
+                ),
+            );
+        }
+        if self.reads_oslo2 {
+            self.refuse_oslo2()?;
+        }
+        Ok(())
+    }
+
     /// Mark this store as holding no `OSLO2` file, so one that appears later is refused.
-    pub(super) fn refuse_oslo2(&self) -> Result<(), String> {
+    fn refuse_oslo2(&self) -> Result<(), String> {
         let mut declared = conf::read()?;
         if declared
             .section(&self.name)

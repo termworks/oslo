@@ -54,11 +54,15 @@ fn published(home: &Path) -> String {
         .to_string()
 }
 
+/// `name`'s file as it is on disk: its stamp, and the sealed body.
+fn kept(home: &Path, name: &str) -> sync::Kept {
+    sync::unwrap(&std::fs::read(sealed(home, name)).expect("read")).expect("a header")
+}
+
 /// Put `body` in place of the sealed part of `name`'s file, keeping its stamp.
 fn replace_body(home: &Path, name: &str, body: Vec<u8>) {
     let path = sealed(home, name);
-    let kept = sync::unwrap(&std::fs::read(&path).expect("read"));
-    let stamp = kept.stamp;
+    let stamp = kept(home, name).stamp;
     std::fs::write(
         &path,
         sync::wrap(&sync::Kept {
@@ -143,8 +147,7 @@ fn a_stripped_recipient_does_not_open() {
     assert_eq!(secret(home.path(), &["recipient", "add", &other], b"").2, 0);
     assert_eq!(secret(home.path(), &["rotate"], b"").2, 0);
 
-    let path = sealed(home.path(), "token");
-    let body = sync::unwrap(&std::fs::read(&path).expect("read")).sealed;
+    let body = kept(home.path(), "token").sealed;
     let (count, stanza) = (4 + 1 + 32, 32 + 48);
     assert_eq!(body[count], 2, "two recipients");
     let mut stripped = body[..count].to_vec();
@@ -156,6 +159,44 @@ fn a_stripped_recipient_does_not_open() {
     let (out, err, status) = secret(home.path(), &["get", "token"], b"");
     assert_ne!(status, 0, "a stripped file opened: {out}");
     assert!(err.contains("header was changed"), "{err}");
+}
+
+/// **Each way a file fails to open says which it is**, and none of them prints the value.
+#[test]
+fn a_failure_to_open_says_which_failure_it_is() {
+    let home = tempfile::tempdir().expect("tempdir");
+    secret(home.path(), &["set", "token"], b"the-real-value");
+    let body = kept(home.path(), "token").sealed;
+
+    let mut bent = body.clone();
+    *bent.last_mut().expect("a byte") ^= 1;
+    let cases = [
+        (bent, "changed or damaged"),
+        (body[..body.len() - 20].to_vec(), "stops inside"),
+        (b"not a sealed file at all".to_vec(), "no OSLO header"),
+    ];
+    for (file, said) in cases {
+        replace_body(home.path(), "token", file);
+        let (out, err, status) = secret(home.path(), &["get", "token"], b"");
+        assert_ne!(status, 0, "{said}: it opened");
+        assert!(out.is_empty() && !err.contains("the-real-value"), "{err}");
+        assert!(err.contains(said), "wanted {said:?}: {err}");
+    }
+
+    // A file sealed for another key altogether.
+    let stranger = native::generate_secret().expect("a key");
+    let theirs = native::public_of(&stranger);
+    let here = native::Context::Named {
+        store: "user",
+        name: "token",
+    };
+    replace_body(
+        home.path(),
+        "token",
+        native::seal(&stranger, &[theirs], &here, b"x").expect("seal"),
+    );
+    let (_, err, _) = secret(home.path(), &["get", "token"], b"");
+    assert!(err.contains("no key opened it, of the 1"), "{err}");
 }
 
 /// **h2**: `recipient add OSLO-PUB-1:AAAA…=` returned 0, and every later write was readable by
@@ -287,10 +328,13 @@ fn an_oslo2_file_is_read_until_the_store_is_rotated() {
     );
     assert_eq!(err.lines().count(), 1, "more than one line: {err}");
 
+    // A forged OSLO2 file cannot be told from a real one, so rotate names every one it rewrote.
     let (out, err, status) = secret(home.path(), &["rotate"], b"");
     assert_eq!(status, 0, "{err}");
     assert_eq!(out, "1 re-encrypted\n");
-    let rewritten = sync::unwrap(&std::fs::read(sealed(home.path(), "legacy")).expect("read"));
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("planted: legacy"), "{err}");
+    let rewritten = kept(home.path(), "legacy");
     assert!(
         rewritten.sealed.starts_with(b"OSLO3"),
         "rotate left it as it was"
