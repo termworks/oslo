@@ -101,10 +101,14 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
         let declaring = is_declaration_builtin(words[0].trim());
         // `set -k`: an assignment anywhere among the arguments belongs to the command's environment.
         let keyword = env.option(crate::env::options::ShellOption::Keyword);
+        // For a declaration builtin, which of its words were written `name=(…)`.
+        let mut shapes = vec![false; words.len()];
         for w in rest {
+            shapes.resize(words.len(), false);
             if testing {
                 words.push(crate::expand::word::expand_word_to_test_string(env, w)?);
             } else if declaring && looks_like_an_assignment(w) {
+                shapes.push(declare::written_as_compound(w));
                 words.push(crate::expand::expand_word_to_string(env, w)?);
             } else if keyword && looks_like_an_assignment(w) {
                 let text = crate::expand::expand_word_to_string(env, w)?;
@@ -114,6 +118,10 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
             } else {
                 words.extend(expand_word(env, w)?);
             }
+        }
+        if declaring {
+            shapes.resize(words.len(), false);
+            crate::env::builtins::declare::note_written(shapes);
         }
     }
 
@@ -343,6 +351,7 @@ fn run_command_word(
     }
 
     if let Some(func_body) = env.shared_function(name) {
+        crate::env::builtins::declare::forget_written();
         return call::call_function_command(env, &func_body, words, redirections);
     }
 

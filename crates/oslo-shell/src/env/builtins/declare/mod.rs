@@ -11,11 +11,13 @@ mod print;
 mod quote;
 #[cfg(test)]
 mod tests;
+mod written;
 
 pub(crate) use print::{assignment, print_matching, set_line};
 pub(crate) use quote::key as quote_key;
 #[cfg(feature = "universal")]
 pub(crate) use quote::set_style;
+pub(crate) use written::{Written, forget_written, note_written};
 
 use super::arrays::{self, assign_literal, literal_items};
 use crate::env::scope::nameref::is_reference_name;
@@ -125,6 +127,7 @@ pub(crate) fn parse_spec<'a>(
 
 /// `declare [-aAfFgilnprtux] [name[=value] …]`, and `typeset`, its other name.
 pub fn builtin_declare(env: &mut Environment, args: &[String]) -> Result<i32> {
+    let written = Written::take();
     let builtin = args.first().map_or("declare", String::as_str).to_string();
     let (spec, operands) = match parse_spec(args, &builtin, "aAfFgilnprtuxc") {
         Ok(parsed) => parsed,
@@ -145,11 +148,19 @@ pub fn builtin_declare(env: &mut Environment, args: &[String]) -> Result<i32> {
         (false, true) => Scope::Local,
         (_, false) => Scope::Visible,
     };
-    declare_all(env, &builtin, operands, &spec, scope)
+    let mut status = 0;
+    for (nth, operand) in operands.iter().enumerate() {
+        let compound = written.operand(args, operands, nth);
+        if !declare_one(env, &builtin, operand, &spec, scope, compound)? {
+            status = 1;
+        }
+    }
+    Ok(status)
 }
 
 /// `local [-aAilnprtux] [name[=value] …]`, `local -` and a bare `local`.
 pub fn builtin_local(env: &mut Environment, args: &[String]) -> Result<i32> {
+    let written = Written::take();
     if !env.in_function() {
         eprintln!(
             "{}local: can only be used in a function",
@@ -170,29 +181,13 @@ pub fn builtin_local(env: &mut Environment, args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     let mut status = 0;
-    for operand in operands {
+    for (nth, operand) in operands.iter().enumerate() {
         if operand == "-" {
             env.save_options_locally();
             continue;
         }
-        if !declare_one(env, "local", operand, &spec, Scope::Local)? {
-            status = 1;
-        }
-    }
-    Ok(status)
-}
-
-/// Declare each operand, carrying on past one that fails.
-pub(crate) fn declare_all(
-    env: &mut Environment,
-    builtin: &str,
-    operands: &[String],
-    spec: &Spec,
-    scope: Scope,
-) -> Result<i32> {
-    let mut status = 0;
-    for operand in operands {
-        if !declare_one(env, builtin, operand, spec, scope)? {
+        let compound = written.operand(args, operands, nth);
+        if !declare_one(env, "local", operand, &spec, Scope::Local, compound)? {
             status = 1;
         }
     }
@@ -207,6 +202,8 @@ pub(crate) struct Operand<'a> {
     pub subscript: Option<&'a str>,
     pub value: Option<&'a str>,
     pub append: bool,
+    /// Written `name=(…)` with the parenthesis unquoted; see [`Written`].
+    pub compound: bool,
 }
 
 /// Split `name[sub]+=value`, or `None` if `text` does not start with a valid name.
@@ -243,6 +240,7 @@ pub(crate) fn split_operand(text: &str) -> Option<Operand<'_>> {
         subscript,
         value,
         append,
+        compound: true,
     })
 }
 
@@ -258,18 +256,23 @@ fn refuse(builtin: &str, operand: &str, what: &str, reason: &str) {
 }
 
 /// Declare one operand. `Ok(false)` if it was refused, with the reason already printed.
+///
+/// `compound` is whether the operand was written `name=(…)`; one that was not makes an array
+/// only of a name that is one already.
 pub(crate) fn declare_one(
     env: &mut Environment,
     builtin: &str,
     operand: &str,
     spec: &Spec,
     scope: Scope,
+    compound: bool,
 ) -> Result<bool> {
-    let Some(op) = split_operand(operand) else {
+    let Some(mut op) = split_operand(operand) else {
         let shown = format!("`{}'", oslo_base::shown::shown(operand));
         refuse(builtin, operand, &shown, "not a valid identifier");
         return Ok(false);
     };
+    op.compound = compound;
     match scope {
         Scope::Global => {
             let name = op.name.to_string();
@@ -345,7 +348,7 @@ fn declare_here(
         (Some(subscript), Some(value)) => {
             assign_element(env, &target, subscript, value, op.append)?
         }
-        (None, Some(value)) => assign_value(env, &target, value, op.append, spec)?,
+        (None, Some(value)) => assign_value(env, &target, op, value, spec)?,
         (_, None) => true,
     };
     if !assigned {
@@ -413,16 +416,18 @@ fn assign_element(
 fn assign_value(
     env: &mut Environment,
     name: &str,
+    op: &Operand<'_>,
     value: &str,
-    append: bool,
     spec: &Spec,
 ) -> Result<bool> {
+    let append = op.append;
     if spec.on.has(Attrs::NAMEREF) {
         return Ok(env.set_reference(name, value));
     }
     // A literal that names no element abandons the line, as the same literal written as an
-    // assignment does.
-    if let Some(body) = array_literal_body(value) {
+    // assignment does. A quoted one is a literal only for a name that is an array already.
+    let array = op.compound || env.get_array(name).is_some() || env.is_assoc(name);
+    if let Some(body) = array_literal_body(value).filter(|_| array) {
         let items = literal_items(env, body)?;
         return match assign_literal(env, name, items, append) {
             Ok(done) => Ok(done),

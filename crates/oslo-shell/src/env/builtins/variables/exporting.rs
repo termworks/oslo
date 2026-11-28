@@ -16,6 +16,7 @@ const UNSET_USAGE: &str = "usage: unset [-f] [-v] [-n] [name ...]";
 /// With no operands — and with `-p`, which POSIX makes the explicit spelling of the same thing —
 /// this prints the exported variables as `declare -x` lines a shell can read back, sorted.
 pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
+    let written = declare::Written::take();
     let opts = match options::parse(args, "fnp") {
         Ok(o) => o,
         Err(letter) => return Err(options::invalid(args, "export", letter, EXPORT_USAGE)),
@@ -48,7 +49,7 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     // apart from `status` because the other ways this loop fails are not; the whole line is still
     // processed first, as bash sets the good names before it gives up.
     let mut bad_name = false;
-    for arg in operands {
+    for (nth, arg) in operands.iter().enumerate() {
         let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
         let name = name.strip_suffix('+').unwrap_or(name);
         if !is_valid_identifier(name) {
@@ -57,7 +58,9 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
             bad_name = true;
             continue;
         }
-        if !declare::declare_one(env, "export", arg, &spec, declare::Scope::Visible)? {
+        let compound = written.operand(args, operands, nth);
+        let scope = declare::Scope::Visible;
+        if !declare::declare_one(env, "export", arg, &spec, scope, compound)? {
             status = 1;
             continue;
         }

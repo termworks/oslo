@@ -53,6 +53,16 @@ pub(super) fn looks_like_an_assignment(word: &Word) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Whether an assignment-shaped word was written `name=(…)`, its parenthesis unquoted in the
+/// word's literal text: what bash's parser marks a compound assignment.
+pub(super) fn written_as_compound(word: &Word) -> bool {
+    let Some(WordPart::Literal(text)) = word.parts.first() else {
+        return false;
+    };
+    text.split_once('=')
+        .is_some_and(|(_, rest)| rest.starts_with('('))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

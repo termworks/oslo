@@ -3,7 +3,7 @@
 //! `local` lives with `declare`, whose engine it shares; so does this builtin's assignment half.
 
 use super::options;
-use crate::env::builtins::declare::{Scope, Spec, declare_one, print_matching};
+use crate::env::builtins::declare::{Scope, Spec, Written, declare_one, print_matching};
 use crate::env::scope::value::Attrs;
 use crate::env::scope::{Environment, is_valid_identifier};
 use oslo_base::error::Result;
@@ -12,6 +12,7 @@ const READONLY_USAGE: &str = "usage: readonly [-aAf] [name[=value] ...] or reado
 
 /// `readonly [-aAfp] [name[=value] ...]`.
 pub fn builtin_readonly(env: &mut Environment, args: &[String]) -> Result<i32> {
+    let written = Written::take();
     let opts = match options::parse(args, "aAfp") {
         Ok(o) => o,
         Err(letter) => return Err(options::invalid(args, "readonly", letter, READONLY_USAGE)),
@@ -40,7 +41,7 @@ pub fn builtin_readonly(env: &mut Environment, args: &[String]) -> Result<i32> {
     // `readonly` is a special builtin, so a name it cannot accept ends a POSIX-mode shell — see
     // the identical note in [`super::exporting::builtin_export`].
     let mut bad_name = false;
-    for arg in operands {
+    for (nth, arg) in operands.iter().enumerate() {
         let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
         let name = name.strip_suffix('+').unwrap_or(name);
         if !is_valid_identifier(name) {
@@ -49,7 +50,8 @@ pub fn builtin_readonly(env: &mut Environment, args: &[String]) -> Result<i32> {
             bad_name = true;
             continue;
         }
-        if !declare_one(env, "readonly", arg, &spec, Scope::Visible)? {
+        let compound = written.operand(args, operands, nth);
+        if !declare_one(env, "readonly", arg, &spec, Scope::Visible, compound)? {
             status = 1;
         }
     }
