@@ -57,15 +57,22 @@ pub fn expand_array_ref(
 /// The key a subscript names in `name`, or `None` for one that names nothing, which bash reports
 /// and expands to the empty string.
 fn element_key(env: &mut Environment, name: &str, word: &Word) -> Result<Option<Key>> {
-    let text = expand_word_to_string(env, word)?;
-    if env.is_assoc(name) {
-        if text.is_empty() {
-            eprintln!("{}{name}[]: bad array subscript", env.origin());
-            return Ok(None);
-        }
-        return Ok(Some(Key::Name(text)));
+    // An indexed array's subscript is arithmetic text, whose single quotes are not quotes.
+    if !env.is_assoc(name) {
+        let text = crate::expand::arithmetic::expand_expression_word(env, word)?;
+        return indexed_key(env, name, &text);
     }
-    let index = eval_index(name, &text, env)?;
+    let text = expand_word_to_string(env, word)?;
+    if text.is_empty() {
+        eprintln!("{}{name}[]: bad array subscript", env.origin());
+        return Ok(None);
+    }
+    Ok(Some(Key::Name(text)))
+}
+
+/// The index an indexed array's subscript text evaluates to, a negative one counted from the end.
+fn indexed_key(env: &mut Environment, name: &str, text: &str) -> Result<Option<Key>> {
+    let index = eval_index(name, text, env)?;
     if index < 0 {
         let resolved = match env.get_array(name) {
             Some(array) => array.resolve(index),
