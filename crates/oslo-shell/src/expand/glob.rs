@@ -4,8 +4,7 @@
 //! answers and cannot see this crate. What stays here is what only the shell has: the quoting each
 //! expanded run carries, which decides per character whether `*` is a metacharacter.
 
-use crate::expand::word::{Origin, Run, field_text};
-use oslo_base::error::ShellError;
+use crate::expand::word::{Run, field_text};
 use oslo_base::glob::walk;
 
 pub use oslo_base::glob::ShellPattern;
@@ -18,26 +17,7 @@ pub use oslo_base::glob::walk::{
 #[derive(Debug)]
 pub struct NoMatch(pub String);
 
-/// Refuse an `extglob` group the script wrote while `extglob` is off, with bash's parse error.
-///
-/// bash reads `@(a|b)` as a pattern only with the option on and refuses the line otherwise. The
-/// parser here always reads it, so the refusal is made where the option is known. Only text the
-/// script wrote counts: a `$p` holding `@(a|b)` is data and matches as the characters it is.
-pub fn refuse_extglob(field: &[Run]) -> oslo_base::error::Result<()> {
-    let written = |run: &&Run| run.origin == Origin::Literal;
-    if !walk::extglob()
-        && field
-            .iter()
-            .filter(written)
-            .any(|run| opens_group(&run.text))
-    {
-        return Err(ShellError::SyntaxError(
-            "syntax error near unexpected token `('".to_string(),
-        ));
-    }
-    Ok(())
-}
-
+/// Whether `text` holds an `extglob` operator with its `(`.
 fn opens_group(text: &str) -> bool {
     text.as_bytes()
         .windows(2)

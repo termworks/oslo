@@ -59,11 +59,10 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
         return Err(ShellError::SyntaxError(error.message.clone()));
     }
     // bash reads an `extglob` group only with the option on, and refuses the line otherwise. A
-    // program that names the option outside a comment may turn it on before the group runs, and
-    // is left to the check made where the group is expanded.
+    // program that turns the option on before the group fails here as a whole and is read again
+    // a command at a time, each command with the option as the ones before it left it.
     if !oslo_base::glob::walk::extglob()
         && opens_group(script)
-        && !names_extglob(parsed.tree())
         && refused_group(parsed.tree(), parsed.tree().root())
     {
         return Err(ShellError::SyntaxError(
@@ -112,18 +111,6 @@ fn refused_group(tree: &Tree, node: &rune::Node) -> bool {
             !quoted && token.kind() == SyntaxKind::Text && opens_group(token.text(tree.source()))
         }
     })
-}
-
-/// Whether any word of the program, rather than a comment or a here-document, names `extglob`.
-fn names_extglob(tree: &Tree) -> bool {
-    let mut named = false;
-    tree.root().visit_tokens(&mut |token| {
-        named |= !matches!(
-            token.kind(),
-            SyntaxKind::Comment | SyntaxKind::HeredocText | SyntaxKind::HeredocEnd
-        ) && token.text(tree.source()).contains("extglob");
-    });
-    named
 }
 
 /// Whether `text` holds an `extglob` operator with its `(`: `@(`, `!(`, `*(`, `+(` or `?(`.
