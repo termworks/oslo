@@ -13,14 +13,23 @@
 /// Decoding stops at a NUL: a shell variable is a C string, so bash's `$'a\0b'` is one character
 /// long. Producing the byte and losing it later would be worse — it would reach `CString` and
 /// fail at exec time.
+///
+/// `\xHH` and `\NNN` are bytes, not code points: `$'\xe2\x94\x80'` is `─`, and a run that is not
+/// UTF-8 is carried as `oslo_base::lossless` carries any other byte.
 pub fn decode(raw: &str) -> String {
+    oslo_base::lossless::from_bytes(&decode_bytes(raw))
+}
+
+/// The bytes the body of `$'…'` stands for.
+fn decode_bytes(raw: &str) -> Vec<u8> {
     let chars: Vec<char> = raw.chars().collect();
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut i = 0;
+    let push = |out: &mut Vec<u8>, c: char| out.extend(oslo_base::lossless::decode(c.encode_utf8(&mut [0; 4])));
 
     while i < chars.len() {
         if chars[i] != '\\' || i + 1 >= chars.len() {
-            out.push(chars[i]);
+            push(&mut out, chars[i]);
             i += 1;
             continue;
         }
@@ -43,10 +52,11 @@ pub fn decode(raw: &str) -> String {
             _ => None,
         };
         if let Some(c) = simple {
-            out.push(c);
+            out.push(c as u8);
             continue;
         }
 
+        let byte = matches!(esc, '0'..='7' | 'x' | 'c');
         let decoded = match esc {
             // `\0nnn` spends its `0` as an introducer, so three digits still follow it; `\nnn`
             // has already spent one of its three. That is why `\0101` is `A` but `\1011` is `A1`.
@@ -76,15 +86,16 @@ pub fn decode(raw: &str) -> String {
         match decoded {
             // A shell string cannot carry a NUL, so everything from here on is unreachable data.
             Some(0) => return out,
+            Some(v) if byte => out.push(v as u8),
             Some(v) => match char::from_u32(v) {
-                Some(c) => out.push(c),
+                Some(c) => push(&mut out, c),
                 // A surrogate or a value past U+10FFFF is written as bash writes it, in the
-                // original UTF-8 scheme of up to six bytes, carried as raw bytes.
-                None => out.push_str(&raw_code_point(v)),
+                // original UTF-8 scheme of up to six bytes.
+                None => out.extend(raw_code_point(v)),
             },
             None => {
-                out.push('\\');
-                out.push(esc);
+                out.push(b'\\');
+                push(&mut out, esc);
             }
         }
     }
@@ -92,9 +103,8 @@ pub fn decode(raw: &str) -> String {
     out
 }
 
-/// The bytes of `value` in UTF-8's original scheme, which reaches 31 bits in six bytes, held the
-/// way the shell holds bytes that are not UTF-8.
-fn raw_code_point(value: u32) -> String {
+/// The bytes of `value` in UTF-8's original scheme, which reaches 31 bits in six bytes.
+fn raw_code_point(value: u32) -> Vec<u8> {
     let len = match value {
         0..=0x7f => 1,
         0x80..=0x7ff => 2,
@@ -115,8 +125,7 @@ fn raw_code_point(value: u32) -> String {
     } else {
         lead[len] | rest as u8
     };
-    use std::os::unix::ffi::OsStrExt;
-    oslo_base::lossless::encode(std::ffi::OsStr::from_bytes(&bytes))
+    bytes
 }
 
 /// Consume up to `max - taken` further digits in `radix`, folding them onto `seed`.
@@ -187,6 +196,16 @@ mod tests {
             bytes("\\U7fffffff"),
             vec![0xfd, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf]
         );
+    }
+
+    /// `\x` and octal escapes are bytes: a UTF-8 run is one character, anything else stays bytes.
+    #[test]
+    fn byte_escapes_are_bytes() {
+        let bytes = |s: &str| oslo_base::lossless::decode(&decode(s));
+        assert_eq!(decode("\\xe2\\x94\\x80"), "─");
+        assert_eq!(decode("\\303\\251"), "é");
+        assert_eq!(bytes("\\xff\\376"), vec![0xff, 0xfe]);
+        assert_eq!(bytes("\\777"), vec![0xff]);
     }
 
     /// An octal escape is at most three digits, so the fourth character is data again.
