@@ -340,6 +340,7 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
         limit: opts.limit,
         timeout: opts.timeout,
         silent: opts.silent,
+        utf8: crate::expand::locale::is_utf8(env),
     };
     let line = match read_logical_line(&spec) {
         Ok(line) => line,
