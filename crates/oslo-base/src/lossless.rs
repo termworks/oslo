@@ -55,9 +55,11 @@ pub fn read_file(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
 
 /// Whether `text` carries any byte that [`encode`] had to escape.
 pub fn has_raw(text: &str) -> bool {
-    text.as_bytes()
-        .windows(3)
-        .any(|w| w[0] == 0xF4 && w[1] == 0x8F && w[2] >= 0xBC)
+    let bytes = text.as_bytes();
+    bytes.contains(&0xF4)
+        && bytes
+            .windows(3)
+            .any(|w| w[0] == 0xF4 && w[1] == 0x8F && w[2] >= 0xBC)
 }
 
 /// The number of bytes `text` stands for, counting each carried byte once.
