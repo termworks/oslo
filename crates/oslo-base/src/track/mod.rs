@@ -121,6 +121,9 @@ mod tests {
 
     #[test]
     fn the_store_lives_in_the_profiles_own_directory() {
+        let _profile = profile::tests::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // A directory per profile, named after the profile — see `track::profile::store_path`.
         let named =
             |dir: &str| PathBuf::from(format!("{dir}/oslo/history/{}/hist.db", profile::current()));
