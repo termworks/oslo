@@ -39,12 +39,25 @@ const SUBCOMMANDS: &[Sub] = &[
     },
     Sub {
         name: "run",
-        args: "VAR=NAME... -- CMD...",
+        args: "[VAR=NAME]... [flags] -- CMD...",
         about: "run CMD with VAR set to the secret, and nothing else",
-        flags: &[],
+        flags: &[
+            (
+                "--file VAR=NAME",
+                "a sealed in-memory file instead, VAR=/dev/fd/N",
+            ),
+            (
+                "--env-file FILE",
+                "NAME=value and NAME=secret:[STORE/]NAME lines",
+            ),
+            ("--all", "every secret, as its name upper-cased, - as _"),
+            ("--prefix P", "before each name --all makes"),
+        ],
         note: "The value reaches the child through its environment and never through the command \
                line, where every other process on the machine could read it out of `ps`. Repeat \
-               `VAR=NAME` for more than one.",
+               `VAR=NAME` for more than one. A variable named twice takes the most explicit: a \
+               pair over the file, the file over --all. Every secret is opened before CMD runs, \
+               and one that fails stops it with no child started.",
     },
     Sub {
         name: "list",
