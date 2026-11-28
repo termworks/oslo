@@ -89,5 +89,6 @@ fn compgen_answers_the_actions_scripts_use() {
     assert_eq!(out("compgen -d"), "sub");
     assert_eq!(out("compgen -f a"), "a1");
     assert_eq!(out("compgen -G 'zz*'; echo rc=$?"), "rc=1");
-    assert_eq!(out("compgen -A alias 2>/dev/null; echo rc=$?"), "rc=2");
+    // No alias is defined, so bash answers nothing with status 1.
+    assert_eq!(out("compgen -A alias 2>/dev/null; echo rc=$?"), "rc=1");
 }

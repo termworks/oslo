@@ -5,11 +5,15 @@
 //! `$(...)`, [`redirect`] applies redirections, and [`job`] holds job-control state.
 
 pub mod argv;
+pub mod chunks;
 pub mod compound;
+mod coproc;
+pub mod funsub;
 pub mod job;
 pub mod pipeline;
 pub mod procsub;
 pub mod redirect;
+mod select;
 pub mod simple;
 pub mod stored;
 /// The stack of streams a coordinate reads from. See [`streams`].
@@ -17,5 +21,7 @@ pub mod streams;
 pub mod substitution;
 
 pub use job::JobManager;
-pub use pipeline::{eval_and_or_list, eval_command, eval_command_list, eval_pipeline};
+pub use pipeline::{
+    eval_and_or_list, eval_command, eval_command_list, eval_command_unit, eval_pipeline,
+};
 pub use substitution::eval_command_substitution;

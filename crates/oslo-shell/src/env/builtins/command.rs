@@ -12,8 +12,9 @@ use oslo_base::error::Result;
 use std::path::PathBuf;
 
 /// The `PATH` `-p` substitutes: a value guaranteed to find the standard utilities even when the
-/// caller's `PATH` is empty or hostile.
-const DEFAULT_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+/// caller's `PATH` is empty or hostile. NixOS keeps them in its system profile, which is where
+/// that system's `confstr(_CS_PATH)` points bash.
+const DEFAULT_PATH: &str = "/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Mode {
@@ -105,21 +106,24 @@ fn run(env: &mut Environment, operands: &[String], default_path: bool) -> Result
     }
 }
 
-/// Answer `-v`/`-V` for each name; status 1 if any name has no answer.
+/// Answer `-v`/`-V` for each name; status 0 if any name had an answer, as in bash.
 fn describe(
     env: &mut Environment,
     operands: &[String],
     mode: Mode,
     default_path: bool,
 ) -> Result<i32> {
-    let mut status = 0;
+    let mut found = false;
     for name in operands {
         let described = match mode {
             Mode::Verbose => verbose_description(env, name, default_path),
             _ => terse_description(env, name, default_path),
         };
         match described {
-            Some(line) => println!("{}", line),
+            Some(line) => {
+                println!("{}", line);
+                found = true;
+            }
             None => {
                 // `-v` is silent on failure: every `if command -v foo >/dev/null 2>&1` probe in
                 // the wild relies on the status alone, and bash prints nothing there either.
@@ -134,11 +138,10 @@ fn describe(
                         ),
                     );
                 }
-                status = 1;
             }
         }
     }
-    Ok(status)
+    Ok(i32::from(!found))
 }
 
 /// What `command -v name` prints: a single word suitable for reuse as a command.
@@ -154,6 +157,9 @@ fn terse_description(env: &Environment, name: &str, default_path: bool) -> Optio
     // was missing (modernish's) treats its absence as fatal rather than as a missing feature.
     if is_keyword(name) || env.get_function(name).is_some() || env.is_builtin(name) {
         return Some(name.to_string());
+    }
+    if !default_path && let Some(path) = crate::env::builtins::hash_recall(name) {
+        return Some(path.display().to_string());
     }
     if let Some(path) = lookup_program(name, default_path) {
         return Some(path.display().to_string());
@@ -191,11 +197,14 @@ fn verbose_description(env: &Environment, name: &str, default_path: bool) -> Opt
     if is_keyword(name) {
         return Some(format!("{} is a shell keyword", name));
     }
-    if env.get_function(name).is_some() {
-        return Some(format!("{} is a function", name));
+    if let Some(definition) = env.function_definition(name) {
+        return Some(format!("{name} is a function\n{definition}"));
     }
     if env.is_builtin(name) {
         return Some(format!("{} is a shell builtin", name));
+    }
+    if !default_path && let Some(path) = crate::env::builtins::hash_recall(name) {
+        return Some(format!("{name} is hashed ({})", path.display()));
     }
     if let Some(path) = lookup_program(name, default_path) {
         return Some(format!("{} is {}", name, path.display()));
@@ -226,11 +235,13 @@ fn lookup_program(name: &str, default_path: bool) -> Option<PathBuf> {
 
 /// A path operand only counts as a command if it is a file the shell could actually execute —
 /// `command -v /etc/passwd` finds a perfectly readable file and still answers "no".
+///
+/// The name is reported as written, as bash reports it: `command -v ./x` prints `./x`.
 fn executable_path(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = resolve_program(name)?;
     let mode = path.metadata().ok()?.permissions().mode();
-    (mode & 0o111 != 0).then_some(path)
+    (mode & 0o111 != 0).then(|| PathBuf::from(name))
 }
 
 #[cfg(test)]

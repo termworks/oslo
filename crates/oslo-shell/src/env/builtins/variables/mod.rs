@@ -36,8 +36,8 @@ mod scoped;
 
 pub use aliases::{builtin_alias, builtin_unalias};
 pub use exporting::{builtin_export, builtin_unset};
-pub use parameters::{builtin_set, builtin_shift};
-pub use scoped::{builtin_local, builtin_readonly};
+pub use parameters::{builtin_set, builtin_shift, positional_sets};
+pub use scoped::builtin_readonly;
 
 /// Complain about `word` the way bash does for a name that is not `[A-Za-z_][A-Za-z0-9_]*`.
 ///
@@ -67,7 +67,8 @@ const IDENTIFIER: &str =
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_export, builtin_local};
+    use super::builtin_export;
+    use crate::env::builtins::builtin_local;
     use crate::env::scope::Environment;
 
     pub fn words(parts: &[&str]) -> Vec<String> {

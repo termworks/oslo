@@ -9,19 +9,14 @@
 //! IFS, exactly as `$*` joins the positionals. [`list_fields`] is that pair, and both the array
 //! path and the positional path end in it.
 //!
-//! The positional parameters live here for the same reason. `${@:1}` and `${a[@]:1}` are one
-//! operation over two different lists, and `${@#pat}` and `${a[@]#pat}` are another; when the two
-//! were implemented separately, only the array half was implemented at all and `"${@:2}"` quietly
-//! sliced *characters* out of the space-joined arguments.
-//!
-//! What is still missing errors instead of guessing: the `${a[@]:-d}` family has list semantics
-//! oslo does not have yet, and answering it with the first element or an empty string would be
-//! the quiet wrong answer this shell is being audited for.
+//! One element is `${a[i]}`, where the subscript is arithmetic, or `${m[key]}`, where it is the
+//! key itself; the whole-array forms live in `whole`.
 
+use super::whole::whole_array;
 use super::{Target, operators, origin_of};
 use crate::env::Environment;
+use crate::env::builtins::arrays::Key;
 use crate::env::scope::is_valid_identifier;
-use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::word::{Field, Origin, Run, expand_word_to_string};
 use oslo_base::ast::{ParamExpansion, Subscript, Word};
 use oslo_base::error::{Result, ShellError};
@@ -42,110 +37,60 @@ pub fn expand_array_ref(
         )));
     }
     let origin = origin_of(in_quotes);
+    env.note_read(name);
 
     match subscript {
         Subscript::All | Subscript::Joined => {
             whole_array(env, name, subscript, expansion_type, origin)
         }
         Subscript::Index(word) => {
-            let index = eval_index(env, name, word)?;
-            check_nounset(env, name, index, expansion_type)?;
-            let text = operators::apply(env, &Target::Element { name, index }, expansion_type)?;
+            let Some(key) = element_key(env, name, word)? else {
+                return Ok(vec![vec![Run::new(String::new(), origin)]]);
+            };
+            check_nounset(env, name, &key, expansion_type)?;
+            let target = Target::Element { name, key };
+            let text = operators::apply(env, &target, expansion_type)?;
             Ok(vec![vec![Run::new(text, origin)]])
         }
     }
 }
 
-/// `${a[@]}` and `${a[*]}`, with the operators that mean something for a whole array.
-fn whole_array(
-    env: &mut Environment,
-    name: &str,
-    subscript: &Subscript,
-    expansion_type: &ParamExpansion,
-    origin: Origin,
-) -> Result<Vec<Field>> {
-    // A plain scalar is a one-element array as far as `[@]` is concerned: `v=x` makes
-    // `"${v[@]}"` one field holding `x` and `${#v[@]}` the number 1, which is the same identity
-    // that already makes `${v[0]}` answer `x`. An unset name is the empty array.
-    //
-    // The elements are *copied out* rather than borrowed, because the operators below need `env`
-    // mutably: a pattern or a slice offset may contain a command substitution.
-    let (values, indices) = match env.get_array(name) {
-        Some(array) => (
-            array.values().map(str::to_string).collect::<Vec<String>>(),
-            array.indices().map(|i| i.to_string()).collect::<Vec<_>>(),
-        ),
-        None => match env.get_var(name) {
-            Some(value) => (vec![value.to_string()], vec!["0".to_string()]),
-            None => (Vec::new(), Vec::new()),
-        },
-    };
-    let separate = matches!(subscript, Subscript::All);
-
-    let values: Vec<String> = match expansion_type {
-        ParamExpansion::Normal => values,
-
-        // `${#a[@]}` is the number of elements, never the width of the joined text — and it is a
-        // single field whichever subscript asked for it.
-        ParamExpansion::Length => {
-            return Ok(vec![vec![Run::new(values.len().to_string(), origin)]]);
-        }
-
-        // `${!a[@]}` lists the indices *in use*. A sparse array is why this is not `0..len`.
-        ParamExpansion::Indirect(_) => indices,
-
-        // `${a[@]:1:2}` selects *elements*. Slicing the joined text instead would answer with a
-        // string cut mid-element, which is exactly the shape of the `"${@:2}"` corruption.
-        ParamExpansion::Substring { offset, length } => {
-            operators::slice_list(env, &values, offset, length.as_ref())?
-        }
-
-        // `${a[@]#pat}`, `${a[@]^^}`, `${a[@]/x/y}` rewrite every element and keep the count. A
-        // sparse array keeps its holes: the values are rewritten, the indices are not touched.
-        operator if operators::is_elementwise(operator) => {
-            operators::map_elements(env, &values, operator)?
-        }
-
-        // **`${a[@]+alt}` and `${a[@]:-d}` test the array, then answer with a word.** An array is
-        // "set" when it has at least one element, so the whole list collapses to whichever branch
-        // wins — the result is the word, not the array. stdenv's `runHook` is written
-        // `${!hooksSlice+"${!hooksSlice}"}`, so a shell without these two cannot run a hook.
-        ParamExpansion::UseAlternative {
-            alternative,
-            test_null,
-        } => {
-            let present = present(&values, *test_null);
-            let text = if present {
-                crate::expand::word::expand_word_to_string(env, alternative)?
-            } else {
-                return Ok(Vec::new());
-            };
-            vec![text]
-        }
-        ParamExpansion::DefaultValue {
-            default,
-            assign_if_unset: false,
-            test_null,
-        } => {
-            if present(&values, *test_null) {
-                values
-            } else {
-                vec![crate::expand::word::expand_word_to_string(env, default)?]
-            }
-        }
-
-        // What is left is the `${a[@]:-d}`, `${a[@]:=d}`, `${a[@]+alt}` and `${a[@]?msg}` family.
-        // Their list semantics are real bash and are not implemented; answering with a
-        // plausible-looking string would be worse than saying so.
-        _ => {
+/// The key a subscript names in `name`, or `None` for one that names nothing, which bash reports
+/// and expands to the empty string.
+fn element_key(env: &mut Environment, name: &str, word: &Word) -> Result<Option<Key>> {
+    // An indexed array's subscript is arithmetic text, whose single quotes are not quotes.
+    if !env.is_assoc(name) {
+        if word.is_unwritten() {
             return Err(ShellError::ExpansionError(format!(
-                "${{{name}[{}]…}}: this operator on a whole array is not supported yet",
-                if separate { "@" } else { "*" }
+                "{name}: bad array subscript"
             )));
         }
-    };
+        let text = crate::expand::arithmetic::expand_expression_word(env, word)?;
+        return indexed_key(env, name, &text);
+    }
+    let text = expand_word_to_string(env, word)?;
+    if text.is_empty() {
+        eprintln!("{}{name}[]: bad array subscript", env.origin());
+        return Ok(None);
+    }
+    Ok(Some(Key::Name(text)))
+}
 
-    Ok(list_fields(&values, separate, &env.ifs_separator(), origin))
+/// The index an indexed array's subscript text evaluates to, a negative one counted from the end.
+fn indexed_key(env: &mut Environment, name: &str, text: &str) -> Result<Option<Key>> {
+    let index = eval_index(text, env)?;
+    if index < 0 {
+        let resolved = match env.get_array(name) {
+            Some(array) => array.resolve(index),
+            None => (index == -1 && env.get_var(name).is_some()).then_some(0),
+        };
+        let Some(resolved) = resolved else {
+            eprintln!("{}{name}: bad array subscript", env.origin());
+            return Ok(None);
+        };
+        return Ok(Some(Key::Index(resolved)));
+    }
+    Ok(Some(Key::Index(index)))
 }
 
 /// The fields a list contributes: one per value when `separate`, or a single joined field.
@@ -177,6 +122,18 @@ pub(super) fn positional_list(
     expansion_type: &ParamExpansion,
     origin: Origin,
 ) -> Result<Option<Vec<Field>>> {
+    let separate = name == "@" || star_stays_apart(env, origin);
+    if let ParamExpansion::Transform(op) = expansion_type {
+        let values = env.get_positional().to_vec();
+        let listed = whole_list_transform(name, *op, &values, || {
+            super::lists::positional(env, *op, &values)
+        })?;
+        if let Some(listed) = listed {
+            let separate = separate && !listed.single;
+            let fields = list_fields(&listed.words, separate, &env.ifs_separator(), origin);
+            return Ok(Some(seam_list(fields, separate, name == "*", origin)));
+        }
+    }
     let values = match expansion_type {
         // bash slices `$0 $1 $2 …`, one list longer than `$@` itself: `${@:0}` picks up the
         // shell's own name and `${@:1}` is the first argument, which is why every
@@ -193,36 +150,72 @@ pub(super) fn positional_list(
         }
         _ => return Ok(None),
     };
-    Ok(Some(list_fields(
-        &values,
-        name == "@",
-        &env.ifs_separator(),
-        origin,
-    )))
+    let fields = list_fields(&values, separate, &env.ifs_separator(), origin);
+    Ok(Some(seam_list(fields, separate, name == "*", origin)))
+}
+
+/// Check a transformation of a whole list and run it when it reads the list as a whole.
+///
+/// `Ok(None)` leaves an element-wise one to the caller. An unknown letter is an error only when
+/// there is something to transform.
+pub(super) fn whole_list_transform(
+    shown: &str,
+    op: char,
+    values: &[String],
+    run: impl FnOnce() -> Option<super::lists::Listed>,
+) -> Result<Option<super::lists::Listed>> {
+    if super::transform::is_known(op) {
+        return Ok(run());
+    }
+    if values.is_empty() {
+        return Ok(Some(super::lists::Listed {
+            words: Vec::new(),
+            single: false,
+        }));
+    }
+    Err(super::transform::unknown(shown, op))
+}
+
+/// Whether an unquoted `$*` or `${a[*]}` stays one field per element, which a null IFS makes it.
+pub(super) fn star_stays_apart(env: &Environment, origin: Origin) -> bool {
+    origin == Origin::Expanded && crate::expand::join::ifs_is_null(env)
+}
+
+/// Mark the fields of a list operator's result for a single-string context.
+///
+/// An unquoted `[*]` kept apart by a null IFS is glued back together there, and a quoted `[@]`
+/// operator form is seamed; see [`crate::expand::join`].
+pub(super) fn seam_list(
+    fields: Vec<Field>,
+    separate: bool,
+    star: bool,
+    origin: Origin,
+) -> Vec<Field> {
+    match (separate, star, origin) {
+        (true, true, _) => crate::expand::join::marked(fields, Origin::Glue),
+        (true, false, Origin::Quoted) => crate::expand::join::marked(fields, Origin::Seam),
+        _ => fields,
+    }
 }
 
 /// Evaluate a subscript as arithmetic, which is what bash does for an indexed array: `${a[i+1]}`
-/// reads `i`, and `${a[x]}` with `x` unset reads element 0.
-fn eval_index(env: &mut Environment, name: &str, word: &Word) -> Result<i64> {
-    let text = expand_word_to_string(env, word)?;
-    let text = text.trim();
-    if text.is_empty() {
-        return Err(ShellError::ExpansionError(format!(
-            "{name}: bad array subscript"
-        )));
+/// reads `i`, and `${a[x]}` with `x` unset, like a blank subscript, reads element 0.
+fn eval_index(text: &str, env: &mut Environment) -> Result<i64> {
+    match text.trim() {
+        "" => Ok(0),
+        text => crate::expand::arithmetic::eval_expanded_subscript(env, text),
     }
-    eval_arithmetic(env, text)
 }
 
 /// `set -u` applies to an element that was never assigned, exactly as it does to a plain variable.
 ///
 /// The operators that exist to *define* what an absent value means are exempt, for the reason they
 /// are exempt for scalars: `${a[3]-default}` is how a script reads a possibly-absent element under
-/// `set -u`, and erroring on it would leave no way to do so.
+/// `set -u`.
 fn check_nounset(
     env: &Environment,
     name: &str,
-    index: i64,
+    key: &Key,
     expansion_type: &ParamExpansion,
 ) -> Result<()> {
     if !env.nounset() {
@@ -236,29 +229,28 @@ fn check_nounset(
     ) {
         return Ok(());
     }
-    let exists = match env.get_array(name) {
-        Some(array) => array.get(index).is_some(),
-        // The same scalar-is-one-element identity `Target::value` applies; without it `set -u` made
-        // `${v[0]}` on a plain variable fatal, where bash answers the value.
-        None => index == 0 && env.get_var(name).is_some(),
+    // `${#a[5]}` of an array that is set is 0, missing element or not.
+    if matches!(expansion_type, ParamExpansion::Length)
+        && env
+            .variable(name)
+            .is_some_and(|v| v.is_set() && (v.indexed().is_some() || v.assoc().is_some()))
+    {
+        return Ok(());
+    }
+    let target = Target::Element {
+        name,
+        key: match key {
+            Key::Index(i) => Key::Index(*i),
+            Key::Name(k) => Key::Name(k.clone()),
+        },
     };
-    if exists {
+    if target.value(env).is_some() {
         return Ok(());
     }
     Err(ShellError::UnsetParameter(format!(
-        "{name}[{index}]: unbound variable"
+        "{}: unbound variable",
+        target.display()
     )))
-}
-
-/// Whether a whole array counts as set, for the `+` and `:-` families.
-///
-/// An array with no elements is unset; the `:` variants also treat one whose every element is
-/// empty as unset, which is the same distinction `${x-d}` and `${x:-d}` draw for a scalar.
-fn present(values: &[String], test_null: bool) -> bool {
-    if values.is_empty() {
-        return false;
-    }
-    !test_null || values.iter().any(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -388,16 +380,20 @@ mod tests {
         assert_eq!(fields(&[], Subscript::All, def), Ok(vec!["d".to_string()]));
     }
 
-    /// What is still unimplemented must say so rather than answer something plausible: the
-    /// assigning `${a[@]:=d}` and the erroring `${a[@]?msg}` have list semantics oslo lacks.
+    /// `${a[@]:=d}` and `${a[@]:?msg}` answer with the elements of a set array, and fail on an
+    /// empty one: bash cannot assign to `a[@]`, and `:?` is the error it asks for.
     #[test]
-    fn an_unimplemented_whole_array_operator_is_an_error() {
+    fn the_assigning_and_erroring_forms_act_on_the_whole_array() {
         let op = ParamExpansion::DefaultValue {
             default: Word::from_literal("d"),
             assign_if_unset: true,
             test_null: true,
         };
-        assert!(fields(&["a", "b"], Subscript::All, op).is_err());
+        assert_eq!(
+            fields(&["a", "b"], Subscript::All, op.clone()),
+            Ok(vec!["a".to_string(), "b".to_string()])
+        );
+        assert!(fields(&[], Subscript::All, op).is_err());
         let op = ParamExpansion::ErrorIfUnset {
             message: Word::from_literal("m"),
             test_null: true,
@@ -493,9 +489,10 @@ mod tests {
         assert_eq!(texts, vec!["z".to_string()]);
     }
 
-    /// A scalar is a one-element array to `[@]`, and that identity has to survive the operators.
+    /// A scalar is a one-element array to `[@]`, except under a slice, which bash takes as a
+    /// substring of it.
     #[test]
-    fn a_scalar_slices_and_maps_as_one_element() {
+    fn a_scalar_slices_as_a_string() {
         let mut env = Environment::new();
         env.set_var("oslo_scalar", "solo", false);
         let mut text = |op: &ParamExpansion| {
@@ -506,7 +503,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(text(&slice("0", None)), vec!["solo".to_string()]);
-        assert_eq!(text(&slice("1", None)), Vec::<String>::new());
+        assert_eq!(text(&slice("1", None)), vec!["olo".to_string()]);
     }
 
     #[test]

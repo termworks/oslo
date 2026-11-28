@@ -8,10 +8,12 @@
 //! that aborted the shell when it answered "no" would make `set -e` unusable.
 
 use crate::env::Environment;
+use crate::env::builtins::format_word;
 use crate::env::builtins::run_exit_trap;
 use crate::exec::pipeline::{eval_command_list, status_of, suspend_errexit, wait_for_status};
-use crate::expand::word::expand_word_to_pattern;
-use crate::expand::{expand_word, expand_word_to_string};
+use crate::exec::simple::trace;
+use crate::expand::expand_word;
+use crate::expand::word::{expand_word_to_pattern, expand_word_to_test_string};
 use nix::unistd::{ForkResult, fork};
 use oslo_base::ast::*;
 use oslo_base::error::{Result, ShellError};
@@ -25,8 +27,30 @@ pub(crate) fn flush_stdout() {
     let _ = std::io::stdout().flush();
 }
 
+/// Name a compound's header in `$BASH_COMMAND` and fire the DEBUG trap for it, as bash does for
+/// a `for` iteration, a `case`, and each `(( ))` evaluation.
+///
+/// `always` renders the text even with no DEBUG trap set, for the headers that can fail and so
+/// reach the ERR trap.
+fn announce(env: &mut Environment, always: bool, text: impl FnOnce() -> String) {
+    let debugging = env.get_trap("DEBUG").is_some_and(|action| action != "-");
+    if (always || debugging) && !crate::env::builtins::in_trap() {
+        env.set_bash_command(text());
+    }
+    if debugging {
+        crate::env::builtins::run_debug_trap(env);
+    }
+}
+
+/// The hooks a `for` iteration and a `case` share, in bash's order: the DEBUG trap with
+/// `$BASH_COMMAND` set to `command`, then the `set -x` line `traced`.
+fn header_hooks(env: &mut Environment, command: &str, traced: &str) {
+    announce(env, false, || command.to_string());
+    trace::trace_header(env, traced);
+}
+
 /// What one iteration of a loop body decided.
-enum LoopStep {
+pub(super) enum LoopStep {
     /// Carry on with the next iteration.
     Next,
     /// Leave this loop, normally.
@@ -44,7 +68,11 @@ enum LoopStep {
 /// it is itself the last command the body executed and it succeeded. Leaving the previous
 /// iteration's status in place made `for ((i=0; ; i++)); do echo $i; ((i>=2)) && break; done`
 /// report 1 — the status of the `&&` test that was false last time round.
-fn run_loop_body(env: &mut Environment, body: &CommandList, status: &mut i32) -> LoopStep {
+pub(super) fn run_loop_body(
+    env: &mut Environment,
+    body: &CommandList,
+    status: &mut i32,
+) -> LoopStep {
     match eval_command_list(env, body) {
         Ok(st) => {
             *status = st;
@@ -62,7 +90,7 @@ fn classify_unwind(error: ShellError, status: &mut i32) -> LoopStep {
     match error {
         ShellError::Break(depth) if depth > 1 => LoopStep::Unwind(ShellError::Break(depth - 1)),
         ShellError::Break(_) => {
-            *status = 0;
+            *status = crate::env::builtins::control::take_break_status();
             LoopStep::Stop
         }
         ShellError::Continue(depth) if depth > 1 => {
@@ -140,9 +168,12 @@ fn eval_conditional_loop(
 /// `case $x in "$expected")` — an ordinary way to compare two strings — a pattern match, so a
 /// `$expected` of `*` answered yes for every subject.
 fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) -> Result<bool> {
+    // The C locale matches a byte to a character.
+    let bytes = !crate::expand::locale::is_utf8(env);
+    let subject = &crate::expand::locale::in_locale(subject, bytes);
     for pat_word in patterns {
-        let runs = expand_word_to_pattern(env, pat_word)?;
-        crate::expand::glob::refuse_extglob(&runs)?;
+        let mut runs = expand_word_to_pattern(env, pat_word)?;
+        crate::expand::locale::runs_in_locale(&mut runs, bytes);
         let nocase = oslo_base::glob::walk::nocasematch();
         if crate::expand::glob::pattern_from_runs(&runs).matches_case(subject, nocase) {
             return Ok(true);
@@ -160,7 +191,10 @@ fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) 
 /// The status is that of the last body actually run, so a `;;&` chain whose later patterns all
 /// fail still reports what the branch that did match returned.
 fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i32> {
-    let subject = expand_word_to_string(env, word)?;
+    let written = format!("case {} in", format_word(word));
+    // bash's `$BASH_COMMAND` for a `case` keeps the space after `in`; its trace line does not.
+    header_hooks(env, &format!("{written} "), &written);
+    let subject = expand_word_to_test_string(env, word)?;
 
     let mut status = 0;
     let mut forced = false;
@@ -185,13 +219,31 @@ fn eval_case(env: &mut Environment, word: &Word, items: &[CaseItem]) -> Result<i
 ///
 /// A bad expression is the *command's* failure, not the shell's: bash prints the diagnostic,
 /// leaves `$?` at 1 and runs the next command, unlike `$(( … ))` in a word, which is fatal.
-/// `None` means "already reported"; callers turn it into status 1 and stop.
-fn eval_arith(env: &mut Environment, expr: &str) -> Option<i64> {
-    match crate::expand::arithmetic::eval_arithmetic(env, expr) {
-        Ok(value) => Some(value),
+/// `None` means "already reported"; callers turn it into status 1 and stop. An unset name under
+/// `set -u` is the exception, and unwinds as it would from a word.
+fn eval_arith(env: &mut Environment, expr: &str) -> Result<Option<i64>> {
+    announce(env, true, || format!("(({expr}))"));
+    // Expanded once, so the trace shows what is evaluated and a substitution runs once.
+    let expr: String = match env.xtrace() {
+        true => match crate::expand::arithmetic::expand_expression(env, expr) {
+            Ok(expanded) => {
+                trace::trace_arithmetic(env, &expanded);
+                expanded
+            }
+            Err(e @ (ShellError::UnsetParameter(_) | ShellError::Discard(..))) => return Err(e),
+            Err(e) => {
+                eprintln!("oslo: ((: {}", e);
+                return Ok(None);
+            }
+        },
+        false => expr.to_string(),
+    };
+    match crate::expand::arithmetic::eval_arithmetic(env, &expr) {
+        Ok(value) => Ok(Some(value)),
+        Err(e @ (ShellError::UnsetParameter(_) | ShellError::Discard(..))) => Err(e),
         Err(e) => {
             eprintln!("oslo: ((: {}", e);
-            None
+            Ok(None)
         }
     }
 }
@@ -201,11 +253,11 @@ fn eval_arith(env: &mut Environment, expr: &str) -> Option<i64> {
 /// The status is inverted with respect to the value: a non-zero result is success. That is what
 /// makes `while (( i < n ))` and `if (( x ))` read the way arithmetic conditions are written, and
 /// it is the same convention the `let` builtin uses.
-fn eval_arithmetic_command(env: &mut Environment, expr: &str) -> i32 {
-    match eval_arith(env, expr) {
+fn eval_arithmetic_command(env: &mut Environment, expr: &str) -> Result<i32> {
+    Ok(match eval_arith(env, expr)? {
         Some(value) => i32::from(value == 0),
         None => 1,
-    }
+    })
 }
 
 /// `for ((init; cond; step)) do … done`.
@@ -220,8 +272,18 @@ fn eval_arithmetic_for(
     step: Option<&str>,
     body: &CommandList,
 ) -> Result<i32> {
+    // bash reads an empty section as `1`, and traces it so.
+    let init = init.map(str::trim_start);
+    let cond = cond.map(str::trim_start);
+    let step = step.map(str::trim_start);
+    let empty = |env: &mut Environment, section: Option<&str>| {
+        if section.is_none() {
+            trace::trace_arithmetic(env, "1");
+        }
+    };
+    empty(env, init);
     if let Some(expr) = init
-        && eval_arith(env, expr).is_none()
+        && eval_arith(env, expr)?.is_none()
     {
         return Ok(1);
     }
@@ -232,11 +294,13 @@ fn eval_arithmetic_for(
     let result = loop {
         // An absent condition is true, which is why this is not `unwrap_or(1)` on a value: there
         // is nothing to evaluate, so nothing can fail either.
+        empty(env, cond);
         if let Some(expr) = cond {
             match eval_arith(env, expr) {
-                Some(0) => break Ok(status),
-                Some(_) => {}
-                None => break Ok(1),
+                Ok(Some(0)) => break Ok(status),
+                Ok(Some(_)) => {}
+                Ok(None) => break Ok(1),
+                Err(e) => break Err(e),
             }
         }
 
@@ -246,10 +310,13 @@ fn eval_arithmetic_for(
             LoopStep::Unwind(e) => break Err(e),
         }
 
-        if let Some(expr) = step
-            && eval_arith(env, expr).is_none()
-        {
-            break Ok(1);
+        empty(env, step);
+        if let Some(expr) = step {
+            match eval_arith(env, expr) {
+                Ok(Some(_)) => {}
+                Ok(None) => break Ok(1),
+                Err(e) => break Err(e),
+            }
         }
     };
 
@@ -295,8 +362,14 @@ pub(crate) fn eval_compound_command(
         CompoundCommand::For {
             var_name,
             items,
+            unbraced,
             body,
         } => {
+            // `set +B` runs the list as it was written.
+            let items = match unbraced {
+                Some(written) if !env.braceexpand() => Some(written),
+                _ => items.as_ref(),
+            };
             let item_words = if let Some(it) = items {
                 let mut vec = Vec::new();
                 for w in it {
@@ -307,11 +380,27 @@ pub(crate) fn eval_compound_command(
                 env.get_positional().to_vec()
             };
 
+            let header = match items {
+                Some(words) => {
+                    let words: Vec<String> = words.iter().map(format_word).collect();
+                    format!("for {var_name} in {}", words.join(" "))
+                }
+                None => format!("for {var_name} in \"$@\""),
+            };
             let mut status = 0;
             env.enter_loop();
             let result = 'items: {
                 for item in item_words {
-                    env.set_var(var_name, &item, false);
+                    header_hooks(env, &header, &header);
+                    // A nameref loop variable is pointed at each word in turn rather than
+                    // assigned through; a name that refuses the word ends the loop with 1.
+                    let bound = match env.variable(var_name).is_some_and(|v| v.is_nameref()) {
+                        true => env.set_reference(var_name, &item),
+                        false => env.set_var(var_name, &item, false),
+                    };
+                    if !bound {
+                        break 'items Ok(1);
+                    }
                     match run_loop_body(env, body, &mut status) {
                         LoopStep::Next => {}
                         LoopStep::Stop => break 'items Ok(status),
@@ -323,8 +412,24 @@ pub(crate) fn eval_compound_command(
             env.exit_loop();
             result
         }
+        CompoundCommand::Select {
+            var_name,
+            items,
+            body,
+        } => {
+            let header = match items {
+                Some(words) => {
+                    let words: Vec<String> = words.iter().map(format_word).collect();
+                    format!("select {var_name} in {}", words.join(" "))
+                }
+                None => format!("select {var_name} in \"$@\""),
+            };
+            header_hooks(env, &header, &header);
+            super::select::eval_select(env, var_name, items.as_deref(), body)
+        }
+        CompoundCommand::Coproc { name, body } => super::coproc::start(env, name, body),
         CompoundCommand::Case { word, items } => eval_case(env, word, items),
-        CompoundCommand::Arithmetic(expr) => Ok(eval_arithmetic_command(env, expr)),
+        CompoundCommand::Arithmetic(expr) => eval_arithmetic_command(env, expr),
         CompoundCommand::ArithmeticFor {
             init,
             cond,
@@ -332,6 +437,17 @@ pub(crate) fn eval_compound_command(
             body,
         } => eval_arithmetic_for(env, init.as_deref(), cond.as_deref(), step.as_deref(), body),
         CompoundCommand::Subshell(body) => {
+            use crate::exec::simple::oneshot::{
+                Enclosure, Tail, enclose, mark_lone_subshell, tail_list_next,
+            };
+            // `( ( … ) )`: the inner one is this process already.
+            if crate::exec::simple::oneshot::runs_in_place(body) {
+                env.enter_subshell();
+                enclose(Enclosure::Paren);
+                mark_lone_subshell(body);
+                tail_list_next(Tail::Subshell);
+                return eval_command_list(env, body);
+            }
             // Anything this shell has buffered would be duplicated by the fork and printed twice.
             flush_stdout();
             unsafe {
@@ -346,6 +462,10 @@ pub(crate) fn eval_compound_command(
                         // aliases, positionals, `$?` and export flags all survive, and nothing
                         // private is force-exported. Only subshell-local state is refreshed.
                         env.enter_subshell();
+                        enclose(Enclosure::Paren);
+                        crate::exec::job::enter_child(false);
+                        mark_lone_subshell(body);
+                        tail_list_next(Tail::Subshell);
                         // `status_of`, not `unwrap_or(1)`: `( exit 3 )` unwinds as an error
                         // carrying its code, and the exit status is the only channel left here.
                         let res = status_of(eval_command_list(env, body));
@@ -358,7 +478,12 @@ pub(crate) fn eval_compound_command(
                         // still prints once and not twice.
                         std::process::exit(run_exit_trap(env, res));
                     }
-                    Ok(ForkResult::Parent { child }) => Ok(wait_for_status(child)),
+                    Ok(ForkResult::Parent { child }) => {
+                        crate::exec::pipeline::forget_death();
+                        let status = wait_for_status(child);
+                        crate::exec::pipeline::announce_death(env, None, || "( … )".to_string());
+                        Ok(status)
+                    }
                     Err(e) => Err(ShellError::ExecutionError(format!(
                         "Subshell fork failed: {}",
                         e

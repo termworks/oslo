@@ -7,8 +7,8 @@
 //!
 //! What is compared, and why only this much:
 //!
-//! * **stdout** — byte for byte, after the scratch directory is rewritten to `<TMP>` so the two
-//!   shells' private working directories do not show up as a difference.
+//! * **stdout** — byte for byte, never decoded, after the scratch directory is rewritten to
+//!   `<TMP>` so the two shells' private working directories do not show up as a difference.
 //! * **exit status** — exactly, with a signal death recorded as `128 + signo` the way a shell
 //!   reports one.
 //! * **stderr shape** — empty versus non-empty, nothing more. Two different shells will never
@@ -34,6 +34,7 @@ use expected_fail::{EXPECTED_FAIL, KNOWN_DIVERGENT};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -123,7 +124,7 @@ fn load_corpus() -> Vec<Case> {
 }
 
 struct Outcome {
-    stdout: String,
+    stdout: Vec<u8>,
     stderr_empty: bool,
     status: i32,
     timed_out: bool,
@@ -168,13 +169,13 @@ fn execute(program: &Path, args: &[&str], script: &str) -> io::Result<Outcome> {
         }
     };
 
-    let stdout = String::from_utf8_lossy(&fs::read(&out_path)?).into_owned();
+    let stdout = fs::read(&out_path)?;
     let stderr_empty = fs::metadata(&err_path)?.len() == 0;
 
     // Both shells get a different scratch directory, so the path itself must not be a difference.
-    let mut stdout = stdout.replace(&cwd.to_string_lossy().into_owned(), "<TMP>");
+    let mut stdout = replace_bytes(&stdout, cwd.as_os_str().as_bytes(), b"<TMP>");
     if let Ok(real) = cwd.canonicalize() {
-        stdout = stdout.replace(&real.to_string_lossy().into_owned(), "<TMP>");
+        stdout = replace_bytes(&stdout, real.as_os_str().as_bytes(), b"<TMP>");
     }
 
     Ok(Outcome {
@@ -185,6 +186,25 @@ fn execute(program: &Path, args: &[&str], script: &str) -> io::Result<Outcome> {
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
         timed_out,
     })
+}
+
+/// `haystack` with every occurrence of `needle` replaced by `with`, byte for byte.
+fn replace_bytes(haystack: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
+    if needle.is_empty() {
+        return haystack.to_vec();
+    }
+    let mut out = Vec::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < haystack.len() {
+        if haystack[i..].starts_with(needle) {
+            out.extend_from_slice(with);
+            i += needle.len();
+        } else {
+            out.push(haystack[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 enum Verdict {
@@ -256,9 +276,22 @@ fn shape(empty: bool) -> &'static str {
 
 /// First few differing lines, aligned by position. Enough to identify the defect in a CI log
 /// without turning the failure report into the corpus itself.
-fn diff_lines(expected: &str, actual: &str) -> String {
-    let exp: Vec<&str> = expected.lines().collect();
-    let act: Vec<&str> = actual.lines().collect();
+fn diff_lines(expected: &[u8], actual: &[u8]) -> String {
+    let lines = |bytes: &[u8]| -> Vec<Vec<u8>> {
+        let mut lines: Vec<Vec<u8>> = bytes.split(|&b| b == b'\n').map(<[u8]>::to_vec).collect();
+        if bytes.ends_with(b"\n") {
+            lines.pop();
+        }
+        lines
+    };
+    let shown_line = |line: Option<&Vec<u8>>| match line {
+        None => "<no line>".to_string(),
+        Some(line) => match std::str::from_utf8(line) {
+            Ok(text) => format!("{text:?}"),
+            Err(_) => format!("b\"{}\"", line.escape_ascii()),
+        },
+    };
+    let (exp, act) = (lines(expected), lines(actual));
     let mut out = String::new();
     let mut shown = 0;
     for i in 0..exp.len().max(act.len()) {
@@ -271,10 +304,10 @@ fn diff_lines(expected: &str, actual: &str) -> String {
             break;
         }
         out.push_str(&format!(
-            "    line {}: bash {:?} vs oslo {:?}\n",
+            "    line {}: bash {} vs oslo {}\n",
             i + 1,
-            e.unwrap_or(&"<no line>"),
-            a.unwrap_or(&"<no line>")
+            shown_line(e),
+            shown_line(a)
         ));
         shown += 1;
     }
@@ -444,24 +477,24 @@ fn corpus_matches_bash() {
 /// [`mode_args`] sends the same argv to both shells, but a `--posix` that oslo parsed and then
 /// dropped would look identical from here — which is what the suite could not tell apart before
 /// Round 11. So assert the observable difference directly: under POSIX a failed variable
-/// assignment ends the shell, and outside it the shell carries on. Without this, a regression
-/// that made `--posix` inert would show up only as `# mode: posix` cases quietly agreeing with a
-/// bash-mode oslo.
+/// assignment ends the shell, and outside it the shell abandons that line and carries on with the
+/// next. Without this, a regression that made `--posix` inert would show up only as
+/// `# mode: posix` cases quietly agreeing with a bash-mode oslo.
 #[test]
 fn the_posix_flag_changes_what_oslo_does() {
-    const SCRIPT: &str = "readonly r=1; r=2; echo alive";
+    const SCRIPT: &str = "readonly r=1\nr=2\necho alive";
 
     let posix = execute(&common::oslo_bin(), mode_args(Oracle::Posix), SCRIPT).expect("spawn oslo");
     assert_eq!(
-        posix.stdout, "",
+        posix.stdout, b"",
         "under --posix a refused assignment must end the shell before `echo alive`"
     );
     assert!(!posix.stderr_empty, "the refusal must still be reported");
 
     let bash_mode = execute(&common::oslo_bin(), mode_args(Oracle::Bash), SCRIPT).expect("spawn");
     assert_eq!(
-        bash_mode.stdout, "alive\n",
-        "without --posix the same refusal is an ordinary failed command"
+        bash_mode.stdout, b"alive\n",
+        "without --posix the same refusal abandons only its own line"
     );
 }
 

@@ -41,9 +41,20 @@ pub(super) fn sequence_alternatives(inner: &[Atom]) -> Option<Vec<Vec<Atom>>> {
     Some(
         items
             .into_iter()
-            .map(|s| s.chars().map(Atom::Raw).collect())
+            .map(|s| s.chars().map(item_atom).collect())
             .collect(),
     )
+}
+
+/// One character of a generated item. `{A..z}` passes `\` and `` ` ``, which the lexer that runs
+/// after this pass would read as syntax: the backquote goes out escaped, and the backslash as the
+/// empty word bash's quote removal leaves of it.
+fn item_atom(c: char) -> Atom {
+    match c {
+        '\\' => Atom::Opaque("''".to_string()),
+        '`' => Atom::Opaque("\\`".to_string()),
+        c => Atom::Raw(c),
+    }
 }
 
 /// Whether an operand asks for zero padding, i.e. it has a leading zero of its own.
@@ -146,6 +157,11 @@ mod tests {
     fn character_ranges_walk_the_alphabet() {
         assert_eq!(expand("{a..e}"), vec!["a", "b", "c", "d", "e"]);
         assert_eq!(expand("{e..a..2}"), vec!["e", "c", "a"]);
+        // Between the cases sit six punctuation characters; two would be syntax to the lexer.
+        assert_eq!(
+            expand("{Z..a}"),
+            vec!["Z", "[", "''", "]", "^", "_", "\\`", "a"]
+        );
     }
 
     #[test]

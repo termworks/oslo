@@ -19,10 +19,7 @@ fn latin1(bytes: &[u8]) -> &std::ffi::OsStr {
     std::ffi::OsStr::from_bytes(bytes)
 }
 
-/// **The variable is skipped, not mangled**, and the shell runs.
-///
-/// Skipped rather than replaced because the shell cannot hold the bytes and a child expects the
-/// real ones — which it still gets, through the environment `execve` inherits.
+/// **The variable is read with its bytes**, and the shell runs.
 #[test]
 fn a_variable_that_is_not_utf8_does_not_stop_the_shell() {
     let out = Command::new(oslo_bin())
@@ -30,15 +27,11 @@ fn a_variable_that_is_not_utf8_does_not_stop_the_shell() {
         .args(["-c", "echo it-ran; echo \"[${BAD-unset}]\""])
         .output()
         .expect("spawn");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("it-ran"),
-        "the shell ran: {text:?} {:?}",
+    assert_eq!(
+        out.stdout,
+        b"it-ran\n[pre\xffpost]\n",
+        "the shell ran and kept the value: {:?}",
         String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        text.contains("[unset]"),
-        "and the value it cannot hold is absent: {text:?}"
     );
     assert_eq!(out.status.code(), Some(0), "not an abort");
 }

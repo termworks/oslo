@@ -103,7 +103,7 @@ pub enum CompoundOp {
 }
 
 fn err(msg: String) -> ShellError {
-    ShellError::ExpansionError(msg)
+    ShellError::MalformedExpansion(msg)
 }
 
 /// Scan `expr` into tokens. Anything the arithmetic grammar has no token for — `$`, `"`, a stray
@@ -134,11 +134,33 @@ pub fn tokenize(expr: &str) -> Result<Vec<Token>> {
             continue;
         }
         let (tok, len) = lex_operator(&src, i)?;
+        if matches!(tok, Token::Inc | Token::Dec) && !steps_a_variable(&out, &src[i + 2..]) {
+            // Not an increment: `1 +++ 2` is `1 + + + 2`, read one sign at a time.
+            out.push(if tok == Token::Inc {
+                Token::Plus
+            } else {
+                Token::Minus
+            });
+            i += 1;
+            continue;
+        }
         out.push(tok);
         i += len;
     }
 
     Ok(out)
+}
+
+/// Whether a `++` or `--` with `before` lexed and `after` still to come steps a variable: it
+/// follows a name or a subscript, or a name follows it.
+fn steps_a_variable(before: &[Token], after: &[char]) -> bool {
+    if matches!(before.last(), Some(Token::Ident(_) | Token::RBracket)) {
+        return true;
+    }
+    after
+        .iter()
+        .find(|c| !c.is_whitespace())
+        .is_some_and(|c| c.is_alphabetic() || *c == '_')
 }
 
 /// Longest-match operator scan. Three-character forms first, then two, then one — the order is

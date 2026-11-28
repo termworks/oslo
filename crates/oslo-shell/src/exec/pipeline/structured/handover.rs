@@ -56,9 +56,9 @@ use oslo_base::error::{Result, ShellError};
 ///
 /// A registered tool and nothing else. Anything the planner did not think was a tool — an external
 /// command, a builtin, a compound — is where the bytes begin.
-pub(super) fn runnable_here(command: &Command) -> bool {
+pub(super) fn runnable_here(env: &Environment, command: &Command) -> bool {
     match command {
-        Command::Simple(simple) => super::simple_command_name(simple)
+        Command::Simple(simple) => super::simple_command_name(env, simple)
             .is_some_and(|name| crate::data::tool::lookup(&name).is_some()),
         _ => false,
     }
@@ -69,13 +69,17 @@ pub(super) fn runnable_here(command: &Command) -> bool {
 /// Asked before anything runs, because the answer decides whether the tool half's own output has to
 /// be captured. `None` when every stage from `start` is a tool, or when the very first one is not —
 /// nothing has run then, and the byte path can still have the whole pipeline as it always did.
-pub(super) fn byte_suffix_at(pipeline: &Pipeline, start: usize) -> Option<usize> {
+pub(super) fn byte_suffix_at(
+    env: &Environment,
+    pipeline: &Pipeline,
+    start: usize,
+) -> Option<usize> {
     let at = pipeline
         .commands
         .iter()
         .enumerate()
         .skip(start)
-        .find(|(_, command)| !runnable_here(command))
+        .find(|(_, command)| !runnable_here(env, command))
         .map(|(i, _)| i)?;
     (at > start).then_some(at)
 }

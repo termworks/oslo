@@ -64,9 +64,10 @@ nix = { version = "0.29", features = [
     "dir",
 ] }
 
-# `[[ str =~ ere ]]`. See the root manifest for why the feature set is trimmed.
+# `[[ str =~ ere ]]`. See the root manifest for why the feature set is trimmed. `unicode-bool` and
+# `unicode-gencat` give a UTF-8 locale's POSIX classes the properties glibc builds them from.
 regex = { version = "1", default-features = false, features = [
-    "std", "unicode-case", "unicode-perl",
+    "std", "unicode-case", "unicode-perl", "unicode-bool", "unicode-gencat",
     "perf-inline",
 ] }
 

@@ -7,7 +7,7 @@
 //! Both builtins move through [`change_directory`], which is what keeps `$OLDPWD` correct: a
 //! `popd` followed by `cd -` has to return to where the `popd` was issued from.
 
-use super::chdir::{PathMode, change_directory, logical_join, logical_pwd};
+use super::chdir::{PathMode, change_directory, logical_pwd};
 use super::dirs::builtin_dirs;
 use crate::env::origin_now;
 use crate::env::scope::Environment;
@@ -146,18 +146,14 @@ pub fn builtin_pushd(env: &mut Environment, args: &[String]) -> Result<i32> {
                 );
                 return Ok(1);
             };
-            match rotate(env, entries, index, no_cd) {
-                Some(rotated) => rotated,
-                None => return Ok(1),
-            }
+            return rotate(env, entries, index, no_cd);
         }
         Some(Operand::Dir(dir)) => {
             let mut next = entries;
             if no_cd {
                 // `-n` keeps the shell where it is, so the new entry goes *below* the current
-                // directory rather than becoming it.
-                let resolved = logical_join(&logical_pwd(env), &dir);
-                next.insert(1, resolved);
+                // directory rather than becoming it — as written, the way bash stores it.
+                next.insert(1, dir);
             } else {
                 // CDPATH can send the shell somewhere the operand does not name, so the entry
                 // is read back from `$PWD` afterwards rather than guessed from the operand.
@@ -194,27 +190,32 @@ pub fn builtin_pushd(env: &mut Environment, args: &[String]) -> Result<i32> {
     builtin_dirs(env, &[])
 }
 
-/// Rotate `entries` so that `index` becomes the top, moving there unless `-n` was given.
+/// Rotate `entries` so that `index` becomes the top, as bash turns its stack.
 ///
-/// `None` means the move failed and the stack must be left alone.
-fn rotate(
-    env: &mut Environment,
-    mut entries: Vec<String>,
-    index: usize,
-    no_cd: bool,
-) -> Option<Vec<String>> {
-    if no_cd {
-        // Entry 0 is the process's own directory and `-n` forbids leaving it, so only the
-        // stored portion turns.
-        if entries.len() > 1 {
-            let by = index.saturating_sub(1);
-            entries[1..].rotate_left(by);
+/// The entry that comes to the top is the one `cd` goes to. It is dropped when `-n` keeps the
+/// shell where it is or the move fails, and the stack keeps the rest as turned. Only a move that
+/// succeeds prints the stack.
+fn rotate(env: &mut Environment, entries: Vec<String>, index: usize, no_cd: bool) -> Result<i32> {
+    if index == 0 {
+        if no_cd {
+            return Ok(0);
         }
-        return Some(entries);
+        if change_directory(env, &entries[0], PathMode::Logical, "pushd").is_none() {
+            return Ok(1);
+        }
+        return builtin_dirs(env, &[]);
     }
-    entries.rotate_left(index);
-    change_directory(env, &entries[0], PathMode::Logical, "pushd")?;
-    Some(entries)
+    let here = entries[0].clone();
+    let mut turned = entries;
+    turned.rotate_left(index);
+    let target = std::mem::replace(&mut turned[0], here);
+    let moved = !no_cd && change_directory(env, &target, PathMode::Logical, "pushd").is_some();
+    store(env, &turned);
+    match (no_cd, moved) {
+        (true, _) => Ok(0),
+        (false, true) => builtin_dirs(env, &[]),
+        (false, false) => Ok(1),
+    }
 }
 
 pub fn builtin_popd(env: &mut Environment, args: &[String]) -> Result<i32> {

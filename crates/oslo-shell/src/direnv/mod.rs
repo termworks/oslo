@@ -511,6 +511,7 @@ fn shell_state(env: &Environment) -> State {
 fn maintained(name: &str) -> bool {
     const NAMES: &[&str] = &[
         "_",
+        "BASHOPTS",
         "BASHPID",
         "EPOCHREALTIME",
         "EPOCHSECONDS",
@@ -521,6 +522,7 @@ fn maintained(name: &str) -> bool {
         "PWD",
         "RANDOM",
         "SECONDS",
+        "SHELLOPTS",
         "SHLVL",
     ];
     NAMES.contains(&name)

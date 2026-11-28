@@ -5,6 +5,7 @@
 //! running it, and the source printer it needs to show a function body lives in `unparse`.
 
 mod resolve;
+mod source;
 mod unparse;
 
 pub use resolve::builtin_type;
@@ -15,14 +16,15 @@ pub use resolve::is_keyword;
 /// `type` and `which` answer the same question in different words, and a shell where they disagree
 /// has two dispatch tables and one of them is wrong. There is one, and it is [`resolve::ways`].
 pub use resolve::{Kind, ways};
+pub use source::builtin_source;
+/// A simple command as source text, for `$BASH_COMMAND`.
+pub(crate) use unparse::format_simple;
 /// Render a function definition as shell source; also what `set` and `declare -f` need to print.
-pub use unparse::format_function;
+pub use unparse::{format_function, format_word};
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
-use crate::exec::eval_command_list;
 use oslo_base::error::{Result, ShellError};
-use std::fs;
 
 /// Parse a builtin's numeric operand the way bash's `legal_number` does.
 ///
@@ -104,11 +106,40 @@ fn out_of_a_loop(builtin: &str) {
     );
 }
 
+thread_local! {
+    /// The status the loop a `break` leaves reports: 1 after `break 0`, 0 otherwise.
+    static BREAK_STATUS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Take the status the last `break` or `continue` left for its loop, resetting it to 0.
+pub(crate) fn take_break_status() -> i32 {
+    BREAK_STATUS.with(|s| s.replace(0))
+}
+
+/// What bash does with a second operand to `exit`, `return`, `shift`, `break` or `continue`:
+/// it abandons the whole top-level command, which the catching list reports.
+pub(crate) fn too_many_arguments(env: &Environment, builtin: &str) -> ShellError {
+    discard(env, format!("{builtin}: too many arguments"), 2)
+}
+
+/// A [`ShellError::Discard`] leaving `status`, or 1 in a `-c` program, which is what bash leaves
+/// there whatever the error.
+pub(crate) fn discard(env: &Environment, message: String, status: i32) -> ShellError {
+    let status = match env.option(crate::env::options::ShellOption::CommandString) {
+        true => 1,
+        false => status,
+    };
+    ShellError::Discard(message, status)
+}
+
 /// `break [n]` — leave the innermost `n` enclosing loops.
 ///
 /// Signalled as an error so it unwinds through nested command lists; the loop evaluators in
 /// [`crate::exec::pipeline`] catch it, decrement the depth, and either stop or re-raise.
 pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.len() > 2 && env.in_loop() {
+        return Err(too_many_arguments(env, "break"));
+    }
     let asked = loop_depth("break", args);
     // Outside a loop this is a no-op, because signalling would unwind out of the enclosing command
     // list and abandon the commands after it — but it is not a *silent* one. `break` where no loop
@@ -121,8 +152,11 @@ pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
     match asked {
         Depth::NotANumber => bad_operand(),
-        // Every loop, because `break 0` names none and bash leaves the whole nest.
-        Depth::OutOfRange => Err(ShellError::Break(env.loops().max(1))),
+        // Every loop, because `break 0` names none and bash leaves the whole nest, with status 1.
+        Depth::OutOfRange => {
+            BREAK_STATUS.with(|s| s.set(1));
+            Err(ShellError::Break(env.loops().max(1)))
+        }
         // **Clamped to the loops that are actually there.** POSIX: when `n` is greater than the
         // number of enclosing loops, the outermost one is exited. Re-raised undecremented past the
         // last loop it would instead escape the script — `for i in 1 2; do break 2; done; echo after`
@@ -133,6 +167,9 @@ pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
 
 /// `continue [n]` — start the next iteration of the `n`th enclosing loop.
 pub fn builtin_continue(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.len() > 2 && env.in_loop() {
+        return Err(too_many_arguments(env, "continue"));
+    }
     let asked = loop_depth("continue", args);
     // The same no-op, and the same diagnostic — see `builtin_break`.
     if matches!(asked, Depth::Leave(_)) && !env.in_loop() {
@@ -142,7 +179,10 @@ pub fn builtin_continue(env: &mut Environment, args: &[String]) -> Result<i32> {
     match asked {
         Depth::NotANumber => bad_operand(),
         // `continue 0` leaves the nest rather than continuing it, which is bash's answer too.
-        Depth::OutOfRange => Err(ShellError::Break(env.loops().max(1))),
+        Depth::OutOfRange => {
+            BREAK_STATUS.with(|s| s.set(1));
+            Err(ShellError::Break(env.loops().max(1)))
+        }
         // The same clamp, and the same reason — see `builtin_break`.
         Depth::Leave(n) => Err(ShellError::Continue(n.min(env.loops()))),
     }
@@ -162,12 +202,19 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
         // 2, not 1: bash treats it as a usage error, and `$?` says so.
         return Ok(2);
     }
+    if args.len() > 2 {
+        return Err(too_many_arguments(env, "return"));
+    }
     let code = match args.get(1) {
         // Bare `return` yields the status of the last command, as in bash.
         None => env.last_status,
         // A bad operand still returns — bash unwinds the function with status 2 rather than
-        // carrying on with the commands after the `return`.
-        Some(raw) => numeric_operand::<i32>("return", raw).unwrap_or(2),
+        // carrying on with the commands after the `return` — and POSIX mode ends the shell.
+        Some(raw) => match numeric_operand::<i32>("return", raw) {
+            Ok(n) => n,
+            Err(()) if env.posix() => return Err(ShellError::utility_error("return", 2)),
+            Err(()) => 2,
+        },
     };
     Err(ShellError::Return(exit_status(code)))
 }
@@ -179,9 +226,7 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
 /// meant to reveal. It is a usage error, and bash leaves with 2.
 pub fn builtin_exit(env: &mut Environment, args: &[String]) -> Result<i32> {
     if args.len() > 2 {
-        eprintln!("{}exit: too many arguments", origin_now());
-        // Not an exit: bash refuses the request and leaves the shell running.
-        return Ok(1);
+        return Err(too_many_arguments(env, "exit"));
     }
     if refuse_over_stopped_jobs(env) {
         return Ok(1);
@@ -197,12 +242,17 @@ pub fn builtin_exit(env: &mut Environment, args: &[String]) -> Result<i32> {
         // a successful run into exit 1. bash and dash both report 0. An explicit operand still
         // wins, so `trap 'exit 7' 0` leaves with 7.
         None => super::process::exit_trap_status().unwrap_or(env.last_status),
+        // A bad operand is a usage error: the shell carries on with status 2, and only POSIX
+        // mode ends over it.
         Some(raw) => match numeric_operand::<i64>("exit", raw) {
             Ok(n) => n as i32,
-            Err(()) => return Err(ShellError::Exit(2)),
+            Err(()) => return Err(ShellError::utility_error("exit", 2)),
         },
     };
-    Err(ShellError::Exit(exit_status(code)))
+    // The EXIT trap runs here, before the unwind, so it sees the locals, `$FUNCNAME` and the
+    // positional parameters of the function that called `exit`.
+    let code = super::process::run_exit_trap(env, exit_status(code));
+    Err(ShellError::Exit(code))
 }
 
 /// Whether this `exit` should be refused because there are stopped jobs, and say so if it is.
@@ -262,6 +312,16 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     // keybinding it installs answered `oslo: --: command not found`.
     let operands = match args.get(1).map(String::as_str) {
         Some("--") => &args[2..],
+        Some(flag) if flag.len() > 1 && flag.starts_with('-') => {
+            crate::env::complain_with_usage(
+                args,
+                flag,
+                &format!("eval: {flag}: invalid option"),
+                "eval takes no options",
+                "eval: usage: eval [arg ...]",
+            );
+            return Err(ShellError::utility_error("eval", 2));
+        }
         _ => &args[1..],
     };
     if operands.is_empty() {
@@ -273,100 +333,30 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     // `x='eval "$x"'; eval "$x"` recurses through the parser and the evaluator with no function
     // call to bound it, so `eval` carries the same nesting counter `source` does.
     env.enter_nested_script()?;
-    let result =
-        match crate::syntax::parse_with_aliases(&code, !env.get_aliases().is_empty(), &|n| {
-            env.get_alias(n).map(str::to_string)
-        }) {
-            Ok(ast) => eval_command_list(env, &ast),
-            // A syntax error in evaluated text is the *builtin's* failure, not the script's:
-            // bash reports it, gives `eval` status 2, and carries on with the next command.
-            //
-            // **Under `--posix` it is fatal instead**, because `eval` is a special builtin and
-            // POSIX 2.8.1 ends a non-interactive shell on a utility error in one. Raised rather
-            // than decided here: `posix::resolve_builtin_result` folds it back to this same status
-            // for a shell that is not in POSIX mode, so the ordinary case is unchanged. Measured —
-            // `bash --posix -c 'eval "if"; echo ALIVE'` prints nothing and exits 2.
-            Err(e) => {
-                eprintln!("{}eval: {}", origin_now(), e);
-                Err(oslo_base::error::ShellError::utility_error("eval", 2))
-            }
-        };
-    env.exit_nested_script();
-    result
-}
-
-pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
-    if args.len() < 2 {
-        eprintln!("{}source: filename argument required", origin_now());
-        return Ok(1);
-    }
-
-    let file_path = &args[1];
-    let content = match fs::read_to_string(oslo_base::lossless::to_os(file_path)) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "oslo: source: {}: {}",
-                oslo_base::shown::shown(file_path),
-                oslo_base::error::reason(&e)
-            );
-            // `.` is a special builtin, so a file it cannot read ends a non-interactive shell in
-            // POSIX mode — `bash --posix -c '. /nonexistent; echo ALIVE'` prints nothing. Outside
-            // POSIX this folds back to status 1 and the script carries on, as it always did.
-            return Err(oslo_base::error::ShellError::utility_error("source", 1));
+    let command = env.get_var("BASH_COMMAND").unwrap_or_default().to_string();
+    let parsed = crate::syntax::parse_with_aliases(&code, !env.get_aliases().is_empty(), &|n| {
+        env.get_alias(n).map(str::to_string)
+    });
+    let outer = env.number_lines_from_here();
+    let traced = crate::exec::simple::trace::Nested::enter();
+    let result = match parsed {
+        Ok(ast) if !crate::exec::chunks::needs_chunks(env, &code) => {
+            crate::exec::eval_command_unit(env, &ast)
         }
+        // A syntax error in evaluated text is the *builtin's* failure, not the script's: the
+        // commands before it run, `eval` reports it with status 2, and the caller carries on.
+        // Under `--posix` it is a fatal utility error when nothing before it ran.
+        _ => crate::exec::chunks::run_unit_chunks(env, "eval", &code, &mut |_, e| {
+            eprintln!("{}eval: {}", origin_now(), e)
+        }),
     };
-
-    // **Not every sourced file is shell.** A Lua one used to reach the shell parser and come back
-    // as a syntax error; `oslo script.lua` has always detected it, and this is the other entry
-    // point applying the same rule. Asked before the nesting counter, because a Lua chunk does not
-    // re-enter this evaluator.
-    if let Some(status) = crate::sourced::run_if_not_shell(file_path, &content) {
-        return Ok(status);
-    }
-
-    // A file that sources itself re-enters the parser and the evaluator once per level. The
-    // counter is entered only after the file is known to be readable, so a missing file still
-    // costs nothing, and exited on every path out so a `return` cannot leave it drifting.
-    env.enter_nested_script()?;
-    // **`. file a b` gives the file `$1` and `$2`**, and the arguments were being dropped: a
-    // sourced file read the *caller's* positional parameters however it was invoked, so the common
-    // `. ./lib.sh --verbose` gave `lib.sh` whatever the outer script happened to be holding.
-    //
-    // Only when there are operands. Bare `. file` deliberately leaves the caller's parameters in
-    // place — that is POSIX, and what bash does; swapping an empty list in would have blanked `$@`
-    // for every file sourced without arguments, which is nearly all of them.
-    let outer = (args.len() > 2).then(|| env.swap_positional(args[2..].to_vec()));
-    // `$FUNCNAME`'s outermost entry, as bash spells it: a function called from a sourced file
-    // reads `f source`. `eval` gets none, and bash gives it none either.
-    env.enter_script_frame("source");
-    // And the file itself, so a failure inside it names it rather than the script that sourced it.
-    env.enter_source_file(file_path);
-    let result =
-        match crate::syntax::parse_with_aliases(&content, !env.get_aliases().is_empty(), &|n| {
-            env.get_alias(n).map(str::to_string)
-        }) {
-            Ok(ast) => eval_command_list(env, &ast),
-            // As with `eval`: the sourced file failing to parse leaves `source` with status 2 and
-            // the calling script still running.
-            Err(e) => {
-                eprintln!("{}{}: {}", origin_now(), file_path, e);
-                Ok(2)
-            }
-        };
-    env.exit_source_file();
-    env.exit_script_frame();
-    // Before the status is looked at, so a `return` from inside the file restores them too.
-    if let Some(outer) = outer {
-        env.set_positional(outer);
-    }
+    drop(traced);
+    env.set_line_offset(outer);
     env.exit_nested_script();
-
-    // `return` ends a sourced script early and supplies its status.
-    match result {
-        Err(ShellError::Return(code)) => Ok(code),
-        other => other,
+    if !super::process::in_trap() {
+        env.set_bash_command(command);
     }
+    result
 }
 
 #[cfg(test)]
@@ -384,10 +374,13 @@ mod tests {
     #[test]
     fn a_non_numeric_operand_is_refused_by_every_control_builtin() {
         let mut env = Environment::new();
-        assert!(matches!(
-            builtin_exit(&mut env, &argv(&["exit", "abc"])),
-            Err(ShellError::Exit(2))
-        ));
+        // A usage error, which bash survives with status 2 outside POSIX mode.
+        assert_eq!(
+            builtin_exit(&mut env, &argv(&["exit", "abc"]))
+                .unwrap_err()
+                .survivable_utility_status(),
+            Some(2)
+        );
         // Inside a function, because `return` outside one is refused before the operand is ever
         // looked at — which is bash's order too, and what the guard in `builtin_return` is for.
         env.enter_function()
@@ -414,10 +407,12 @@ mod tests {
     #[test]
     fn a_partly_numeric_operand_is_not_a_number() {
         let mut env = Environment::new();
-        assert!(matches!(
-            builtin_exit(&mut env, &argv(&["exit", "1x"])),
-            Err(ShellError::Exit(2))
-        ));
+        assert_eq!(
+            builtin_exit(&mut env, &argv(&["exit", "1x"]))
+                .unwrap_err()
+                .survivable_utility_status(),
+            Some(2)
+        );
     }
 
     #[test]
@@ -461,14 +456,14 @@ mod tests {
         env.exit_function();
     }
 
-    /// A second operand is a usage error, and a usage error is not a reason to end the shell.
+    /// A second operand abandons the command rather than exiting with either of them.
     #[test]
-    fn too_many_operands_does_not_exit() {
+    fn too_many_operands_abandons_the_command() {
         let mut env = Environment::new();
-        assert_eq!(
-            builtin_exit(&mut env, &argv(&["exit", "1", "2"])).expect("no exit"),
-            1
-        );
+        assert!(matches!(
+            builtin_exit(&mut env, &argv(&["exit", "1", "2"])),
+            Err(ShellError::Discard(_, 2))
+        ));
     }
 }
 

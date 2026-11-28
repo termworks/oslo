@@ -35,6 +35,12 @@ pub enum ShellError {
     /// which is why "the expansion failed" is three variants and not one.
     MalformedExpansion(String),
 
+    /// A `${name:=word}` whose assignment was refused, as to a read-only name, outside POSIX mode.
+    ///
+    /// bash abandons the top-level command with status 2. The top level of a `-c` program, an
+    /// `eval`, a `source` and a command substitution each report 1 instead.
+    AssignmentRefused(String),
+
     /// A pattern that matched nothing while `failglob` is on, as the text it was written as.
     ///
     /// Its own variant because bash abandons **the top-level command** it occurred in — the rest
@@ -42,6 +48,20 @@ pub enum ShellError {
     /// on with the next one, where every other expansion error ends a script. Only the outermost
     /// command list catches it; see `exec::pipeline`.
     NoMatch(String),
+
+    /// An error that abandons the whole top-level command it occurred in, through every `eval` and
+    /// `source` around it — `exit 1 2`, an arithmetic error in a subscript or in an integer
+    /// variable's value — carrying its diagnostic and the status it leaves. A `-c` program ends
+    /// there with that status.
+    Discard(String, i32),
+
+    /// An assignment that could not be made — a read-only name, a subscript before the start of
+    /// an array — with its diagnostic already printed.
+    ///
+    /// bash abandons the top-level command it happened in and carries on with the next one, as it
+    /// does for a [`ShellError::NoMatch`]; `eval`, `source`, a subshell and a command substitution
+    /// each end with status 1 instead.
+    Abandoned,
 
     ExecutionError(String),
 
@@ -138,9 +158,11 @@ impl std::fmt::Display for ShellError {
             ShellError::SyntaxError(m) => write!(f, "syntax error: {m}"),
             ShellError::ExpansionError(m)
             | ShellError::UnsetParameter(m)
-            | ShellError::MalformedExpansion(m) => write!(f, "{m}"),
+            | ShellError::MalformedExpansion(m)
+            | ShellError::AssignmentRefused(m) => write!(f, "{m}"),
             ShellError::NoMatch(pattern) => write!(f, "no match: {pattern}"),
-            ShellError::ExecutionError(m) => write!(f, "{m}"),
+            ShellError::Abandoned => write!(f, "assignment failed"),
+            ShellError::Discard(m, _) | ShellError::ExecutionError(m) => write!(f, "{m}"),
             ShellError::Io(e) => write!(f, "{}", reason(e)),
             ShellError::Lua(e) => write!(f, "Lua error: {e}"),
             ShellError::Nix(e) => write!(f, "POSIX error: {e}"),
@@ -234,7 +256,8 @@ impl ShellError {
     /// but the same error inside a subshell or a pipeline stage still reports 1.
     pub fn failure_status(&self) -> i32 {
         match self {
-            ShellError::SyntaxError(_) => 2,
+            ShellError::SyntaxError(_) | ShellError::AssignmentRefused(_) => 2,
+            ShellError::Discard(_, status) => *status,
             ShellError::UtilityError { status, .. } => *status,
             _ => 1,
         }

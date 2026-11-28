@@ -4,6 +4,7 @@
 //! one, and this half is where the shell has to be careful not to guess.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Where the shell looked, for the help line under a name it could not run.
 ///
@@ -34,6 +35,11 @@ pub(super) fn nothing_to_run(
     ) {
         return Ok(status);
     }
+    // bash's own hook: a `command_not_found_handle` function, run in a subshell with the command
+    // as its arguments, answers with its status.
+    if env.shared_function(NOT_FOUND_HANDLER).is_some() && !IN_HANDLER.load(Ordering::Relaxed) {
+        return run_not_found_handler(env, words, redirections);
+    }
     // Nobody handled it, so say what a person needs next: the name that was probably meant. Only
     // when the shell is interactive — a script's stderr is read by machines, and bash says exactly
     // "command not found" there.
@@ -55,6 +61,50 @@ pub(super) fn nothing_to_run(
         },
     };
     report_unrunnable(env, redirections, cmd_name, words, &reason, 127)
+}
+
+/// The function bash calls for a command it cannot find.
+const NOT_FOUND_HANDLER: &str = "command_not_found_handle";
+
+/// Set in the subshell running the handler, so a missing command inside it does not recurse.
+static IN_HANDLER: AtomicBool = AtomicBool::new(false);
+
+/// Run `command_not_found_handle name args…` in a forked subshell and report its status.
+fn run_not_found_handler(
+    env: &mut Environment,
+    words: &[String],
+    redirections: &[Redirection],
+) -> Result<i32> {
+    use nix::unistd::{ForkResult, fork};
+    let mut argv = vec![NOT_FOUND_HANDLER.to_string()];
+    argv.extend(words.iter().cloned());
+    // The last command of a `-c` program is not forked, so neither is its handler.
+    if super::oneshot::current() {
+        IN_HANDLER.store(true, Ordering::Relaxed);
+        let result = super::call::call_named_function(env, NOT_FOUND_HANDLER, &argv, redirections);
+        IN_HANDLER.store(false, Ordering::Relaxed);
+        return result;
+    }
+    crate::exec::compound::flush_stdout();
+    // SAFETY: the child only evaluates shell code and leaves through `process::exit`.
+    match unsafe { oslo_base::forksafe::quiesced(|| fork()) } {
+        Ok(ForkResult::Child) => {
+            crate::exec::job::reset_signals_for_child();
+            IN_HANDLER.store(true, Ordering::Relaxed);
+            // A forked simple command, which bash does not count in `$BASH_SUBSHELL`.
+            env.enter_pipeline_stage(false);
+            let status = crate::exec::pipeline::status_of(super::call::call_named_function(
+                env,
+                NOT_FOUND_HANDLER,
+                &argv,
+                redirections,
+            ));
+            crate::exec::compound::flush_stdout();
+            std::process::exit(crate::env::builtins::run_exit_trap(env, status));
+        }
+        Ok(ForkResult::Parent { child }) => Ok(crate::exec::pipeline::wait_for_status(child)),
+        Err(e) => Err(ShellError::ExecutionError(format!("fork failed: {e}"))),
+    }
 }
 
 /// Why a *structured verb* is being reported as a missing command, when it is not missing at all.

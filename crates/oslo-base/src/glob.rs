@@ -64,6 +64,7 @@ fn in_named_class(name: &str, ch: char) -> bool {
         "punct" => ch.is_ascii_punctuation(),
         "space" => ch.is_whitespace(),
         "upper" => ch.is_uppercase(),
+        "word" => ch.is_alphanumeric() || ch == '_',
         "xdigit" => ch.is_ascii_hexdigit(),
         _ => false,
     }

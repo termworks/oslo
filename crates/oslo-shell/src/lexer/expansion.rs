@@ -10,34 +10,27 @@ use oslo_base::ast::{ParamExpansion, WordPart};
 use oslo_base::error::{Result, ShellError};
 
 impl Lexer<'_> {
+    /// Step over any `\` + newline pairs at the cursor: a line continuation is nothing at all.
+    fn skip_line_continuations(&mut self) {
+        while self.current_char() == Some('\\') && self.peek_char() == Some('\n') {
+            self.advance();
+            self.advance();
+        }
+    }
+
     /// Scan whatever follows a `$`, the cursor sitting on the character after it.
     ///
     /// `in_double_quotes` is not cosmetic: `$'…'` and `$"…"` are only special *outside* quotes.
     /// bash prints `$'a\tb'` for `echo "$'a\tb'"`, so inside a double-quoted run the `$` has to
     /// stay the literal it always was.
     pub(super) fn scan_dollar_expansion(&mut self, in_double_quotes: bool) -> Result<WordPart> {
+        self.skip_line_continuations();
         match self.current_char() {
-            Some('{') => {
+            Some('{' | '(') => self.scan_enclosed(in_double_quotes),
+            // `$[expr]` is the old spelling of `$((expr))`.
+            Some('[') => {
                 self.advance();
-                self.scan_braced_param(in_double_quotes)
-            }
-            Some('(') => {
-                self.advance();
-                if self.current_char() == Some('(') {
-                    self.advance();
-                    // `$((` is ambiguous: arithmetic, or a substitution whose first command is a
-                    // subshell. Scan one balanced paren group and let the character after it
-                    // decide — `$((1+2))` closes twice in a row, `$((cd /) ; pwd)` does not.
-                    let inner = self.scan_raw_delimited('(', ')', "arithmetic expansion", 0)?;
-                    if self.current_char() == Some(')') {
-                        self.advance();
-                        return Ok(WordPart::Arithmetic(inner));
-                    }
-                    let rest = self.scan_raw_delimited('(', ')', "command substitution", 0)?;
-                    return Ok(WordPart::CommandSubstitution(format!("({inner}){rest}")));
-                }
-                let cmd = self.scan_raw_delimited('(', ')', "command substitution", 0)?;
-                Ok(WordPart::CommandSubstitution(cmd))
+                Ok(WordPart::Arithmetic(self.scan_old_arithmetic()?))
             }
             Some('\'') if !in_double_quotes => {
                 self.advance();
@@ -59,12 +52,15 @@ impl Lexer<'_> {
                     name.push(ch);
                     self.advance();
                 } else {
-                    while let Some(c) = self.current_char() {
-                        if is_var_name_char(c) {
-                            name.push(c);
-                            self.advance();
-                        } else {
-                            break;
+                    // A line continuation inside the name joins its halves: `$fo\⏎o` is `$foo`.
+                    loop {
+                        self.skip_line_continuations();
+                        match self.current_char() {
+                            Some(c) if is_var_name_char(c) => {
+                                name.push(c);
+                                self.advance();
+                            }
+                            _ => break,
                         }
                     }
                 }
@@ -83,7 +79,12 @@ impl Lexer<'_> {
     /// live in both. The body is *not* the raw source: inside backquotes only `` \` ``, `\\` and
     /// `\$` are escapes, and the shell strips those backslashes before parsing what is left.
     /// Every other backslash is data, which is why this cannot reuse the raw `$( )` scanner.
-    pub(super) fn scan_backquote_substitution(&mut self) -> Result<WordPart> {
+    ///
+    /// Inside double quotes `\"` is an escape too: ``"`echo \"q\"`"`` runs `echo "q"`.
+    pub(super) fn scan_backquote_substitution(
+        &mut self,
+        in_double_quotes: bool,
+    ) -> Result<WordPart> {
         self.advance();
         let mut cmd = String::new();
 
@@ -93,7 +94,9 @@ impl Lexer<'_> {
                     self.advance();
                     return Ok(WordPart::CommandSubstitution(cmd));
                 }
-                '\\' if matches!(self.peek_char(), Some('`') | Some('\\') | Some('$')) => {
+                '\\' if matches!(self.peek_char(), Some('`' | '\\' | '$'))
+                    || (in_double_quotes && self.peek_char() == Some('"')) =>
+                {
                     self.advance();
                     if let Some(escaped) = self.advance() {
                         cmd.push(escaped);
@@ -141,12 +144,104 @@ impl Lexer<'_> {
         Err(ShellError::SyntaxError("unterminated $' quote".to_string()))
     }
 
-    fn scan_braced_param(&mut self, in_double_quotes: bool) -> Result<WordPart> {
-        // Depth- and quote-aware, so `${x:-${y}}` keeps its whole payload and `${x:-a}b}` does
-        // not end early on the brace inside the quotes.
-        let content = self.scan_raw_delimited('{', '}', "parameter expansion", 0)?;
-        param::parse_braced_body(&content, in_double_quotes)
+    /// The body of `$[ … ]`, the cursor just past the `[`: everything up to the matching `]`.
+    fn scan_old_arithmetic(&mut self) -> Result<String> {
+        let mut depth = 0usize;
+        let mut body = String::new();
+        while let Some(ch) = self.advance() {
+            match ch {
+                '[' => depth += 1,
+                ']' if depth == 0 => return Ok(body),
+                ']' => depth -= 1,
+                _ => {}
+            }
+            body.push(ch);
+        }
+        Err(ShellError::SyntaxError(
+            "unterminated arithmetic expansion".to_string(),
+        ))
     }
+
+    /// The payload of `${ … }`: a command for `${ cmd; }` and `${| cmd; }`, a parameter otherwise.
+    fn braced_body(&self, raw: &str, in_double_quotes: bool) -> Result<WordPart> {
+        let content = without_line_continuations(raw);
+        if content.starts_with([' ', '\t', '\n']) {
+            return Ok(WordPart::FunctionSubstitution {
+                body: content,
+                reply: false,
+            });
+        }
+        if let Some(body) = content.strip_prefix('|') {
+            return Ok(WordPart::FunctionSubstitution {
+                body: body.to_string(),
+                reply: true,
+            });
+        }
+        // A payload inside an assignment value takes the value's tilde rule.
+        let tilde = if self.colon_tilde {
+            super::TildeMode::Value
+        } else {
+            super::TildeMode::Leading
+        };
+        param::parse_braced_body(&content, in_double_quotes, tilde)
+    }
+
+    /// Scan a `$( … )`, `$(( … ))` or `${ … }`, the cursor on the character after the `$`.
+    ///
+    /// Where it ends is asked of rune, the parser that read the word: a here-document body, a
+    /// `case` pattern, a comment, `$'…'` or a regex group can each hold a closer that closes
+    /// nothing. `$((` is arithmetic when its two parentheses close together, so `$((cd /) ; pwd)`
+    /// is a substitution whose first command is a subshell.
+    fn scan_enclosed(&mut self, in_double_quotes: bool) -> Result<WordPart> {
+        let text = self.rest_from(1);
+        let Some((kind, len)) = rune::lex::enclosed(text) else {
+            let what = match self.current_char() {
+                Some('{') => "parameter expansion",
+                _ => "command substitution",
+            };
+            return Err(ShellError::SyntaxError(format!("unterminated {what}")));
+        };
+        let construct = &text[..len];
+        self.advance_bytes(len - 1);
+        let inner = |open: usize, close: usize| {
+            construct
+                .get(open..len - close)
+                .unwrap_or_default()
+                .to_string()
+        };
+        match kind {
+            rune::SyntaxKind::DollarParenParen => Ok(WordPart::Arithmetic(inner(3, 2))),
+            rune::SyntaxKind::DollarParen => Ok(WordPart::CommandSubstitution(inner(2, 1))),
+            _ => self.braced_body(&inner(2, 1), in_double_quotes),
+        }
+    }
+}
+
+/// `text` with every `\` + newline outside single quotes removed, as bash reads its input.
+fn without_line_continuations(text: &str) -> String {
+    if !text.contains("\\\n") {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut single = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => single = !single,
+            '\\' if !single && chars.peek() == Some(&'\n') => {
+                chars.next();
+                continue;
+            }
+            '\\' if !single => {
+                out.push(ch);
+                out.extend(chars.next());
+                continue;
+            }
+            _ => {}
+        }
+        out.push(ch);
+    }
+    out
 }
 
 #[cfg(test)]

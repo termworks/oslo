@@ -16,11 +16,19 @@ use super::table::{Job, JobState, JobTable};
 /// to 27 columns and a job running detached keeps the `&` the user typed, so the line reads
 /// `[1]+  Running                    sleep 1 &`.
 pub fn describe(job: &Job, marker: char) -> String {
-    let state = match job.state {
-        JobState::Running => "Running".to_string(),
-        JobState::Stopped => "Stopped".to_string(),
-        JobState::Completed(0) => "Done".to_string(),
-        JobState::Completed(code) => format!("Exit {}", code),
+    let state = match (job.state.clone(), job.signal) {
+        (JobState::Running, _) => "Running".to_string(),
+        (JobState::Stopped, _) => "Stopped".to_string(),
+        (JobState::Completed(_), Some((signal, core))) => {
+            let core = if core { "(core dumped) " } else { "" };
+            format!(
+                "{:<width$}{core}",
+                signal_description(signal),
+                width = STATE_COLUMN
+            )
+        }
+        (JobState::Completed(0), None) => "Done".to_string(),
+        (JobState::Completed(code), None) => format!("Exit {}", code),
     };
     // The `&` says "still running detached", not "was started with `&`": bash prints
     // `sleep 1 &` while it runs and plain `sleep 1` on the `Done` line, because a finished job is
@@ -43,6 +51,84 @@ pub fn describe(job: &Job, marker: char) -> String {
 /// Width of the state column in `jobs` output, measured against bash 5: `Done` is followed by 23
 /// spaces, `Running` by 20, so the command always starts in column 34.
 const STATE_COLUMN: usize = 27;
+
+/// What `strsignal` calls `signal`: `Killed`, `Segmentation fault`, `User defined signal 1`.
+pub fn signal_description(signal: i32) -> String {
+    // SAFETY: `strsignal` returns a pointer to a static string, read before anything else runs.
+    let name = unsafe { std::ffi::CStr::from_ptr(nix::libc::strsignal(signal)) };
+    name.to_string_lossy().into_owned()
+}
+
+/// A background process a signal ended, waiting for its notice.
+struct Death {
+    pid: i32,
+    signal: i32,
+    core: bool,
+    command: String,
+}
+
+thread_local! {
+    static DEATHS: std::cell::RefCell<Vec<Death>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue the notice for a background process that `signal` ended.
+pub fn note_background_death(pid: i32, signal: i32, core: bool, command: &str) {
+    let death = Death {
+        pid,
+        signal,
+        core,
+        command: command.to_string(),
+    };
+    DEATHS.with(|deaths| deaths.borrow_mut().push(death));
+}
+
+/// Drop the queued notices, for a subshell whose parent will give them.
+pub fn forget_background_deaths() {
+    DEATHS.with(|deaths| deaths.borrow_mut().clear());
+}
+
+/// Say what non-interactive bash says, at a top-level command or a `wait`, of a background job a
+/// signal ended: `line 4: 1234 Segmentation fault         (core dumped) sleep 5`.
+///
+/// Not for SIGINT, SIGTERM or SIGPIPE, nor for a trapped signal, nor in a POSIX-mode `-c`.
+pub fn announce_background_deaths(env: &crate::env::Environment) {
+    let deaths = DEATHS.with(|deaths| std::mem::take(&mut *deaths.borrow_mut()));
+    let command_string = env.option(crate::env::options::ShellOption::CommandString);
+    if crate::exec::pipeline::is_interactive() || (env.posix() && command_string) {
+        return;
+    }
+    use nix::libc::{SIGINT, SIGPIPE, SIGTERM};
+    for death in deaths {
+        let trapped = nix::sys::signal::Signal::try_from(death.signal)
+            .ok()
+            .and_then(|signal| signal.as_str().strip_prefix("SIG"))
+            .and_then(|name| env.get_trap(name))
+            .is_some_and(|action| action != "-");
+        if matches!(death.signal, SIGINT | SIGTERM | SIGPIPE) || trapped {
+            continue;
+        }
+        let core = if death.core { "(core dumped) " } else { "" };
+        let name = signal_description(death.signal);
+        eprintln!(
+            "{}{} {name:<width$}{core}{}",
+            env.origin(),
+            death.pid,
+            death.command,
+            width = STATE_COLUMN
+        );
+        // Told once: `jobs` has nothing left to say about it.
+        super::with_jobs(|jobs| {
+            let pid = nix::unistd::Pid::from_raw(death.pid);
+            if let Some(id) = jobs.job_of_pid(pid)
+                && jobs
+                    .get(id)
+                    .is_some_and(|job| matches!(job.state, JobState::Completed(_)))
+            {
+                jobs.remove(id);
+            }
+        });
+    }
+}
 
 /// Tell an interactive user what changed, and forget the jobs that have nothing left to say.
 ///
@@ -209,6 +295,7 @@ mod tests {
             ended: Vec::new(),
             command: command.to_string(),
             state: JobState::Running,
+            signal: None,
             notified: false,
             background: false,
         }

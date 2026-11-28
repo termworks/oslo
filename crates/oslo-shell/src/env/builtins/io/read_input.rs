@@ -48,6 +48,8 @@ pub struct InputLine {
     /// Continuation bytes still owed by the character being assembled. The `-n` budget is only
     /// consulted at zero, so a limit can never land mid-character.
     pending_bytes: usize,
+    /// Whether the locale is UTF-8; in the C locale every byte is a character.
+    utf8: bool,
 }
 
 /// How many continuation bytes a UTF-8 leading byte promises. Zero for ASCII, and zero for a
@@ -77,7 +79,7 @@ impl InputLine {
             self.pending_bytes -= 1;
         } else {
             self.chars += 1;
-            self.pending_bytes = continuation_len(byte);
+            self.pending_bytes = if self.utf8 { continuation_len(byte) } else { 0 };
         }
     }
 
@@ -96,6 +98,7 @@ impl InputLine {
             stop: Stop::Delimiter,
             chars: 0,
             pending_bytes: 0,
+            utf8: true,
         };
         for byte in text.as_bytes() {
             line.push(*byte, false);
@@ -110,7 +113,7 @@ impl InputLine {
     }
 
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
+        oslo_base::lossless::from_bytes(&self.bytes)
     }
 }
 
@@ -127,6 +130,8 @@ pub struct InputSpec {
     pub timeout: Option<f64>,
     /// `-s`: do not echo what a terminal sends back.
     pub silent: bool,
+    /// Whether `-n`/`-N` count UTF-8 characters rather than bytes.
+    pub utf8: bool,
 }
 
 /// Wait until `fd` has input or the deadline passes. `false` means the deadline won.
@@ -236,6 +241,7 @@ pub fn read_logical_line(spec: &InputSpec) -> Result<InputLine, Errno> {
         stop: Stop::Eof,
         chars: 0,
         pending_bytes: 0,
+        utf8: spec.utf8,
     };
     let _echo = EchoOff::engage(spec.fd, spec.silent);
     let deadline = spec
@@ -300,6 +306,10 @@ pub fn read_logical_line(spec: &InputSpec) -> Result<InputLine, Errno> {
         }
 
         let byte = buf[0];
+        // A NUL that is not the delimiter is dropped, and counts toward no `-n` budget.
+        if byte == 0 && spec.delim != Some(0) {
+            continue;
+        }
         if pending_escape {
             pending_escape = false;
             // Backslash-delimiter is a line continuation: both characters vanish and the line

@@ -3,35 +3,56 @@
 //! Word scanning lives in [`super::quoting`] and `$`-expansions in [`super::expansion`];
 //! all three write `impl Lexer` blocks against the struct defined here.
 
+pub use super::tilde::TildeMode;
 use crate::lexer::token::Token;
 use oslo_base::error::{Result, ShellError};
 
-/// How deeply `$( )`, `${ }`, `"…"` and backticks may nest inside a single word.
-///
-/// The raw scanners below recurse once per nesting level, so input like `$($($(…` would abort the
-/// process on a stack overflow before any diagnostic could be printed — the same failure mode
-/// [`crate::nesting`] exists to prevent. Real words nest a handful of levels at most.
-const MAX_WORD_NESTING: usize = 64;
-
 #[allow(clippy::should_implement_trait, clippy::collapsible_if)]
 pub struct Lexer<'a> {
-    _input: &'a str,
+    input: &'a str,
     chars: Vec<char>,
 
     pos: usize,
+    /// Where `pos` is in `input`, in bytes.
+    byte: usize,
     peeked: Option<Token>,
+    /// Where the words this lexer scans may open a tilde prefix.
+    pub(super) tilde: TildeMode,
+    /// Whether the word being scanned is past its assignment `=`, so a `:` opens a tilde.
+    pub(super) colon_tilde: bool,
 }
 
 #[allow(clippy::should_implement_trait, clippy::collapsible_if)]
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
+        Self::with_tilde(input, TildeMode::Word)
+    }
+
+    /// A lexer whose words follow the tilde rule of `mode`.
+    pub fn with_tilde(input: &'a str, mode: TildeMode) -> Self {
         Self {
-            _input: input,
+            input,
             chars: input.chars().collect(),
 
             pos: 0,
+            byte: 0,
             peeked: None,
+            tilde: mode,
+            colon_tilde: false,
         }
+    }
+
+    /// The input from `back` bytes before the cursor onwards.
+    pub(super) fn rest_from(&self, back: usize) -> &'a str {
+        self.input
+            .get(self.byte.saturating_sub(back)..)
+            .unwrap_or("")
+    }
+
+    /// Move the cursor forward by `bytes` bytes, which end on a character boundary.
+    pub(super) fn advance_bytes(&mut self, bytes: usize) {
+        let target = self.byte + bytes;
+        while self.byte < target && self.advance().is_some() {}
     }
 
     pub(super) fn is_eof(&self) -> bool {
@@ -44,6 +65,11 @@ impl<'a> Lexer<'a> {
 
     pub(super) fn peek_char(&self) -> Option<char> {
         self.chars.get(self.pos + 1).copied()
+    }
+
+    /// The character `ahead` places past the cursor.
+    pub(super) fn char_ahead(&self, ahead: usize) -> Option<char> {
+        self.chars.get(self.pos + ahead).copied()
     }
 
     /// How far the cursor has moved through the input, in characters.
@@ -59,6 +85,7 @@ impl<'a> Lexer<'a> {
         if self.pos < self.chars.len() {
             let ch = self.chars[self.pos];
             self.pos += 1;
+            self.byte += ch.len_utf8();
             Some(ch)
         } else {
             None
@@ -245,256 +272,6 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// How far through a `case` a raw scan is, so a pattern's `)` can be told from a real closer.
-#[derive(PartialEq, Eq)]
-enum CaseAt {
-    /// Seen `case`, waiting for `in`.
-    AwaitingIn,
-    /// A pattern may start here; the next `)` ends it.
-    Pattern,
-    /// Inside an arm's commands, until `;;`.
-    Body,
-}
-
-/// Raw, quote-aware scanning of bracketed constructs.
-///
-/// These copy source text verbatim rather than decomposing it into [`oslo_base::ast::WordPart`]s: a
-/// `$( )` body is re-parsed as a whole script and a `${ }` body is picked apart by the
-/// parameter-expansion parser, and both need the quotes the user actually wrote. What the quote
-/// tracking buys is knowing which delimiters *count* — the `)` in `echo "$(echo "a)b")"` is data,
-/// not the end of the substitution.
-impl Lexer<'_> {
-    /// Copy up to the delimiter matching an `open` that was just consumed, excluding it.
-    pub(super) fn scan_raw_delimited(
-        &mut self,
-        open: char,
-        close: char,
-        what: &str,
-        depth: usize,
-    ) -> Result<String> {
-        if depth > MAX_WORD_NESTING {
-            return Err(ShellError::SyntaxError(format!("{what} nested too deeply")));
-        }
-
-        let mut out = String::new();
-        let mut level = 1usize;
-        // How far through each open `case` this scan is, innermost last. Only meaningful for a
-        // command substitution: a case pattern ends in `)`, which is otherwise indistinguishable
-        // from the `)` closing the substitution, so `$(case a in a) echo Y;; esac)` stopped at
-        // `$(case a in a` and the rest came back as literal text. A mistake other shells' scanners
-        // of its own scanners; this is oslo's copy of it.
-        let mut cases: Vec<CaseAt> = Vec::new();
-        let counting_cases = open == '(';
-        let mut word = String::new();
-        // Whether a `#` here would start a comment, which it does only at a word boundary — a
-        // `#` inside a word is an ordinary character (`ab#cd`, `${x#pat}`).
-        let mut at_word_start = true;
-
-        while let Some(ch) = self.current_char() {
-            // **A comment runs to the end of the line and nothing in it is shell.** Without this,
-            // an apostrophe in one — `# Don't complain about nonexistent directories` — opened a
-            // quote that ran to the end of the file, so the `)` closing the substitution was
-            // never seen. `/usr/bin/xdg-terminal-exec` carries exactly that comment inside a
-            // `$( … )` inside a heredoc body, which is the path that reaches this scanner.
-            //
-            // The third scanner to need this rule, after `parser::alias::scan` and the tokenizer.
-            //
-            // **Only inside `$( … )`.** A command substitution holds a command list, which can
-            // have comments; `${ … }` holds a parameter expansion, which cannot — and its very
-            // first character is `#` in `${#name}`, the length operator. Applying the rule there
-            // ate the whole expansion, which is the same "a hash inside a word is not a comment"
-            // mistake this rule was written to avoid.
-            if counting_cases && ch == '#' && at_word_start {
-                while let Some(c) = self.current_char() {
-                    if c == '\n' {
-                        break;
-                    }
-                    out.push(c);
-                    self.advance();
-                }
-                continue;
-            }
-            at_word_start = matches!(ch, ' ' | '\t' | '\n' | ';' | '&' | '|' | '(' | ')');
-
-            if counting_cases {
-                // A word ends here, so decide what it was before acting on `ch`.
-                if !(ch.is_ascii_alphanumeric() || ch == '_') {
-                    match word.as_str() {
-                        "case" => cases.push(CaseAt::AwaitingIn),
-                        "in" if cases.last() == Some(&CaseAt::AwaitingIn) => {
-                            *cases.last_mut().unwrap() = CaseAt::Pattern;
-                        }
-                        "esac" => {
-                            cases.pop();
-                        }
-                        _ => {}
-                    }
-                    word.clear();
-                } else {
-                    word.push(ch);
-                }
-                // `;;` ends an arm and a new pattern may follow.
-                if ch == ';' && self.peek_char() == Some(';') && cases.last() == Some(&CaseAt::Body)
-                {
-                    *cases.last_mut().unwrap() = CaseAt::Pattern;
-                }
-                if cases.last() == Some(&CaseAt::Pattern) && (ch == close || ch == open) {
-                    // Part of the pattern, not of this scan's brackets.
-                    if ch == close {
-                        *cases.last_mut().unwrap() = CaseAt::Body;
-                    }
-                    self.advance();
-                    out.push(ch);
-                    continue;
-                }
-            }
-
-            // A nested expansion is followed into whatever brackets *this* scan is counting, so
-            // the `}` in `${x:-$(echo })}` belongs to the substitution and not to the operand.
-            if ch == '$' && self.copy_dollar_group(&mut out, depth)? {
-                continue;
-            }
-            if ch == close {
-                self.advance();
-                level -= 1;
-                if level == 0 {
-                    return Ok(out);
-                }
-                out.push(ch);
-                continue;
-            }
-            if ch == open {
-                self.advance();
-                level += 1;
-                out.push(ch);
-                continue;
-            }
-
-            match ch {
-                '\'' => {
-                    self.advance();
-                    out.push('\'');
-                    self.copy_single_quoted(&mut out)?;
-                }
-                '"' => {
-                    self.advance();
-                    out.push('"');
-                    self.copy_double_quoted(&mut out, depth + 1)?;
-                }
-                '`' => {
-                    self.advance();
-                    out.push('`');
-                    self.copy_backquoted(&mut out)?;
-                }
-                '\\' => {
-                    self.advance();
-                    out.push('\\');
-                    if let Some(next) = self.advance() {
-                        out.push(next);
-                    }
-                }
-                _ => {
-                    out.push(ch);
-                    self.advance();
-                }
-            }
-        }
-
-        Err(ShellError::SyntaxError(format!("unterminated {what}")))
-    }
-
-    /// Copy a `$( … )` or `${ … }` starting at the cursor, brackets included.
-    ///
-    /// Returns `false` — having consumed nothing — when the `$` starts something else, so callers
-    /// can fall through to their ordinary handling of it.
-    fn copy_dollar_group(&mut self, out: &mut String, depth: usize) -> Result<bool> {
-        let (open, close, what) = match self.peek_char() {
-            Some('(') => ('(', ')', "command substitution"),
-            Some('{') => ('{', '}', "parameter expansion"),
-            _ => return Ok(false),
-        };
-
-        self.advance();
-        self.advance();
-        out.push('$');
-        out.push(open);
-        let inner = self.scan_raw_delimited(open, close, what, depth + 1)?;
-        out.push_str(&inner);
-        out.push(close);
-        Ok(true)
-    }
-
-    /// Copy through the closing `'`. Nothing inside is special, not even a backslash.
-    fn copy_single_quoted(&mut self, out: &mut String) -> Result<()> {
-        while let Some(ch) = self.advance() {
-            out.push(ch);
-            if ch == '\'' {
-                return Ok(());
-            }
-        }
-        Err(ShellError::SyntaxError(
-            "Unterminated single quote".to_string(),
-        ))
-    }
-
-    /// Copy through the closing `"`.
-    ///
-    /// Expansions stay live inside double quotes, so a `$( )` or `${ }` opened here has to be
-    /// followed into: `"$(echo ")")"` closes on the *third* quote, not the second.
-    fn copy_double_quoted(&mut self, out: &mut String, depth: usize) -> Result<()> {
-        while let Some(ch) = self.current_char() {
-            match ch {
-                '"' => {
-                    self.advance();
-                    out.push('"');
-                    return Ok(());
-                }
-                '\\' => {
-                    self.advance();
-                    out.push('\\');
-                    if let Some(next) = self.advance() {
-                        out.push(next);
-                    }
-                }
-                '`' => {
-                    self.advance();
-                    out.push('`');
-                    self.copy_backquoted(out)?;
-                }
-                '$' if self.copy_dollar_group(out, depth)? => {}
-                _ => {
-                    out.push(ch);
-                    self.advance();
-                }
-            }
-        }
-
-        Err(ShellError::SyntaxError(
-            "Unterminated double quote".to_string(),
-        ))
-    }
-
-    /// Copy through the closing backquote. Only `` \` ``, `\\` and `\$` are escapes here.
-    fn copy_backquoted(&mut self, out: &mut String) -> Result<()> {
-        while let Some(ch) = self.current_char() {
-            self.advance();
-            out.push(ch);
-            if ch == '`' {
-                return Ok(());
-            }
-            if ch == '\\'
-                && matches!(self.current_char(), Some('`') | Some('\\') | Some('$'))
-                && let Some(next) = self.advance()
-            {
-                out.push(next);
-            }
-        }
-        Err(ShellError::SyntaxError(
-            "Unterminated backquote".to_string(),
-        ))
-    }
-}
-
 /// The blanks that separate one token from the next — the *only* ones.
 ///
 /// This is the shell's definition, not Unicode's: POSIX separates tokens on the characters in
@@ -572,6 +349,31 @@ mod case_substitution_tests {
         ] {
             let word = word_of(src);
             assert!(!word.starts_with("Err"), "{src} failed to lex: {word}");
+        }
+    }
+
+    /// A `)` inside a here-document, a `$'…'` or a comment does not close the substitution.
+    #[test]
+    fn a_hidden_closer_does_not_end_a_substitution() {
+        for (src, body) in [
+            (
+                "$(cat <<EOF\nDon't ) \"\nEOF\n)",
+                "cat <<EOF\nDon't ) \"\nEOF\n",
+            ),
+            ("$(echo $'it\\'s')", "echo $'it\\'s'"),
+            ("$(# a ) note\necho hi)", "# a ) note\necho hi"),
+            ("$( [[ a =~ (b| c) ]] )", " [[ a =~ (b| c) ]] "),
+        ] {
+            let expected = oslo_base::ast::WordPart::CommandSubstitution(body.to_string());
+            assert_eq!(
+                word_of(src),
+                format!(
+                    "{:?}",
+                    oslo_base::ast::Word {
+                        parts: vec![expected]
+                    }
+                )
+            );
         }
     }
 }

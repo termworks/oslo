@@ -15,64 +15,6 @@ answer arrives looking like the right one.
 
 ---
 
-## `coproc`
-
-```console
-$ oslo -c 'coproc cat'
-oslo: syntax error: coproc is not supported yet
-```
-
-A coprocess is a two-way pipe to a background command plus an array holding its descriptors. What
-it is *for* — talking to a long-running program without a temporary file — oslo does with named
-pipes, which every shell has:
-
-```sh
-mkfifo /tmp/in /tmp/out
-cat /tmp/in > /tmp/out &
-echo hello > /tmp/in &
-read reply < /tmp/out
-```
-
-## `select`
-
-```console
-$ oslo -c 'select x in a b; do echo $x; done'
-oslo: syntax error: select is not supported yet
-```
-
-`select` is a menu loop: print a numbered list, read a number, run the body with the variable set.
-It is bash's, not POSIX's. In oslo the menu belongs to the interface layer, where it can be drawn
-properly and arrowed through:
-
-```sh
-x=$(oslo userin choose a b c)
-```
-
-In a script that must stay portable, the loop is six lines of POSIX:
-
-```sh
-i=1; for opt in a b; do echo "$i) $opt"; i=$((i+1)); done
-read -r n
-```
-
-## Associative arrays
-
-```console
-$ oslo -c 'declare -A m'
-oslo: declare: -A: associative arrays are not supported
-```
-
-Indexed arrays work. A subscript that is not a number is **arithmetic**, exactly as in bash, so
-`m[k]=v` writes index 0 and `m[j]=w` overwrites it — bash prints the same `k=w j=w count=1` for
-that line, and oslo matching it is deliberate rather than accidental.
-
-For a real map, `oslo.db` is a table a config owns, and a Lua table is a map:
-
-```lua
-local m = {}
-m.k, m.j = "v", "w"
-```
-
 ## Process substitution without `/dev/fd`
 
 `cat <(echo hi)` works, and works by handing the reader a `/dev/fd/N` path. On a system without
@@ -186,6 +128,19 @@ exit status of a signal nobody sends on purpose.
 | Process substitution generally | works wherever `/dev/fd` exists, which is every ordinary Linux system |
 | Three nesting limits sharing one stack, each measured alone | the stack is asked directly, so a combined workload gets an error rather than an abort |
 | `extglob` — `@(a\|b)`, `!(*.txt)` and the rest | the parser reads a group as part of its word, and `shopt -s extglob` turns matching on; see [globbing.md](features/globbing.md#extended-patterns) |
+| `coproc` refused as a syntax error | `coproc cmd` and `coproc NAME { …; }` run, with `NAME[0]`, `NAME[1]` and `NAME_PID` set and cleared when the job ends |
+| `select` refused as a syntax error | the menu loop runs as bash's does: `PS3`, `REPLY`, the column layout on stderr, and status 1 at end of input |
+| Associative arrays — `declare -A` refused | `declare -A`, `typeset -A` and `local -A` build a map whose subscripts are strings, and `${!m[@]}` lists the keys in the order bash itself does |
+
+The associative arrays are worth a word on order, because a script that prints a map without
+sorting it sees whatever order the shell walks it in, and that order is not written down anywhere
+but bash's source. bash keeps a map in a chained hash table of 1024 buckets: a key is hashed with
+32-bit FNV-1 over its bytes, each byte sign-extended the way a C `char` is; a new key goes to the
+head of its bucket; and once the table holds twice as many keys as buckets it grows fourfold,
+re-inserting every entry at the head of its new bucket in the order it walked them. The walk is
+bucket by bucket and head first. oslo keeps the same bookkeeping, so `declare -A m=([a]=1 [b]=2
+[c]=3); echo "${!m[@]}"` prints `c b a` in both shells, and a map large enough to grow walks the
+same way too — `tests/corpus/assoc_order.sh` pins both.
 
 The nesting one is worth a word too, because the counters looked adequate and were not. A function
 calling itself, a `source`/`eval` chain and a nested compound command each had a limit measured

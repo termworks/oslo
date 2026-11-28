@@ -8,6 +8,7 @@
 //! worse than the silent drop it replaced (R8.7).
 
 use nix::libc;
+use oslo_base::ast::{Command, Pipeline, Word};
 use std::time::{Duration, Instant};
 
 /// CPU time consumed so far by this shell and by every child it has already reaped.
@@ -79,8 +80,9 @@ impl Timer {
         }
     }
 
-    /// Write `real`, `user` and `sys` for everything that happened since [`Timer::start`].
-    pub(super) fn report(self) {
+    /// Write `real`, `user` and `sys` for everything that happened since [`Timer::start`], in
+    /// `format` — `$TIMEFORMAT`, or `None` for bash's default.
+    pub(super) fn report(self, format: Option<&str>) {
         let real = self.wall.elapsed();
         let end = CpuTimes::now();
         // Saturating, not plain subtraction: `getrusage` is monotonic, but a failed call reports
@@ -90,8 +92,18 @@ impl Timer {
         // The config gets first refusal on the three lines. Fired from `time`'s own report, which
         // is inside the executor — a handler may draw, but not change the shell. See
         // `ui::report`.
-        if !drawn_by_config(real, user, sys) {
-            write_report(real, user, sys);
+        match format {
+            // An empty `TIMEFORMAT` asks for no report at all.
+            Some("") => {}
+            Some(format) => match render(format, [real, user, sys]) {
+                Ok(text) => eprintln!("{text}"),
+                Err(bad) => eprintln!(
+                    "{}TIMEFORMAT: `{bad}': invalid format character",
+                    crate::env::origin_now()
+                ),
+            },
+            None if drawn_by_config(real, user, sys) => {}
+            None => write_report(real, user, sys),
         }
         // `on-time-report`: only a `time`-prefixed pipeline reaches here, which is what separates
         // this from `post-cmd` — that one fires for everything and carries wall-clock only. These
@@ -129,6 +141,87 @@ fn format_elapsed(d: Duration) -> String {
     let minutes = millis / 60_000;
     let rest = millis % 60_000;
     format!("{}m{}.{:03}s", minutes, rest / 1_000, rest % 1_000)
+}
+
+/// The pipeline `time -p …` times, with the `-p` taken off its first command; `None` without one.
+pub(super) fn without_posix_flag(pipeline: &Pipeline) -> Option<Pipeline> {
+    let Some(Command::Simple(first)) = pipeline.commands.first() else {
+        return None;
+    };
+    let flag = first.words.first()?;
+    if !first.assignments.is_empty() || *flag != Word::from_literal("-p") {
+        return None;
+    }
+    let mut stripped = pipeline.clone();
+    if let Some(Command::Simple(simple)) = stripped.commands.first_mut() {
+        simple.words.remove(0);
+        if simple.words.is_empty() && simple.redirections.is_empty() {
+            stripped.commands.remove(0);
+        }
+    }
+    Some(stripped)
+}
+
+/// The report `time -p` writes, whatever `TIMEFORMAT` says.
+pub(super) const POSIX_FORMAT: &str = "real %2R\nuser %2U\nsys %2S";
+
+/// Expand a `TIMEFORMAT`: `%%`, and `%[p][l]R`, `U`, `S` for the real, user and system time with
+/// `p` fractional digits (at most 3, 3 by default) and `l` for the `MMmSS.FFFs` form; `%P` is the
+/// CPU percentage. Any other character after a `%` is refused, and answered back.
+fn render(format: &str, [real, user, sys]: [Duration; 3]) -> Result<String, char> {
+    let mut out = String::new();
+    let mut chars = format.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let digits = chars
+            .next_if(char::is_ascii_digit)
+            .and_then(|d| d.to_digit(10))
+            .map_or(3, |d| d.min(3));
+        let long = chars.next_if_eq(&'l').is_some();
+        match chars.next() {
+            Some('%') => out.push('%'),
+            Some('R') => out.push_str(&seconds(real, digits, long)),
+            Some('U') => out.push_str(&seconds(user, digits, long)),
+            Some('S') => out.push_str(&seconds(sys, digits, long)),
+            Some('P') => {
+                let busy = (user + sys).as_secs_f64();
+                let share = if real.is_zero() {
+                    0.0
+                } else {
+                    busy * 100.0 / real.as_secs_f64()
+                };
+                out.push_str(&format!("{share:.2}"));
+            }
+            Some(other) => return Err(other),
+            None => out.push('%'),
+        }
+    }
+    Ok(out)
+}
+
+/// One clock with `digits` fractional digits, truncated, as `S.FFF` or `MmS.FFFs`.
+fn seconds(d: Duration, digits: u32, long: bool) -> String {
+    let millis = d.as_millis();
+    let (minutes, secs) = if long {
+        (Some(millis / 60_000), (millis % 60_000) / 1_000)
+    } else {
+        (None, millis / 1_000)
+    };
+    let fraction = (millis % 1_000) / 10u128.pow(3 - digits);
+    let mut text = match minutes {
+        Some(m) => format!("{m}m{secs}"),
+        None => secs.to_string(),
+    };
+    if digits > 0 {
+        text.push_str(&format!(".{fraction:0width$}", width = digits as usize));
+    }
+    if long {
+        text.push('s');
+    }
+    text
 }
 
 /// Whether an `on-report` handler drew the three clocks instead.

@@ -297,17 +297,18 @@ fn declare_x_exports() {
     );
 }
 
-/// An attribute oslo cannot represent is refused rather than silently downgraded to a scalar.
-/// `-A` is the one PLAN.md defers on purpose: associative arrays are a second value shape, and
-/// building an *indexed* array for `declare -A` would answer `${m[key]}` with element 0.
+/// `-A` makes an associative array, whose subscripts are keys rather than arithmetic, and `-n` a
+/// nameref; a letter `declare` has no meaning for is still refused.
 #[test]
-fn declare_refuses_an_unsupported_attribute() {
-    let r = run("declare -A assoc");
+fn declare_has_associative_arrays_and_namerefs() {
+    assert_out(
+        "declare -A assoc; assoc[a]=1; assoc[b]=2; echo \"${assoc[a]}${assoc[b]} ${#assoc[@]}\"",
+        "12 2",
+    );
+    assert_out("other=v; declare -n ref=other; echo \"$ref\"", "v");
+    let r = run("declare -Q v");
     assert_eq!(r.status, 2);
     assert!(!r.stderr.is_empty());
-    // `-n`, a nameref, is still one this shell has no representation for.
-    let r = run("declare -n ref=other");
-    assert_eq!(r.status, 2);
 }
 
 /// `-i` is no longer among them: an integer name evaluates what it is assigned.

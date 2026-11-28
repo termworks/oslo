@@ -27,6 +27,8 @@ use std::cell::Cell;
 const INTERRUPTED_STATUS: i32 = 130;
 
 thread_local! {
+    /// Set for the one list [`eval_command_unit`] is about to run.
+    static UNIT: Cell<bool> = const { Cell::new(false) };
     /// How many command lists this thread is inside.
     static LIST_DEPTH: Cell<u32> = const { Cell::new(0) };
     /// Whether the error currently unwinding is an interrupt rather than an `exit`.
@@ -43,9 +45,23 @@ pub(crate) fn raise(env: &mut Environment) -> ShellError {
     ShellError::Exit(INTERRUPTED_STATUS)
 }
 
+/// Run the text an `eval` or a `source` parsed as a program of its own: a line a refused
+/// assignment or a `failglob` miss abandons is abandoned inside it, and the next line still runs.
+pub fn eval_command_unit(
+    env: &mut Environment,
+    cmd_list: &oslo_base::ast::CommandList,
+) -> Result<i32> {
+    UNIT.with(|unit| unit.set(true));
+    let result = super::eval_command_list(env, cmd_list);
+    UNIT.with(|unit| unit.set(false));
+    result
+}
+
 /// One nesting level of [`super::eval_command_list`], and the place an interrupt stops unwinding.
 pub(crate) struct ListFrame {
     outermost: bool,
+    /// The top list of an `eval` or `source`; see [`eval_command_unit`].
+    unit: bool,
 }
 
 impl ListFrame {
@@ -57,11 +73,18 @@ impl ListFrame {
         });
         Self {
             outermost: depth == 0,
+            unit: UNIT.with(|unit| unit.replace(false)),
         }
     }
 
-    /// Whether this is the outermost command list in the process: a script's top level, or a
-    /// prompt's line.
+    /// Whether a line abandoned below stops here: the outermost command list in the process — a
+    /// script's top level, or a prompt's line — or the top list of an `eval` or `source`.
+    pub(crate) fn catches_abandoned(&self) -> bool {
+        self.outermost || self.unit
+    }
+
+    /// Whether this is the outermost command list in the process, where a
+    /// [`ShellError::Discard`] stops.
     pub(crate) fn is_outermost(&self) -> bool {
         self.outermost
     }

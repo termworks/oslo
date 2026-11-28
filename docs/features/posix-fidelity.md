@@ -243,14 +243,10 @@ carries, because it replaced the process image and nothing registered at exit co
 - **Three corpus cases still differ from bash.** `for ((;;))` with no space between the section
   separators is a syntax error, because brush's tokenizer takes the longest match and fuses the two
   `;` into the `;;` that terminates a `case` item; `for (( ; ; ))` and `for ((i=0;i<3;i++))` both
-  work. `coproc` and `select` are refused by name and deliberately not implemented — one needs job
-  control, the other a prompt, `PS3` and `REPLY`.
-- **Four `declare` attributes are refused rather than honoured**: `-A` (associative arrays), `-i`,
-  `-l`, `-u` and `-n`. Each exits 2 and says which one, because this shell has no representation for
-  them and the alternative is worse than the gap. `declare -A m` answered with an *indexed* array
-  would put every key on element 0 — the subscript is arithmetic, so `m[alpha]` and `m[beta]` are
-  the same slot — and the last write would silently win with nothing on screen looking wrong.
-  `-a`, `-r`, `-x`, `-g` and `-p` all work. Indexed arrays are complete.
+  work. `coproc` and `select` have since closed and match bash.
+- **Every `declare` attribute bash has is honoured**: `-a`, `-A` (associative arrays, walked in
+  bash's own hash order), `-i`, `-l`, `-u`, `-c`, `-n` (namerefs), `-r`, `-t`, `-x`, `-g`, and the
+  `+` forms that take them back, with `declare -p` printing each the way bash does.
 - **stderr is compared only for emptiness.** Two shells will never agree on diagnostic wording and
   should not be forced to, so a diagnostic that says the wrong thing while being non-empty is
   invisible to the suite.
@@ -283,8 +279,9 @@ carries, because it replaced the process image and nothing registered at exit co
 | `tests/posix_stays_on_the_byte_path.rs` | the zero-structured-edges assertion |
 | `tests/command_escape_tests.rs` | `\cmd` and `\\cmd`, run twice: prompt and script |
 | `crates/oslo-shell/src/exec/simple/posix.rs` | `exits_on_error`, `resolve_builtin_result`, `assignment_failure` |
-| `crates/oslo-shell/src/env/builtins/declare.rs` | `Attributes` — which letters are honoured, and which are refused |
-| `tests/declare_builtin_tests.rs` | the refusals through the real binary: status, diagnostic, nothing left behind |
+| `crates/oslo-shell/src/env/builtins/declare/mod.rs` | `Spec`, `declare_one` — the engine `declare`, `local`, `readonly` and `export` share |
+| `crates/oslo-shell/src/env/scope/value.rs` | `Var`, `Attrs` — a binding's value and its attributes |
+| `tests/declare_builtin_tests.rs` | the attributes through the real binary: status, diagnostic, scope |
 | `crates/oslo-shell/src/exec/simple/external.rs` | `wait_for_child` — where a key the shell never saw is read off the wait status |
 | `crates/oslo-shell/src/exec/pipeline/interrupt.rs` | turning that into an unwind, and back into 130 at the top |
 | `tests/signal_tests.rs` | the pty tests: a forking loop ends, and the rest of the line does not run |

@@ -5,6 +5,7 @@
 //! so the positional hazards (nesting, quoting, the leftmost-longest rule) stay in one file and
 //! the operator table stays in another.
 
+use super::Context;
 use super::scan::{Nesting, split_top_level};
 use crate::lexer::quoting::{parse_operand, parse_word_source};
 use oslo_base::ast::{ParamExpansion, ReplaceScope, Word};
@@ -22,8 +23,58 @@ use oslo_base::error::Result;
 ///
 /// This applies to the payload operators only. A *pattern* and a *replacement* process their quotes
 /// in either context, which is bash's rule and is why `"${v#'a'}"` still strips the `a`.
-fn payload(rest: &str, in_double_quotes: bool) -> Result<Word> {
-    parse_operand(rest, in_double_quotes)
+fn payload(rest: &str, ctx: Context) -> Result<Word> {
+    parse_operand(rest, ctx.in_double_quotes, ctx.tilde)
+}
+
+/// Whether a double-quoted payload holds `$'…'` text that leaves a single quote open.
+///
+/// bash puts the decoded text back into the `${…}` before it finds the `}`, and a quote that does
+/// not close hides it: `"${x:-$'a\'b'}"` is a bad substitution, whether or not the word is used.
+pub(super) fn quote_left_open(op: &str, rest: &str, ctx: Context) -> bool {
+    if !ctx.in_double_quotes || !matches!(op.trim_start_matches(':'), "-" | "=" | "+" | "?") {
+        return false;
+    }
+    let chars: Vec<char> = rest.chars().collect();
+    let (mut i, mut quotes, mut depth) = (0, 0usize, 0usize);
+    // The end of a quoted run that opens at `from`, a backslash escaping where `escapes` says.
+    let close = |from: usize, quote: char, escapes: bool| {
+        let mut end = from;
+        while end < chars.len() && chars[end] != quote {
+            end += if escapes && chars[end] == '\\' { 2 } else { 1 };
+        }
+        end.min(chars.len())
+    };
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1,
+            '$' if depth == 0 && chars.get(i + 1) == Some(&'\'') => {
+                let end = close(i + 2, '\'', true);
+                let body: String = chars[i + 2..end].iter().collect();
+                quotes += crate::lexer::decode_ansi_c(&body).matches('\'').count();
+                i = end;
+            }
+            '\'' if depth == 0 => i = close(i + 1, '\'', false),
+            '"' if depth == 0 => i = close(i + 1, '"', true),
+            '$' if matches!(chars.get(i + 1), Some('{' | '(')) => {
+                depth += 1;
+                i += 1;
+            }
+            '{' | '(' if depth > 0 => depth += 1,
+            '}' | ')' if depth > 0 => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    quotes % 2 == 1
+}
+
+/// The pattern of a case operator, which an empty operand leaves out.
+fn selector(rest: &str) -> Result<Option<Word>> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    parse_word_source(rest).map(Some)
 }
 
 /// Build the expansion for `op` from the text that follows it.
@@ -31,13 +82,9 @@ fn payload(rest: &str, in_double_quotes: bool) -> Result<Word> {
 /// Every operand stays a [`oslo_base::ast::Word`]: `${x:-$HOME}` has to expand its default, and
 /// `${v/$sep/-}` has to expand its pattern, both at use time rather than here.
 ///
-/// `in_double_quotes` is whether the whole `${…}` was written inside double quotes, and it changes
-/// exactly one thing — see [`payload`].
-pub(super) fn operator_expansion(
-    op: &str,
-    rest: &str,
-    in_double_quotes: bool,
-) -> Result<ParamExpansion> {
+/// `ctx` says whether the whole `${…}` was written inside double quotes, and which tilde rule a
+/// payload follows; both change only a payload — see [`payload`].
+pub(super) fn operator_expansion(op: &str, rest: &str, ctx: Context) -> Result<ParamExpansion> {
     Ok(match op {
         // A substring operand is arithmetic, so parentheses nest and `${v:(-1)}` splits correctly.
         ":" => {
@@ -66,14 +113,23 @@ pub(super) fn operator_expansion(
 
         // The optional operand selects which characters are eligible; absent means all of them.
         "^" | "^^" | "," | ",," => ParamExpansion::CaseConvert {
-            pattern: if rest.is_empty() {
-                None
-            } else {
-                Some(parse_word_source(rest)?)
-            },
+            pattern: selector(rest)?,
             upper: op.starts_with('^'),
             all: op.chars().count() == 2,
         },
+        "~" | "~~" => ParamExpansion::CaseToggle {
+            pattern: selector(rest)?,
+            all: op == "~~",
+        },
+        // One letter names the transformation; anything else is checked when it is expanded,
+        // because bash lets a malformed one through for an unset name.
+        "@" => {
+            let mut letters = rest.chars();
+            match (letters.next(), letters.next()) {
+                (Some(letter), None) => ParamExpansion::Transform(letter),
+                _ => ParamExpansion::Transform('\0'),
+            }
+        }
 
         _ => {
             // A leading `:` is not a different operator, only a different notion of "absent":
@@ -84,7 +140,7 @@ pub(super) fn operator_expansion(
             // `%%` share this arm and are *patterns*, which process their own quotes in either
             // context — `"${v#'a'}"` strips the `a` in bash. See [`payload`].
             let arg = match bare {
-                "-" | "=" | "+" | "?" => payload(rest, in_double_quotes)?,
+                "-" | "=" | "+" | "?" => payload(rest, ctx)?,
                 _ => parse_word_source(rest)?,
             };
             match bare {

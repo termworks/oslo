@@ -11,39 +11,59 @@
 //! has headroom it does not have will happily open the files it cannot open, which is why this
 //! builtin refused the set direction outright until it could implement it.
 
+use crate::env::origin_now;
 use crate::env::scope::Environment;
 use nix::sys::resource::{RLIM_INFINITY, Resource, getrlimit, rlim_t, setrlimit};
 use oslo_base::error::Result;
 
-/// One selectable limit: its option letter, its description, and the divisor that turns the
-/// kernel's units into the unit `ulimit` prints.
+/// One selectable limit: its option letter, its description and unit, and the divisor that turns
+/// the kernel's units into the unit `ulimit` prints.
 struct Limit {
     flag: char,
     label: &'static str,
+    unit: Option<&'static str>,
     /// 1 for a plain count or a time in seconds, 512 for a size in blocks, 1024 for a size in kB.
     divisor: u64,
 }
 
-/// One row per limit, deliberately: the table is a lookup key, a label and a unit, and wrapping
-/// each row across five lines would hide that it is a table at all.
+/// One row per limit, in the order `ulimit -a` lists them on Linux.
 #[rustfmt::skip]
 const LIMITS: &[Limit] = &[
-    Limit { flag: 'c', label: "core file size (blocks)", divisor: 512 },
-    Limit { flag: 'd', label: "data seg size (kbytes)", divisor: 1024 },
-    Limit { flag: 'e', label: "scheduling priority", divisor: 1 },
-    Limit { flag: 'f', label: "file size (blocks)", divisor: 512 },
-    Limit { flag: 'i', label: "pending signals", divisor: 1 },
-    Limit { flag: 'l', label: "max locked memory (kbytes)", divisor: 1024 },
-    Limit { flag: 'm', label: "max memory size (kbytes)", divisor: 1024 },
-    Limit { flag: 'n', label: "open files", divisor: 1 },
-    Limit { flag: 'q', label: "POSIX message queues (bytes)", divisor: 1 },
-    Limit { flag: 'r', label: "real-time priority", divisor: 1 },
-    Limit { flag: 's', label: "stack size (kbytes)", divisor: 1024 },
-    Limit { flag: 't', label: "cpu time (seconds)", divisor: 1 },
-    Limit { flag: 'u', label: "max user processes", divisor: 1 },
-    Limit { flag: 'v', label: "virtual memory (kbytes)", divisor: 1024 },
-    Limit { flag: 'x', label: "file locks", divisor: 1 },
+    Limit { flag: 'R', label: "real-time non-blocking time", unit: Some("microseconds"), divisor: 1 },
+    Limit { flag: 'c', label: "core file size", unit: Some("blocks"), divisor: 512 },
+    Limit { flag: 'd', label: "data seg size", unit: Some("kbytes"), divisor: 1024 },
+    Limit { flag: 'e', label: "scheduling priority", unit: None, divisor: 1 },
+    Limit { flag: 'f', label: "file size", unit: Some("blocks"), divisor: 512 },
+    Limit { flag: 'i', label: "pending signals", unit: None, divisor: 1 },
+    Limit { flag: 'l', label: "max locked memory", unit: Some("kbytes"), divisor: 1024 },
+    Limit { flag: 'm', label: "max memory size", unit: Some("kbytes"), divisor: 1024 },
+    Limit { flag: 'n', label: "open files", unit: None, divisor: 1 },
+    Limit { flag: 'p', label: "pipe size", unit: Some("512 bytes"), divisor: 512 },
+    Limit { flag: 'q', label: "POSIX message queues", unit: Some("bytes"), divisor: 1 },
+    Limit { flag: 'r', label: "real-time priority", unit: None, divisor: 1 },
+    Limit { flag: 's', label: "stack size", unit: Some("kbytes"), divisor: 1024 },
+    Limit { flag: 't', label: "cpu time", unit: Some("seconds"), divisor: 1 },
+    Limit { flag: 'u', label: "max user processes", unit: None, divisor: 1 },
+    Limit { flag: 'v', label: "virtual memory", unit: Some("kbytes"), divisor: 1024 },
+    Limit { flag: 'x', label: "file locks", unit: None, divisor: 1 },
 ];
+
+const USAGE: &str = "ulimit: usage: ulimit [-SHabcdefiklmnpqrstuvxPRT] [limit]";
+
+/// The pipe buffer `-p` reports, which is not a resource limit and cannot be changed.
+const PIPE_SIZE: u64 = 4096;
+
+/// `value`, with the description and unit in front when several limits are printed.
+fn line(limit: &Limit, value: &str, described: bool) -> String {
+    if !described {
+        return value.to_string();
+    }
+    let unit = match limit.unit {
+        Some(unit) => format!("({unit}, -{}) ", limit.flag),
+        None => format!("(-{}) ", limit.flag),
+    };
+    format!("{:<20} {:>20}{value}", limit.label, unit)
+}
 
 /// Which of the two limits a `-H`/`-S` run selected.
 ///
@@ -65,11 +85,14 @@ impl Which {
     }
 }
 
-/// `ulimit [-HS] [-acdefilmnqrstuvx] [limit]`.
+/// `ulimit [-SHa] [-RcdefilmnpqrstuvxR [limit]] … [limit]`.
+///
+/// Each limit letter takes an optional value: the rest of its word, or the next word when that
+/// does not start with `-`. A letter with no value is printed, one with a value is set.
 pub fn builtin_ulimit(_env: &mut Environment, args: &[String]) -> Result<i32> {
-    let mut which = Which::Both;
+    let (mut soft, mut hard) = (false, false);
     let mut all = false;
-    let mut selected: Vec<char> = Vec::new();
+    let mut selected: Vec<(char, Option<String>)> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -81,18 +104,32 @@ pub fn builtin_ulimit(_env: &mut Environment, args: &[String]) -> Result<i32> {
         if arg.len() < 2 || !arg.starts_with('-') {
             break;
         }
-        for c in arg[1..].chars() {
+        for (at, c) in arg[1..].char_indices() {
             match c {
-                'H' => which = Which::Hard,
-                'S' => which = Which::Soft,
+                'H' => hard = true,
+                'S' => soft = true,
                 'a' => all = true,
-                c if LIMITS.iter().any(|l| l.flag == c) => selected.push(c),
+                c if LIMITS.iter().any(|l| l.flag == c) => {
+                    let rest = &arg[1 + at + c.len_utf8()..];
+                    let value = match rest.is_empty() {
+                        false => Some(rest.to_string()),
+                        true => match args.get(i + 1) {
+                            Some(next) if !next.starts_with('-') => {
+                                i += 1;
+                                Some(next.clone())
+                            }
+                            _ => None,
+                        },
+                    };
+                    selected.push((c, value));
+                    break;
+                }
                 other => {
                     crate::env::complain_option(
                         args,
                         other,
                         &format!("ulimit: -{other}: invalid option"),
-                        "ulimit: usage: ulimit [-HS] [-acdefilmnqrstuvx] [limit]",
+                        USAGE,
                     );
                     return Ok(2);
                 }
@@ -100,52 +137,44 @@ pub fn builtin_ulimit(_env: &mut Environment, args: &[String]) -> Result<i32> {
         }
         i += 1;
     }
+    let which = match (soft, hard) {
+        (true, false) => Which::Soft,
+        (false, true) => Which::Hard,
+        _ => Which::Both,
+    };
+    // Printing reads the soft limit unless only `-H` was given.
+    let report_hard = which.reports_hard();
 
-    // With no limit selected, `ulimit` means the file-size limit, as POSIX specifies — for
-    // setting as much as for reporting.
-    if selected.is_empty() {
-        selected.push('f');
-    }
-
-    // An operand is a *new* limit, and setting produces no output at all: `ulimit -n 512` is
-    // silent, and the `ulimit -n` after it prints 512.
-    if i < args.len() {
-        let mut status = 0;
-        for flag in &selected {
-            status |= set_one(*flag, &args[i], which);
-        }
-        return Ok(status);
-    }
-
-    let hard = which.reports_hard();
-
-    // A limit the kernel will not report is skipped rather than printed as an error, so the
-    // listing stays a listing.
     if all {
         for limit in LIMITS {
-            match report(limit, hard) {
-                Some(value) => println!("-{}: {:<30} {}", limit.flag, limit.label, value),
-                None => continue,
+            if let Some(value) = report(limit, report_hard) {
+                println!("{}", line(limit, &value, true));
             }
         }
         return Ok(0);
     }
 
+    // With no limit selected, `ulimit` means the file-size limit, as POSIX specifies — for
+    // setting as much as for reporting.
+    if selected.is_empty() {
+        selected.push(('f', args.get(i).cloned()));
+    }
+
+    let described = selected.len() > 1;
     let mut status = 0;
-    for flag in selected {
+    for (flag, value) in selected {
         let limit = LIMITS
             .iter()
             .find(|l| l.flag == flag)
             .expect("validated above");
-        match report(limit, hard) {
-            Some(value) => println!("{}", value),
+        if let Some(value) = value {
+            status |= set_one(flag, &value, which);
+            continue;
+        }
+        match report(limit, report_hard) {
+            Some(value) => println!("{}", line(limit, &value, described)),
             None => {
-                crate::env::complain_option(
-                    args,
-                    flag,
-                    &format!("ulimit: -{flag}: cannot read this limit"),
-                    "ulimit: usage: ulimit [-HS] [-acdefilmnqrstuvx] [limit]",
-                );
+                eprintln!("{}ulimit: {}: cannot get limit", origin_now(), limit.label);
                 status = 1;
             }
         }
@@ -160,6 +189,7 @@ pub fn builtin_ulimit(_env: &mut Environment, args: &[String]) -> Result<i32> {
 #[rustfmt::skip]
 fn resource_for(flag: char) -> Resource {
     match flag {
+        'R' => Resource::RLIMIT_RTTIME,
         'c' => Resource::RLIMIT_CORE,
         'd' => Resource::RLIMIT_DATA,
         'e' => Resource::RLIMIT_NICE,
@@ -212,6 +242,23 @@ fn set_one(flag: char, operand: &str, which: Which) -> i32 {
         .iter()
         .find(|l| l.flag == flag)
         .expect("the option run only accepts flags from the table");
+    if flag == 'p' {
+        if parse_operand(operand, limit.divisor).is_none() {
+            let words = [
+                String::from("ulimit"),
+                format!("-{flag}"),
+                operand.to_string(),
+            ];
+            let body = format!("ulimit: {operand}: invalid number");
+            crate::env::complain(&words, operand, &body, "not a limit", None);
+        } else {
+            eprintln!(
+                "{}ulimit: pipe size: cannot modify limit: Invalid argument",
+                origin_now()
+            );
+        }
+        return 1;
+    }
     let Ok((soft, hard)) = getrlimit(resource_for(flag)) else {
         crate::env::complain(
             &[String::from("ulimit"), format!("-{flag}")],
@@ -260,8 +307,10 @@ fn set_one(flag: char, operand: &str, which: Which) -> i32 {
         Ok(()) => 0,
         Err(errno) => {
             eprintln!(
-                "oslo: ulimit: {}: cannot modify limit: {}",
-                limit.label, errno
+                "{}ulimit: {}: cannot modify limit: {}",
+                origin_now(),
+                limit.label,
+                errno.desc()
             );
             1
         }
@@ -271,6 +320,9 @@ fn set_one(flag: char, operand: &str, which: Which) -> i32 {
 /// Read one limit and convert it to `ulimit`'s units, or `None` if the kernel refuses to report
 /// it at all.
 fn report(limit: &Limit, hard: bool) -> Option<String> {
+    if limit.flag == 'p' {
+        return Some(format_limit(PIPE_SIZE, limit.divisor));
+    }
     let (soft_value, hard_value) = getrlimit(resource_for(limit.flag)).ok()?;
     let value = if hard { hard_value } else { soft_value };
     Some(format_limit(value, limit.divisor))

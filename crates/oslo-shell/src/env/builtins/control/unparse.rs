@@ -126,7 +126,7 @@ fn format_command(cmd: &Command, depth: usize) -> Vec<String> {
     let pad = INDENT.repeat(depth);
     match cmd {
         Command::Simple(simple) => vec![format!("{pad}{}", format_simple(simple))],
-        Command::FunctionDef { name, body } => format_function(name, body)
+        Command::FunctionDef { name, body, .. } => format_function(name, body)
             .lines()
             .map(|l| format!("{pad}{l}"))
             .collect(),
@@ -179,6 +179,7 @@ fn format_compound(kind: &CompoundCommand, depth: usize) -> Vec<String> {
             var_name,
             items,
             body,
+            ..
         } => {
             // `for x` with no word list iterates the positionals; bash prints it without `in`.
             match items {
@@ -191,6 +192,33 @@ fn format_compound(kind: &CompoundCommand, depth: usize) -> Vec<String> {
             lines.push(format!("{pad}do"));
             lines.extend(format_list(body, depth + 1, true));
             lines.push(format!("{pad}done"));
+        }
+        CompoundCommand::Select {
+            var_name,
+            items,
+            body,
+        } => {
+            // bash spells the implicit word list out: `select y; do` prints as `in "$@"`.
+            let words = match items {
+                Some(words) => words.iter().map(format_word).collect::<Vec<_>>().join(" "),
+                None => "\"$@\"".to_string(),
+            };
+            lines.push(format!("{pad}select {var_name} in {words};"));
+            lines.push(format!("{pad}do"));
+            lines.extend(format_list(body, depth + 1, true));
+            lines.push(format!("{pad}done"));
+        }
+        CompoundCommand::Coproc { name, body } => {
+            let mut inner = format_command(body, depth);
+            let simple = matches!(**body, Command::Simple(_));
+            if let Some(first) = inner.first_mut() {
+                let text = first.trim_start().to_string();
+                *first = match (simple, name.as_str()) {
+                    (true, _) | (false, "COPROC") => format!("{pad}coproc {text}"),
+                    (false, _) => format!("{pad}coproc {name} {text}"),
+                };
+            }
+            lines.extend(inner);
         }
         CompoundCommand::Case { word, items } => {
             lines.push(format!("{pad}case {} in ", format_word(word)));
@@ -254,12 +282,14 @@ fn joined(list: &CommandList, depth: usize) -> String {
     out
 }
 
-fn format_simple(simple: &SimpleCommand) -> String {
+pub(crate) fn format_simple(simple: &SimpleCommand) -> String {
     let mut parts: Vec<String> = Vec::new();
     for a in &simple.assignments {
         parts.push(format_assignment(a));
     }
-    parts.extend(simple.words.iter().map(format_word));
+    // The words as written: the braces of `echo {a,b}` are source, not its expansion.
+    let words = simple.unbraced.as_ref().unwrap_or(&simple.words);
+    parts.extend(words.iter().map(format_word));
     parts.extend(simple.redirections.iter().map(format_redirect));
     parts.join(" ")
 }
@@ -344,6 +374,9 @@ fn format_part(part: &WordPart) -> String {
             }
         }
         WordPart::CommandSubstitution(src) => format!("$({src})"),
+        WordPart::FunctionSubstitution { body, reply } => {
+            format!("${{{}{body}}}", if *reply { "|" } else { "" })
+        }
         WordPart::ProcessSubstitution {
             reads_from_command,
             command,
@@ -433,6 +466,12 @@ fn format_param(name: &str, expansion: &ParamExpansion) -> String {
             let pat = pattern.as_ref().map(format_word).unwrap_or_default();
             format!("${{{name}{op}{pat}}}")
         }
+        ParamExpansion::CaseToggle { pattern, all } => {
+            let op = if *all { "~~" } else { "~" };
+            let pat = pattern.as_ref().map(format_word).unwrap_or_default();
+            format!("${{{name}{op}{pat}}}")
+        }
+        ParamExpansion::Transform(op) => format!("${{{name}@{op}}}"),
         // The `!` belongs to the reference, so the inner form is rendered against a name that
         // already carries it — `${!v:-d}` rather than `${!v}:-d`.
         ParamExpansion::Indirect(inner) => format_param(&format!("!{name}"), inner),
@@ -448,7 +487,7 @@ mod tests {
         let list = crate::syntax::parse_bash_script(src).expect("parses");
         for item in &list.items {
             for cmd in &item.and_or.first.commands {
-                if let Command::FunctionDef { name, body } = cmd {
+                if let Command::FunctionDef { name, body, .. } = cmd {
                     return format_function(name, body);
                 }
             }

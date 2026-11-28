@@ -24,10 +24,18 @@ use common::{run, run_in};
 /// sessions, and a `set` that printed one id for both would mean a shell could not tell its own
 /// session from another's. `$OSLO_NESTED_PID` is a third: it names *this* shell, so two runs must
 /// disagree about it or nothing below could tell a live shell above from a remembered one.
+/// `$BASHPID` names this process as well, and `DIRSTACK`, which `set` lists as bash does, starts
+/// with `$PWD`.
 #[test]
 fn set_listing_is_deterministic() {
     let script = "a=1; b=2; c=3; f() { echo one; }; g() { echo two; }; set";
-    let per_process = ["PWD=", "OSLO_SESSION=", "OSLO_NESTED_PID="];
+    let per_process = [
+        "PWD=",
+        "OSLO_SESSION=",
+        "OSLO_NESTED_PID=",
+        "BASHPID=",
+        "DIRSTACK=",
+    ];
     let without_pwd = |text: &str| -> String {
         text.lines()
             .filter(|line| !per_process.iter().any(|name| line.starts_with(name)))
@@ -88,7 +96,7 @@ fn set_listing_includes_function_definitions() {
 fn export_p_lists_and_declares_nothing() {
     let r = run("export EV='a b'; export -p");
     assert!(
-        r.stdout.contains("export EV='a b'"),
+        r.stdout.contains("declare -x EV=\"a b\""),
         "stdout tail: {}",
         r.stdout
     );
@@ -117,7 +125,7 @@ fn unset_cannot_empty_a_readonly_variable() {
 fn readonly_listing_shows_values() {
     let r = run("readonly RO='a b'; readonly");
     assert!(
-        r.stdout.contains("readonly RO='a b'"),
+        r.stdout.contains("declare -r RO=\"a b\""),
         "stdout: {}",
         r.stdout
     );
@@ -128,9 +136,9 @@ fn readonly_listing_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let r = run_in(
         dir.path(),
-        "readonly RO='x y'; readonly -p > saved; grep '^readonly RO=' saved",
+        "readonly RO='x y'; readonly -p > saved; grep ' RO=' saved",
     );
-    assert_eq!(r.out(), "readonly RO='x y'", "stderr: {}", r.stderr);
+    assert_eq!(r.out(), "declare -r RO=\"x y\"", "stderr: {}", r.stderr);
 }
 
 /// The acceptance test named in the plan: `alias > f; . f` must reproduce the table.

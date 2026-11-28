@@ -34,7 +34,7 @@ impl super::JobTable {
     /// `signal` because the encoded status cannot be decoded back: `128 + n` is also a status a
     /// program may exit with of its own accord, so a handler told only the number cannot tell a
     /// killed child from one that chose to say so.
-    pub fn keep_status(&mut self, pid: Pid, code: i32, signal: Option<i32>) {
+    pub fn keep_status(&mut self, pid: Pid, code: i32, signal: Option<(i32, bool)>) {
         let job_id = self.job_of_pid(pid);
         self.finish(job_id, pid, code, signal);
     }
@@ -69,10 +69,25 @@ impl super::JobTable {
             .flat_map(|j| j.pids.iter().copied())
             // The disowned, who have no job to be found under and are still this process's to bury.
             .chain(self.orphans.iter().copied())
+            .filter(|pid| !self.foreign.contains(pid))
             .collect()
     }
 
-    fn remember_status(&mut self, pid: Pid, status: i32) {
+    /// The table a forked child starts with: none of the parent's jobs are its children. A
+    /// command substitution and a simple pipeline stage still list them, as they last were; every
+    /// other subshell starts empty, as in bash.
+    pub(in crate::exec::job) fn enter_child(&mut self, keep: bool) {
+        LIVE_CHILDREN.store(0, Ordering::SeqCst);
+        if !keep {
+            *self = Self::default();
+            return;
+        }
+        self.orphans.clear();
+        self.foreign = self.jobs.iter().flat_map(|j| j.pids.clone()).collect();
+    }
+
+    /// Keep `status` as the answer a later `wait` for `pid` gets.
+    pub fn remember_status(&mut self, pid: Pid, status: i32) {
         self.statuses.retain(|(p, _)| *p != pid);
         self.statuses.push((pid, status));
         if self.statuses.len() > REMEMBERED_STATUSES {
@@ -86,8 +101,8 @@ impl super::JobTable {
         let job_id = self.job_of_pid(pid);
         match status {
             WaitStatus::Exited(_, code) => self.finish(job_id, pid, code, None),
-            WaitStatus::Signaled(_, sig, _) => {
-                self.finish(job_id, pid, 128 + sig as i32, Some(sig as i32))
+            WaitStatus::Signaled(_, sig, core) => {
+                self.finish(job_id, pid, 128 + sig as i32, Some((sig as i32, core)))
             }
             WaitStatus::Stopped(_, _) => {
                 if let Some(id) = job_id {
@@ -146,7 +161,7 @@ impl super::JobTable {
     }
 
     /// A child of this job has ended; the job itself ends when its last process does.
-    fn finish(&mut self, job_id: Option<usize>, pid: Pid, code: i32, signal: Option<i32>) {
+    fn finish(&mut self, job_id: Option<usize>, pid: Pid, code: i32, signal: Option<(i32, bool)>) {
         forget_children(1);
         // **A disowned child is buried and not remembered.** There is nobody who may ask: `wait`
         // on a disowned pid is "not a child of this shell" in every shell, so keeping its status
@@ -164,11 +179,14 @@ impl super::JobTable {
             job: job_id,
             status: code,
             stage,
-            signal,
+            signal: signal.map(|(signal, _)| signal),
         });
         let Some(job) = job_id.and_then(|id| self.get_mut(id)) else {
             return;
         };
+        if let Some((signal, core)) = signal {
+            crate::exec::job::note_background_death(pid.as_raw(), signal, core, &job.command);
+        }
         job.pids.retain(|p| *p != pid);
         job.ended.push(pid);
         job.outcomes.push((pid, code));
@@ -176,6 +194,7 @@ impl super::JobTable {
             // A pipeline's status is its last stage's, and the last stage is the last pid left.
             let was = job.state.clone();
             job.state = JobState::Completed(code);
+            job.signal = signal;
             job.notified = false;
             if let Some(id) = job_id {
                 self.note_state(id, &was, &JobState::Completed(code));

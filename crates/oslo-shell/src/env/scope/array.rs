@@ -1,27 +1,19 @@
 //! Indexed arrays.
 //!
-//! An array is **sparse**, which is the whole reason it is a `BTreeMap` and not a `Vec`:
-//! `a[5]=x` leaves `${#a[@]}` at 1 and `${!a[@]}` at `5`, and `unset 'a[1]'` punches a hole that
-//! the remaining indices keep their old numbers across. A vector would have to invent four empty
-//! elements and would then answer `6` — a plausible wrong number, which is the failure mode this
-//! shell is being audited for.
+//! An array is **sparse**, which is why it is a `BTreeMap` and not a `Vec`: `a[5]=x` leaves
+//! `${#a[@]}` at 1 and `${!a[@]}` at `5`, and `unset 'a[1]'` punches a hole that the remaining
+//! indices keep their old numbers across.
 //!
-//! Arrays and scalars share one namespace, exactly as in bash. `a=(1 2 3); echo "$a"` prints `1`
-//! and `a=(1 2 3); a=4` replaces element 0 only, so an array's element 0 is *not* mirrored into
-//! the scalar table: [`Environment::get_var`] and [`Environment::set_var`] consult the array store
-//! first and every other caller inherits the behaviour for free.
-//!
-//! Associative arrays (`declare -A`) are deliberately absent — see PLAN.md's "Not doing" table.
-//! `declare -A` reports that rather than building a second value shape nothing else understands.
+//! Arrays and scalars share one namespace, exactly as in bash: `a=(1 2 3); echo "$a"` prints `1`
+//! and `a=(1 2 3); a=4` replaces element 0 only.
 
-use super::Environment;
 use std::collections::BTreeMap;
 
 /// An indexed array: a sparse map from index to element.
 ///
-/// Indices are `i64` because bash's are, and because a negative subscript on *read* counts back
-/// from the end. Nothing negative is ever stored: a subscript is resolved against the
-/// highest index in use before it reaches the map.
+/// Indices are `i64` because bash's are, and because a negative subscript counts back from the
+/// end. Nothing negative is ever stored: a subscript is resolved against the highest index in use
+/// before it reaches the map.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShellArray {
     elements: BTreeMap<i64, String>,
@@ -62,15 +54,24 @@ impl ShellArray {
         self.elements.values().map(String::as_str)
     }
 
+    /// Index and element pairs, ascending.
+    pub fn iter(&self) -> impl Iterator<Item = (i64, &str)> {
+        self.elements.iter().map(|(i, v)| (*i, v.as_str()))
+    }
+
+    /// The highest index in use, if any element exists.
+    pub fn max_index(&self) -> Option<i64> {
+        self.elements.keys().next_back().copied()
+    }
+
     /// Turn a subscript as written into the index it names, or `None` if it points before the
     /// start. A negative subscript counts back from the highest index in use, so `${a[-1]}` is
     /// the last element even when the array is sparse.
-    fn resolve(&self, index: i64) -> Option<i64> {
+    pub fn resolve(&self, index: i64) -> Option<i64> {
         if index >= 0 {
             return Some(index);
         }
-        let highest = self.elements.keys().next_back().copied().unwrap_or(-1);
-        let resolved = highest + 1 + index;
+        let resolved = self.max_index().unwrap_or(-1) + 1 + index;
         (resolved >= 0).then_some(resolved)
     }
 
@@ -80,7 +81,8 @@ impl ShellArray {
         self.elements.get(&index).map(String::as_str)
     }
 
-    /// Store one element, replacing whatever was there.
+    /// Store one element, replacing whatever was there. A subscript before the start is ignored;
+    /// callers that must report it check [`Self::resolve`] first.
     pub fn set(&mut self, index: i64, value: impl Into<String>) {
         if let Some(index) = self.resolve(index) {
             self.elements.insert(index, value.into());
@@ -96,10 +98,7 @@ impl ShellArray {
 
     /// The index `a+=(x)` would write to.
     pub fn next_index(&self) -> i64 {
-        self.elements
-            .keys()
-            .next_back()
-            .map_or(0, |highest| highest + 1)
+        self.max_index().map_or(0, |highest| highest + 1)
     }
 
     /// Remove one element, leaving a hole. `unset 'a[1]'`.
@@ -109,144 +108,54 @@ impl ShellArray {
         }
     }
 
-    /// The elements joined by `sep` — `${a[*]}`, and what a `declare -p` line renders from.
+    /// The elements joined by `sep` — `${a[*]}`.
     pub fn joined(&self, sep: &str) -> String {
         self.values().collect::<Vec<_>>().join(sep)
+    }
+
+    /// `${a[@]:offset:count}`: the elements from *index* `offset` on, `count` of them.
+    ///
+    /// The offset is an index rather than a position, so a hole shifts nothing: with elements at
+    /// 1, 5 and 7, `:2` starts at 5. A negative offset counts back from one past the highest
+    /// index, and one that lands before 0 selects nothing.
+    pub fn slice(&self, offset: i64, count: Option<usize>) -> Vec<String> {
+        let start = match offset {
+            o if o < 0 => self.max_index().unwrap_or(-1) + 1 + o,
+            o => o,
+        };
+        if start < 0 {
+            return Vec::new();
+        }
+        self.elements
+            .range(start..)
+            .take(count.unwrap_or(usize::MAX))
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 }
 
 /// Whether `text` is an array literal — `(…)` — and if so, what is inside it.
 ///
 /// The declaration builtins receive their operands as already-joined `name=value` strings, so this
-/// is the one place that can tell `declare -a a=(1 2)` from `declare a='(1 2)'`. Only used there;
-/// an assignment in the AST carries its shape explicitly.
+/// is the one place that can tell `declare -a a=(1 2)` from `declare a='(1 2)'`.
 pub fn array_literal_body(text: &str) -> Option<&str> {
     text.strip_prefix('(')?.strip_suffix(')')
-}
-
-impl Environment {
-    /// The array stored under `name`, if any.
-    pub fn get_array(&self, name: &str) -> Option<&ShellArray> {
-        self.arrays.get(name)
-    }
-
-    /// Replace `name`'s value with `array`, discarding any scalar of the same name.
-    ///
-    /// The entry point another subsystem uses to publish a computed array: `PIPESTATUS` is written
-    /// here by [`Environment::set_pipeline_status`], and `BASH_REMATCH` is written here by
-    /// `[[ =~ ]]`. `false` if the variable is read-only.
-    pub fn set_array(&mut self, name: &str, array: ShellArray) -> bool {
-        if self.is_readonly(name) {
-            crate::env::complain_from(
-                &self.origin(),
-                &[name.to_string()],
-                name,
-                &format!("{name}: is read only"),
-                "readonly",
-                Some(crate::env::scope::vars::READONLY),
-            );
-            return false;
-        }
-        // A name can be a scalar or an array, never both: leaving the scalar behind would make
-        // `get_var` answer with the stale string it happens to check first.
-        self.drop_scalar(name);
-        self.arrays.insert(name.to_string(), array);
-        true
-    }
-
-    /// Set one element, promoting a scalar to element 0 first.
-    ///
-    /// `b=hello; b[2]=world` leaves `${b[@]}` as `hello world`, so the scalar is not discarded —
-    /// it becomes element 0, which is what it already was as far as `${b[0]}` was concerned.
-    pub fn set_array_element(&mut self, name: &str, index: i64, value: &str) -> bool {
-        if self.is_readonly(name) {
-            crate::env::complain_from(
-                &self.origin(),
-                &[name.to_string()],
-                name,
-                &format!("{name}: is read only"),
-                "readonly",
-                Some(crate::env::scope::vars::READONLY),
-            );
-            return false;
-        }
-        self.promote_scalar(name);
-        self.arrays
-            .entry(name.to_string())
-            .or_default()
-            .set(index, value);
-        true
-    }
-
-    /// Append one element after the highest index in use.
-    pub fn append_array_element(&mut self, name: &str, value: &str) -> bool {
-        if self.is_readonly(name) {
-            crate::env::complain_from(
-                &self.origin(),
-                &[name.to_string()],
-                name,
-                &format!("{name}: is read only"),
-                "readonly",
-                Some(crate::env::scope::vars::READONLY),
-            );
-            return false;
-        }
-        self.promote_scalar(name);
-        self.arrays.entry(name.to_string()).or_default().push(value);
-        true
-    }
-
-    /// Make `name` an array if it is not one already, without disturbing an existing value.
-    /// `declare -a name`.
-    pub fn declare_array(&mut self, name: &str) {
-        self.promote_scalar(name);
-        self.arrays.entry(name.to_string()).or_default();
-    }
-
-    /// Drop one element. `unset 'a[1]'`.
-    pub fn unset_array_element(&mut self, name: &str, index: i64) {
-        if let Some(array) = self.arrays.get_mut(name) {
-            array.remove(index);
-        }
-    }
-
-    /// Every array name, for `declare -p` with no operands.
-    pub fn array_names(&self) -> impl Iterator<Item = &str> {
-        self.arrays.keys().map(String::as_str)
-    }
-
-    /// Turn an existing scalar into element 0 of a new array.
-    fn promote_scalar(&mut self, name: &str) {
-        if self.arrays.contains_key(name) {
-            return;
-        }
-        let existing = self.get_var(name).map(str::to_string);
-        self.drop_scalar(name);
-        let mut array = ShellArray::default();
-        if let Some(value) = existing {
-            array.set(0, value);
-        }
-        self.arrays.insert(name.to_string(), array);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ShellArray, array_literal_body};
-    use crate::env::Environment;
 
     #[test]
     fn an_array_is_sparse() {
         let mut a = ShellArray::from_values(["x"]);
         a.set(5, "y");
-        // The count is the number of elements, not the highest index plus one.
         assert_eq!(a.len(), 2);
         assert_eq!(a.indices().collect::<Vec<_>>(), vec![0, 5]);
         assert_eq!(a.values().collect::<Vec<_>>(), vec!["x", "y"]);
         assert_eq!(a.get(3), None);
     }
 
-    /// A hole keeps the indices on either side of it where they were.
     #[test]
     fn removing_an_element_leaves_a_hole() {
         let mut a = ShellArray::from_values(["a", "b", "c"]);
@@ -260,11 +169,9 @@ mod tests {
         let a = ShellArray::from_values(["1", "2", "3"]);
         assert_eq!(a.get(-1), Some("3"));
         assert_eq!(a.get(-3), Some("1"));
-        // Before the start is not an error, only an absent element.
         assert_eq!(a.get(-4), None);
     }
 
-    /// Appending goes after the highest index, not after the count.
     #[test]
     fn appending_follows_the_highest_index() {
         let mut a = ShellArray::default();
@@ -273,67 +180,18 @@ mod tests {
         assert_eq!(a.indices().collect::<Vec<_>>(), vec![9, 10]);
     }
 
-    /// A scalar and an array share one name: assigning an array replaces the scalar, and a
-    /// scalar assignment afterwards writes element 0 instead of destroying the array.
+    /// Offsets are indices: elements at 1, 5 and 7 answer bash's slices.
     #[test]
-    fn a_scalar_and_an_array_share_one_name() {
-        let mut env = Environment::new();
-        env.set_var("oslo_a1", "scalar", false);
-        env.set_array("oslo_a1", ShellArray::from_values(["1", "2", "3"]));
-        assert_eq!(env.get_var("oslo_a1"), Some("1"));
-        env.set_var("oslo_a1", "4", false);
-        assert_eq!(env.get_array("oslo_a1").unwrap().joined(" "), "4 2 3");
-    }
-
-    /// `b=hello; b[2]=world` keeps the scalar as element 0.
-    #[test]
-    fn an_element_assignment_promotes_an_existing_scalar() {
-        let mut env = Environment::new();
-        env.set_var("oslo_a2", "hello", false);
-        env.set_array_element("oslo_a2", 2, "world");
-        let a = env.get_array("oslo_a2").unwrap();
-        assert_eq!(a.joined(" "), "hello world");
-        assert_eq!(a.indices().collect::<Vec<_>>(), vec![0, 2]);
-    }
-
-    #[test]
-    fn unsetting_a_variable_removes_its_array_too() {
-        let mut env = Environment::new();
-        env.set_array("oslo_a3", ShellArray::from_values(["x"]));
-        env.unset_var("oslo_a3");
-        assert!(env.get_array("oslo_a3").is_none());
-        assert_eq!(env.get_var("oslo_a3"), None);
-    }
-
-    /// The contract another subsystem publishes a computed array through.
-    ///
-    /// `PIPESTATUS` is written by `Environment::set_pipeline_status`; `BASH_REMATCH` is written
-    /// by `[[ =~ ]]` with the whole match at index 0 and each capture group after it. Nothing
-    /// else is needed on either side: once the array is in, `${BASH_REMATCH[1]}`, `${#…[@]}` and
-    /// `"${…[@]}"` all work through the ordinary expansion path.
-    #[test]
-    fn a_computed_array_is_published_through_set_array() {
-        let mut env = Environment::new();
-        env.set_array(
-            "BASH_REMATCH",
-            ShellArray::from_values(["2024-06", "2024", "06"]),
-        );
-        let matched = env.get_array("BASH_REMATCH").expect("published");
-        assert_eq!(matched.get(0), Some("2024-06"));
-        assert_eq!(matched.get(1), Some("2024"));
-        assert_eq!(matched.len(), 3);
-        // …and `$BASH_REMATCH` unsubscripted is the whole match, as bash has it.
-        assert_eq!(env.get_var("BASH_REMATCH"), Some("2024-06"));
-    }
-
-    /// Every pipeline publishes `PIPESTATUS`, so `${PIPESTATUS[@]}` needs nothing of its own.
-    #[test]
-    fn the_pipeline_statuses_are_published_as_an_array() {
-        let mut env = Environment::new();
-        env.set_pipeline_status(vec![1, 0, 3]);
-        let statuses = env.get_array("PIPESTATUS").expect("published");
-        assert_eq!(statuses.joined(" "), "1 0 3");
-        assert_eq!(env.pipeline_status(), &[1, 0, 3]);
+    fn a_slice_counts_by_index() {
+        let mut a = ShellArray::default();
+        a.set(1, "x");
+        a.set(5, "y");
+        a.set(7, "z");
+        assert_eq!(a.slice(2, None), ["y", "z"]);
+        assert_eq!(a.slice(5, Some(1)), ["y"]);
+        assert_eq!(a.slice(-5, None), ["y", "z"]);
+        assert_eq!(a.slice(0, Some(2)), ["x", "y"]);
+        assert!(a.slice(-9, None).is_empty());
     }
 
     #[test]

@@ -704,8 +704,8 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "luna"
-version = "0.6.1"
-source = "git+https://github.com/onix-os/luna?tag=v0.6.1#adf4682abb5c8c5ef571b9ab5117951a25267cd9"
+version = "0.7.0"
+source = "git+https://github.com/onix-os/luna?tag=v0.7.0#2bf4f2f7d4f50a968ba94d60928186d34b937354"
 dependencies = [
  "ahash",
  "allocator-api2",
@@ -810,7 +810,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "oslo"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "argc",
  "nix",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-base"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "ariadne",
  "base64",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-luavm"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "luna",
  "oslo-base",
@@ -858,11 +858,11 @@ dependencies = [
 
 [[package]]
 name = "oslo-math"
-version = "0.7.9"
+version = "0.8.0"
 
 [[package]]
 name = "oslo-runtime"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "base64",
  "nix",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-shell"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "argc",
  "nix",
@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-ui"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "libc",
  "nix",
@@ -1083,8 +1083,8 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rune"
-version = "0.1.5"
-source = "git+https://github.com/onix-os/rune?tag=v0.1.5#72b9eef425feafaf8dc7cc700c12048909eb2198"
+version = "0.1.7"
+source = "git+https://github.com/onix-os/rune?tag=v0.1.7#18690b7d4fce319ba3dea1796d0de7dfcc8f4306"
 
 [[package]]
 name = "rustc-hash"

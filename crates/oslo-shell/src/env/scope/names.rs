@@ -50,8 +50,39 @@ impl Environment {
         names
     }
 
+    /// Define `name`, keeping an `export -f` mark and handing children the new definition.
     pub fn set_function(&mut self, name: &str, body: Command) {
         self.functions.insert(name.to_string(), Arc::new(body));
+        let file = self.defining_file();
+        self.function_files.insert(name.to_string(), file);
+        self.function_sources.remove(name);
+        self.publish_function(name);
+    }
+
+    /// Remember the text `name` was defined with, for printing it back as bash does.
+    pub fn set_function_source(&mut self, name: &str, source: Option<Arc<str>>) {
+        match source {
+            Some(text) => self.function_sources.insert(name.to_string(), text),
+            None => self.function_sources.remove(name),
+        };
+        self.publish_function(name);
+    }
+
+    /// The definition of `name` as `declare -f` prints it: bash's layout from the source text
+    /// when it is known, else rebuilt from the tree.
+    pub fn function_definition(&self, name: &str) -> Option<String> {
+        let body = self.get_function(name)?;
+        let printed = self
+            .function_sources
+            .get(name)
+            .and_then(|text| crate::syntax::print::function_text(text, name, true));
+        Some(printed.unwrap_or_else(|| crate::env::builtins::format_function(name, body)))
+    }
+
+    /// The body of `name` as bash exports it in `BASH_FUNC_name%%`: `() { …}` on few lines.
+    pub fn function_export_text(&self, name: &str) -> Option<String> {
+        let text = self.function_sources.get(name)?;
+        crate::syntax::print::function_text(text, "", false)
     }
 
     /// Forget the function `name`; `true` if there was one.
@@ -61,6 +92,9 @@ impl Environment {
     /// The answer is not `unset`'s exit status — bash exits 0 for `unset -f nosuchfn` — but it
     /// is what a caller that needs to know would ask for.
     pub fn remove_function(&mut self, name: &str) -> bool {
+        self.function_files.remove(name);
+        self.function_sources.remove(name);
+        self.forget_function_attrs(name);
         self.functions.remove(name).is_some()
     }
 
@@ -119,5 +153,21 @@ impl Environment {
     /// implementation dispatched to `Ok(0)` — a command that silently did nothing.
     pub fn is_builtin(&self, name: &str) -> bool {
         self.builtins.contains(name)
+    }
+
+    /// Turn a registered builtin on or off, as `enable` does; `false` if there is no such builtin.
+    pub fn set_builtin_enabled(&mut self, name: &str, on: bool) -> bool {
+        self.builtins.set_enabled(name, on)
+    }
+
+    /// Every builtin name, sorted bytewise, with whether it is enabled — `enable`'s listing.
+    pub fn builtin_states(&self) -> Vec<(String, bool)> {
+        let mut states: Vec<(String, bool)> = self
+            .builtins
+            .states()
+            .map(|(name, on)| (name.to_string(), on))
+            .collect();
+        states.sort();
+        states
     }
 }

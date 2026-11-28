@@ -123,7 +123,7 @@ pub(super) struct Streamed {
 ///
 /// Every condition is a reason the general path would be wrong rather than merely slower, so a
 /// `None` here is not a missed opportunity — it is the honest answer.
-pub(super) fn plan(pipeline: &Pipeline, sinks: &[Sink]) -> Option<Streamed> {
+pub(super) fn plan(env: &Environment, pipeline: &Pipeline, sinks: &[Sink]) -> Option<Streamed> {
     // One upstream, then a bridge, then at least nothing.
     if pipeline.commands.len() < 2 {
         return None;
@@ -138,7 +138,7 @@ pub(super) fn plan(pipeline: &Pipeline, sinks: &[Sink]) -> Option<Streamed> {
     if !upstream.redirections.is_empty() {
         return None;
     }
-    if super::simple_command_name(upstream)
+    if super::simple_command_name(env, upstream)
         .is_some_and(|name| crate::data::tool::lookup(&name).is_some())
     {
         return None;
@@ -149,7 +149,7 @@ pub(super) fn plan(pipeline: &Pipeline, sinks: &[Sink]) -> Option<Streamed> {
     // in the two ways [`delimited`] exists for. `from json` cannot do it at all — it has nothing to
     // answer until the closing brace — and `detect-columns` needs every row before it can say where
     // the columns are.
-    let name = tool_name(&pipeline.commands[bridge])?;
+    let name = tool_name(env, &pipeline.commands[bridge])?;
     let delimiter = match name.as_str() {
         "lines" | "parse" => None,
         "from" => Some(delimited_bridge(&pipeline.commands[bridge])?),
@@ -159,9 +159,9 @@ pub(super) fn plan(pipeline: &Pipeline, sinks: &[Sink]) -> Option<Streamed> {
     // Everything after it either does not care about batching, counts, or folds into a bound — and
     // the column set is carried along beside them, because two of the verbs are only safe to batch
     // where it is known.
-    let mut columns = column_set(&pipeline.commands[bridge]);
+    let mut columns = column_set(env, &pipeline.commands[bridge]);
     for command in &pipeline.commands[bridge + 1..] {
-        let name = tool_name(command)?;
+        let name = tool_name(env, command)?;
         if !ROW_LOCAL.contains(&name.as_str())
             && !POSITIONAL.contains(&name.as_str())
             && !FOLDING.contains(&name.as_str())
@@ -171,7 +171,7 @@ pub(super) fn plan(pipeline: &Pipeline, sinks: &[Sink]) -> Option<Streamed> {
         if NEEDS_KNOWN_COLUMNS.contains(&name.as_str()) && columns.names().is_none() {
             return None;
         }
-        columns = advance(&columns, command);
+        columns = advance(env, &columns, command);
     }
 
     // The last stage writes rows out; a byte suffix is `hand_over`'s job and wants the whole table.
@@ -208,6 +208,7 @@ fn delimited_bridge(command: &Command) -> Option<char> {
 /// `refusal` follows, and it has to be the same one or the two passes could disagree about whether a
 /// stage was checked.
 fn advance(
+    env: &Environment,
     columns: &crate::data::columns::Columns,
     command: &Command,
 ) -> crate::data::columns::Columns {
@@ -215,7 +216,7 @@ fn advance(
         return crate::data::columns::Columns::Unknown;
     };
     let (Some(name), Some(words)) = (
-        super::simple_command_name(simple),
+        super::simple_command_name(env, simple),
         super::refusal::literal_words(simple),
     ) else {
         return crate::data::columns::Columns::Unknown;
@@ -224,19 +225,19 @@ fn advance(
 }
 
 /// The column set a bridge produces, which is where the walk starts.
-fn column_set(bridge: &Command) -> crate::data::columns::Columns {
-    advance(&crate::data::columns::Columns::Unknown, bridge)
+fn column_set(env: &Environment, bridge: &Command) -> crate::data::columns::Columns {
+    advance(env, &crate::data::columns::Columns::Unknown, bridge)
 }
 
 /// A simple command naming a registered tool with nothing redirected.
-fn tool_name(command: &Command) -> Option<String> {
+fn tool_name(env: &Environment, command: &Command) -> Option<String> {
     let Command::Simple(simple) = command else {
         return None;
     };
     if !simple.redirections.is_empty() {
         return None;
     }
-    let name = super::simple_command_name(simple)?;
+    let name = super::simple_command_name(env, simple)?;
     crate::data::tool::lookup(&name).map(|_| name)
 }
 
@@ -405,7 +406,7 @@ fn emit(
         return Ok(true);
     };
     let words = super::expand_words(env, simple)?;
-    let name = super::simple_command_name(simple).unwrap_or_default();
+    let name = super::simple_command_name(env, simple).unwrap_or_default();
     // A delimited batch after the first arrives without the header that names its columns, so it is
     // put back in front. The parser is then given text of exactly the shape it is given on the
     // materialised path, which is what stops the two answering differently.
@@ -441,7 +442,7 @@ fn emit(
             return Ok(true);
         };
         let words = super::expand_words(env, simple)?;
-        let name = super::simple_command_name(simple).unwrap_or_default();
+        let name = super::simple_command_name(env, simple).unwrap_or_default();
         if FOLDING.contains(&name.as_str()) {
             rows = folded(&name, &words, rows, &mut counters[at], ended);
             // Nothing flows past a fold until the last row has gone into it.

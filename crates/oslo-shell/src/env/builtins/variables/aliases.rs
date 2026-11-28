@@ -24,6 +24,12 @@ fn is_valid_alias_name(name: &str) -> bool {
 ///
 /// With no operands this prints the whole table. It used to print nothing at all, which made the
 /// aliases the shell seeds itself with invisible — and made `alias | grep` silently useless.
+/// One alias as `alias` prints it, with `--` before a name that looks like an option.
+fn alias_line(name: &str, value: &str) -> String {
+    let dashes = if name.starts_with('-') { "-- " } else { "" };
+    format!("alias {dashes}{name}={}", single_quoted(value))
+}
+
 pub fn builtin_alias(env: &mut Environment, args: &[String]) -> Result<i32> {
     let opts = match options::parse(args, "p") {
         Ok(o) => o,
@@ -36,7 +42,7 @@ pub fn builtin_alias(env: &mut Environment, args: &[String]) -> Result<i32> {
         let mut names: Vec<&String> = aliases.keys().collect();
         names.sort();
         for name in names {
-            println!("alias {}={}", name, single_quoted(&aliases[name]));
+            println!("{}", alias_line(name, &aliases[name]));
         }
         return Ok(0);
     }
@@ -62,7 +68,7 @@ pub fn builtin_alias(env: &mut Environment, args: &[String]) -> Result<i32> {
                 env.set_alias(name, &arg[idx + 1..]);
             }
             None => match env.get_alias(arg) {
-                Some(value) => println!("alias {}={}", arg, single_quoted(value)),
+                Some(value) => println!("{}", alias_line(arg, value)),
                 None => {
                     crate::env::complain(
                         args,

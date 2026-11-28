@@ -17,8 +17,9 @@
 //! as a parameter *name*, and `crate::expand::param` rejects a name that is not one. The silent
 //! empty string that fallback used to produce is what hid nine unimplemented operators.
 
+use super::TildeMode;
 use super::quoting::parse_word_source;
-use operators::operator_expansion;
+use operators::{operator_expansion, quote_left_open};
 use oslo_base::ast::{ParamExpansion, Subscript, WordPart};
 use oslo_base::error::Result;
 use scan::{find_param_operator, split_name_subscript};
@@ -27,19 +28,39 @@ mod operators;
 mod scan;
 
 /// Turn the raw body of a `${…}` into the word part it denotes.
-pub(super) fn parse_braced_body(content: &str, in_double_quotes: bool) -> Result<WordPart> {
-    if let Some(part) = prefix_form(content, in_double_quotes)? {
+///
+/// `tilde` is the tilde rule a `${x-word}` payload is lexed under.
+pub(super) fn parse_braced_body(
+    content: &str,
+    in_double_quotes: bool,
+    tilde: TildeMode,
+) -> Result<WordPart> {
+    let ctx = Context {
+        in_double_quotes,
+        tilde,
+    };
+    if let Some(part) = prefix_form(content, ctx)? {
         return Ok(part);
     }
 
     let Some((idx, op)) = find_param_operator(content) else {
         return reference(content, ParamExpansion::Normal);
     };
+    // `${x:}` has no offset at all, and a `$'…'` can leave a quote open: bad substitutions.
+    let rest = &content[idx + op.len()..];
+    if (op == ":" && rest.is_empty()) || quote_left_open(op, rest, ctx) {
+        return reference(content, ParamExpansion::Normal);
+    }
+    reference(&content[..idx], operator_expansion(op, rest, ctx)?)
+}
 
-    reference(
-        &content[..idx],
-        operator_expansion(op, &content[idx + op.len()..], in_double_quotes)?,
-    )
+/// What an operand's lexing depends on besides its own text.
+#[derive(Clone, Copy)]
+pub(super) struct Context {
+    /// Whether the `${…}` was written inside double quotes.
+    pub in_double_quotes: bool,
+    /// The tilde rule of a payload.
+    pub tilde: TildeMode,
 }
 
 /// Build the reference `name` denotes, which is an array element whenever it has a subscript.
@@ -78,11 +99,11 @@ fn parse_subscript(text: &str) -> Result<Subscript> {
 /// `${!prefix*}` — bash's name-listing form — reaches here as the name `prefix*`, which is not a
 /// parameter name and so becomes a `bad substitution` error rather than a wrong answer. `${!a[@]}`
 /// does *not*: a subscripted `!` is the list of indices in use, which the expander implements.
-fn prefix_form(content: &str, in_double_quotes: bool) -> Result<Option<WordPart>> {
+fn prefix_form(content: &str, ctx: Context) -> Result<Option<WordPart>> {
     let mut chars = content.chars();
     let expansion_type = match chars.next() {
         Some('#') => ParamExpansion::Length,
-        Some('!') => return indirect_form(chars.as_str(), in_double_quotes).map(Some),
+        Some('!') => return indirect_form(chars.as_str(), ctx).map(Some),
         _ => return Ok(None),
     };
     let name = chars.as_str();
@@ -98,14 +119,26 @@ fn prefix_form(content: &str, in_double_quotes: bool) -> Result<Option<WordPart>
 /// `!v:-d` was carried through as a parameter name, which is not one — so every combined form
 /// answered `bad substitution`, including the `${!hooksSlice+…}` that stdenv's `runHook` is built
 /// on. What remains after the `!` is an ordinary body, so it is parsed as one.
-fn indirect_form(body: &str, in_double_quotes: bool) -> Result<WordPart> {
+fn indirect_form(body: &str, ctx: Context) -> Result<WordPart> {
     if body.is_empty() {
         // `${!}` is the last background pid, not an indirection.
         return reference("!", ParamExpansion::Normal);
     }
+    // `${!prefix@}` and `${!prefix*}` list names; the `@` is not a transformation here.
+    if let Some(prefix) = body.strip_suffix(['@', '*'])
+        && crate::env::scope::is_valid_identifier(prefix)
+    {
+        return reference(
+            body,
+            ParamExpansion::Indirect(Box::new(ParamExpansion::Normal)),
+        );
+    }
     let inner = match find_param_operator(body) {
+        Some((idx, op)) if quote_left_open(op, &body[idx + op.len()..], ctx) => {
+            return reference(&format!("!{body}"), ParamExpansion::Normal);
+        }
         Some((idx, op)) => {
-            let expansion = operator_expansion(op, &body[idx + op.len()..], in_double_quotes)?;
+            let expansion = operator_expansion(op, &body[idx + op.len()..], ctx)?;
             return reference(&body[..idx], ParamExpansion::Indirect(Box::new(expansion)));
         }
         None => ParamExpansion::Normal,
@@ -464,11 +497,26 @@ mod tests {
     }
 
     /// The property the whole module protects: a body it cannot split stays a *name*, so the
-    /// expander rejects it. `${v@Q}` is a real bash operator oslo does not implement.
+    /// expander rejects it.
     #[test]
     fn an_unknown_operator_is_left_as_a_bad_name() {
-        assert_eq!(op_of("${v@Q}", "v@Q"), ParamExpansion::Normal);
         assert_eq!(op_of("${a b}", "a b"), ParamExpansion::Normal);
+        assert_eq!(op_of("${x:}", "x:"), ParamExpansion::Normal);
+    }
+
+    /// `@` takes one letter, and `~` toggles case.
+    #[test]
+    fn transformations_and_toggles_parse() {
+        assert_eq!(op_of("${v@Q}", "v"), ParamExpansion::Transform('Q'));
+        assert_eq!(op_of("${v@QQ}", "v"), ParamExpansion::Transform('\0'));
+        assert_eq!(op_of("${@@Q}", "@"), ParamExpansion::Transform('Q'));
+        assert_eq!(
+            op_of("${v~~}", "v"),
+            ParamExpansion::CaseToggle {
+                pattern: None,
+                all: true
+            }
+        );
     }
 
     // --- R8.1: array subscripts ---

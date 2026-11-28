@@ -13,30 +13,35 @@
 
 mod abbr;
 pub(crate) mod arrays;
+mod bind;
 mod builtin;
 mod caller;
 mod chain;
 mod colon;
 mod command;
 mod compgen;
+mod complete;
 mod conditionals;
-mod control;
+pub(crate) mod control;
 mod copy;
-mod declare;
+pub(crate) mod declare;
 mod directories;
 #[cfg(feature = "direnv")]
 mod direnv;
 mod edit;
 mod emit;
+mod enable;
 mod exec;
 mod getopts;
 mod glob;
 mod hash;
+pub(crate) mod help;
 mod io;
 mod jobs;
 mod keep;
 mod r#let;
 mod locate;
+mod logout;
 #[cfg(feature = "make")]
 mod make;
 mod mapfile;
@@ -49,7 +54,7 @@ mod process;
 mod remove;
 #[cfg(feature = "scratch")]
 mod scratch;
-mod shopt;
+pub(crate) mod shopt;
 pub(crate) mod spawn;
 mod status;
 mod suspend;
@@ -70,9 +75,9 @@ pub use command::builtin_command;
 pub use conditionals::{builtin_extended_test, builtin_test};
 pub use control::{
     builtin_break, builtin_continue, builtin_eval, builtin_exit, builtin_return, builtin_source,
-    builtin_type,
+    builtin_type, format_function, format_word,
 };
-pub use declare::builtin_declare;
+pub use declare::{builtin_declare, builtin_local};
 pub use directories::{builtin_cd, builtin_dirs, builtin_popd, builtin_pushd, builtin_pwd};
 pub use exec::builtin_exec;
 pub use getopts::builtin_getopts;
@@ -88,17 +93,18 @@ pub use make::builtin_make;
 pub use mapfile::builtin_mapfile;
 pub use messages::builtin_messages;
 pub use process::{
-    builtin_kill, builtin_trap, builtin_umask, pending_signal, run_debug_trap, run_err_trap,
-    run_exit_trap, run_pending_traps,
+    builtin_kill, builtin_trap, builtin_umask, in_debug_trap, in_trap, pending_signal,
+    run_debug_trap, run_err_trap, run_exit_trap, run_pending_traps, run_return_trap,
+    skip_next_debug_trap,
 };
-pub use shopt::{builtin_shopt, option_state, set_option};
+pub use shopt::{builtin_shopt, force as force_shopt, option_state, set_option};
 pub use status::builtin_status;
 pub use suspend::builtin_suspend;
 pub use times::builtin_times;
 pub use ulimit::builtin_ulimit;
 pub use variables::{
-    builtin_alias, builtin_export, builtin_local, builtin_readonly, builtin_set, builtin_shift,
-    builtin_unalias, builtin_unset,
+    builtin_alias, builtin_export, builtin_readonly, builtin_set, builtin_shift, builtin_unalias,
+    builtin_unset,
 };
 
 /// Whether a command's redirections must outlive it — the `exec > "$log" 2>&1` form.
@@ -120,6 +126,8 @@ pub use exec::makes_redirections_permanent as exec_makes_redirections_permanent;
 /// [`hash_lookup`], which is what makes the table describe the session rather than only what an
 /// explicit `hash name` put there. [`hash_forget_all`] is the invalidation side: `hash -r` and an
 /// assignment to `PATH`.
+pub(crate) use hash::assign as hash_assign;
+pub(crate) use hash::entries as hash_entries;
 pub use hash::forget_all as hash_forget_all;
 pub use hash::lookup as hash_lookup;
 pub use hash::note_hashall;
@@ -137,6 +145,7 @@ pub use hash::remember as hash_remember;
 /// Seeding it from [`crate::env::builtins::builtin_cd`]'s helper instead would seed every script's
 /// ring as well, and a script has no wandering to count back through.
 pub use directories::ring::record as remember_directory;
+pub use directories::stack as directory_stack;
 
 use crate::env::scope::Environment;
 
@@ -246,8 +255,15 @@ pub fn register_default_builtins(env: &mut Environment) {
     env.register_custom_builtin("rm", remove::builtin_rm);
 
     env.register_custom_builtin("shopt", builtin_shopt);
-    // `compgen` — `-G`, `-W`, `-f` and `-d`, for scripts and completion functions that call it.
+    // bash's programmable-completion builtins. The specs are stored and printed for scripts;
+    // the line editor completes through its own providers.
     env.register_custom_builtin("compgen", compgen::builtin_compgen);
+    env.register_custom_builtin("complete", complete::builtin_complete);
+    env.register_custom_builtin("compopt", complete::builtin_compopt);
+    env.register_custom_builtin("bind", bind::builtin_bind);
+    env.register_custom_builtin("enable", enable::builtin_enable);
+    env.register_custom_builtin("help", help::builtin_help);
+    env.register_custom_builtin("logout", logout::builtin_logout);
     // `glob` — pathname expansion as a command, with the prompt's qualifiers and regex.
     env.register_custom_builtin("glob", glob::builtin_glob);
     env.register_custom_builtin("caller", builtin_caller);

@@ -195,10 +195,22 @@ fn a_pattern_operator_maps_over_the_positionals() {
 
 #[test]
 fn length_counts_characters_and_positionals() {
-    let len = |value: &str| expand(&[("s", value)], "s", ParamExpansion::Length);
+    let len = |value: &str| {
+        expand(
+            &[("LC_ALL", "C.UTF-8"), ("s", value)],
+            "s",
+            ParamExpansion::Length,
+        )
+    };
     assert_eq!(len("hello"), Ok("5".into()));
-    // Characters, not bytes.
+    // Characters, not bytes, in a UTF-8 locale; bytes in the C one.
     assert_eq!(len("héllo"), Ok("5".into()));
+    let bytes = expand(
+        &[("LC_ALL", "C"), ("s", "héllo")],
+        "s",
+        ParamExpansion::Length,
+    );
+    assert_eq!(bytes, Ok("6".into()));
     assert_eq!(expand(&[], "nope", ParamExpansion::Length), Ok("0".into()));
 
     let mut env = Environment::new();

@@ -28,20 +28,39 @@ pub fn local(format: &str) -> String {
 /// alias already is on every target oslo runs on, which is Linux, and it is what [`local`] passed
 /// before this function existed.
 pub fn at(seconds: i64, format: &str) -> String {
+    let out = format_at(seconds, format.as_bytes()).unwrap_or_default();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+unsafe extern "C" {
+    fn tzset();
+}
+
+/// `strftime` of `seconds` in the local zone as `TZ` names it now, into at most 127 bytes.
+///
+/// `None` when the second has no local time. A result that does not fit, or a format with a NUL
+/// in it, is empty.
+pub fn format_at(seconds: i64, format: &[u8]) -> Option<Vec<u8>> {
     let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `seconds` is a valid `time_t` and `tm` is owned here for the whole call.
-    if unsafe { nix::libc::localtime_r(&seconds, &mut tm) }.is_null() {
-        return String::new();
+    // SAFETY: `tzset` takes no arguments and only reads the environment; `seconds` is a valid
+    // `time_t` and `tm` is owned here for the whole call.
+    if unsafe {
+        tzset();
+        nix::libc::localtime_r(&seconds, &mut tm)
+    }
+    .is_null()
+    {
+        return None;
     }
     let mut out = vec![0u8; 128];
     let Ok(c_format) = std::ffi::CString::new(format) else {
-        return String::new();
+        return Some(Vec::new());
     };
     // SAFETY: a buffer this call owns, its own length, and a NUL-terminated format.
     let written =
         unsafe { nix::libc::strftime(out.as_mut_ptr().cast(), out.len(), c_format.as_ptr(), &tm) };
     out.truncate(written);
-    String::from_utf8(out).unwrap_or_default()
+    Some(out)
 }
 
 #[cfg(test)]

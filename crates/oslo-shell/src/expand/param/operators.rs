@@ -10,10 +10,12 @@
 //! live here, once, so that the array path and the positional path cannot drift apart the way
 //! they did when `"${@:2}"` character-sliced the space-joined positionals.
 
+use super::case::CaseMap;
 use super::{Target, pattern};
 use crate::env::Environment;
 use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::glob::ShellPattern;
+use crate::expand::locale::{in_locale, out_of_locale};
 use crate::expand::word::{expand_word_to_pattern, expand_word_to_string};
 use oslo_base::ast::{ParamExpansion, ReplaceScope, Word};
 use oslo_base::error::{Result, ShellError};
@@ -33,8 +35,11 @@ pub(super) fn apply(
         // have joined into. `${#}` never reaches here: it is `$#`, a plain reference.
         ParamExpansion::Length => match target {
             Target::Param("@" | "*") => env.get_positional().len().to_string(),
-            // Characters, not bytes — `${#v}` on a UTF-8 value must not report its encoding.
-            _ => val.map_or_else(|| "0".to_string(), |v| v.chars().count().to_string()),
+            // Characters in a UTF-8 locale, bytes in any other.
+            _ => val.map_or_else(
+                || "0".to_string(),
+                |v| crate::expand::locale::length(env, &v).to_string(),
+            ),
         },
 
         ParamExpansion::DefaultValue {
@@ -49,7 +54,7 @@ pub(super) fn apply(
                 // Assigning the *expanded* text is the whole point: `${x:=$y}` used to persist
                 // the two characters `$y` into `x`.
                 if *assign_if_unset {
-                    target.assign(env, &text);
+                    target.assign(env, &text)?;
                 }
                 text
             }
@@ -80,65 +85,30 @@ pub(super) fn apply(
             }
         }
 
-        ParamExpansion::RemovePrefix {
-            pattern: word,
-            longest,
-        } => {
-            let pat = compile_pattern(env, word)?;
-            let value = val.unwrap_or_default();
-            pattern::remove_prefix(&value, &pat, *longest)
-        }
-
-        ParamExpansion::RemoveSuffix {
-            pattern: word,
-            longest,
-        } => {
-            let pat = compile_pattern(env, word)?;
-            let value = val.unwrap_or_default();
-            pattern::remove_suffix(&value, &pat, *longest)
-        }
-
         ParamExpansion::Substring { offset, length } => {
             let start = eval_operand(env, offset)?;
             let count = match length {
                 Some(word) => Some(eval_operand(env, word)?),
                 None => None,
             };
-            let value = val.unwrap_or_default();
-            pattern::substring(&value, start, count)
-                .map_err(|n| ShellError::ExpansionError(format!("{n}: substring expression < 0")))?
+            let bytes = !crate::expand::locale::is_utf8(env);
+            let value = in_locale(&val.unwrap_or_default(), bytes);
+            let cut = pattern::substring(&value, start, count).map_err(|n| {
+                ShellError::ExpansionError(format!("{n}: substring expression < 0"))
+            })?;
+            out_of_locale(cut, bytes)
         }
 
-        ParamExpansion::Replace {
-            pattern: pat_word,
-            replacement,
-            scope,
-        } => {
-            let pat = compile_pattern(env, pat_word)?;
-            // Runs rather than a string: an unquoted `&` stands for the matched text and a quoted
-            // one does not, and nothing on the finished string can tell them apart.
-            let rep = pattern::Replacement::from_runs(&expand_word_to_pattern(env, replacement)?);
-            let value = val.unwrap_or_default();
-            match scope {
-                ReplaceScope::First => pattern::replace(&value, &pat, &rep, false),
-                ReplaceScope::All => pattern::replace(&value, &pat, &rep, true),
-                ReplaceScope::Prefix => pattern::replace_prefix(&value, &pat, &rep),
-                ReplaceScope::Suffix => pattern::replace_suffix(&value, &pat, &rep),
-            }
+        ParamExpansion::RemovePrefix { .. }
+        | ParamExpansion::RemoveSuffix { .. }
+        | ParamExpansion::Replace { .. }
+        | ParamExpansion::CaseConvert { .. }
+        | ParamExpansion::CaseToggle { .. } => {
+            let prepared = Prepared::compile(env, expansion_type)?;
+            prepared.apply(&val.unwrap_or_default())
         }
 
-        ParamExpansion::CaseConvert {
-            pattern: selector,
-            upper,
-            all,
-        } => {
-            let selector = match selector {
-                Some(word) => Some(compile_pattern(env, word)?),
-                None => None,
-            };
-            let value = val.unwrap_or_default();
-            pattern::convert_case(&value, selector.as_ref(), *upper, *all)
-        }
+        ParamExpansion::Transform(op) => return super::transform::scalar(env, target, *op, val),
 
         // `${!name}` reads `name`'s value and expands *that* parameter. Only the second lookup
         // may come up empty: bash makes a `name` that does not *hold a name* a fatal expansion
@@ -150,6 +120,8 @@ pub(super) fn apply(
             // is the ordinary case every hook helper is written around. stdenv's `runHook`,
             // `runPhase` and `substituteStream` all reach this on their first line.
             None if name.chars().all(|c| c.is_ascii_digit()) => String::new(),
+            // A declared name with no value — `declare x`, an array with no element 0 — is empty.
+            None if env.variable(&name).is_some() => String::new(),
             None => {
                 return Err(ShellError::ExpansionError(format!(
                     "{name}: invalid indirect expansion"
@@ -168,10 +140,27 @@ pub(super) fn apply(
                     "{indirect}: invalid variable name"
                 )));
             }
+            // `set -u` reports a plain `${!v}` whose target is unset, naming the pointer.
+            Some(indirect)
+                if env.nounset()
+                    && matches!(**inner, ParamExpansion::Normal)
+                    && env.get_param(&indirect).is_none() =>
+            {
+                return Err(ShellError::UnsetParameter(format!(
+                    "!{name}: unbound variable"
+                )));
+            }
             // **Applied to the second parameter, not the first.** `${!v:-d}` asks whether the
             // thing `v` names is set, so the operator has to run against that one — testing `v`
             // instead would answer about the pointer rather than the target.
-            Some(indirect) => return apply(env, &Target::Param(&indirect), inner),
+            Some(indirect) => {
+                if env.nounset() && !defines_absence(inner) && env.get_param(&indirect).is_none() {
+                    return Err(ShellError::UnsetParameter(format!(
+                        "!{name}: unbound variable"
+                    )));
+                }
+                return apply(env, &Target::Param(&indirect), inner);
+            }
         },
     };
 
@@ -183,10 +172,22 @@ pub(super) fn apply(
 /// The quoting has to survive: `${v#"$prefix"}` is how a script strips a *literal* prefix, and
 /// flattening the operand to a string first turned every `*` a variable happened to contain into
 /// a metacharacter.
-fn compile_pattern(env: &mut Environment, word: &Word) -> Result<ShellPattern> {
-    Ok(crate::expand::glob::pattern_from_runs(
-        &expand_word_to_pattern(env, word)?,
-    ))
+///
+/// `bytes` reads it as the C locale does, a byte to a character.
+fn compile_pattern(env: &mut Environment, word: &Word, bytes: bool) -> Result<ShellPattern> {
+    let mut runs = expand_word_to_pattern(env, word)?;
+    crate::expand::locale::runs_in_locale(&mut runs, bytes);
+    Ok(crate::expand::glob::pattern_from_runs(&runs))
+}
+
+/// Whether the operator says what an unset parameter means, which exempts it from `set -u`.
+fn defines_absence(expansion_type: &ParamExpansion) -> bool {
+    matches!(
+        expansion_type,
+        ParamExpansion::DefaultValue { .. }
+            | ParamExpansion::UseAlternative { .. }
+            | ParamExpansion::ErrorIfUnset { .. }
+    )
 }
 
 /// Whether the parameter counts as "set" for the `${x-d}` family.
@@ -212,7 +213,8 @@ pub(super) fn is_elementwise(expansion_type: &ParamExpansion) -> bool {
             | ParamExpansion::RemoveSuffix { .. }
             | ParamExpansion::Replace { .. }
             | ParamExpansion::CaseConvert { .. }
-    )
+            | ParamExpansion::CaseToggle { .. }
+    ) || matches!(expansion_type, ParamExpansion::Transform(op) if "QEPUuL".contains(*op))
 }
 
 /// Apply an element-wise operator to every value, keeping the list's length.
@@ -241,6 +243,13 @@ pub(super) fn map_elements(
         is_elementwise(expansion_type),
         "map_elements is only defined for the operators is_elementwise admits"
     );
+    // A transformation can run commands (`@P`), so it is applied to each value in turn.
+    if let ParamExpansion::Transform(op) = expansion_type {
+        return values
+            .iter()
+            .map(|value| super::transform::text(env, *op, value))
+            .collect();
+    }
     let prepared = Prepared::compile(env, expansion_type)?;
     values
         .iter()
@@ -252,68 +261,97 @@ pub(super) fn map_elements(
 ///
 /// Built once per list by [`map_elements`]; see the note there for what that is worth.
 enum Prepared {
-    RemovePrefix(ShellPattern, bool),
-    RemoveSuffix(ShellPattern, bool),
-    Replace(ShellPattern, pattern::Replacement, ReplaceScope),
-    CaseConvert(Option<ShellPattern>, bool, bool),
+    /// The pattern, whether longest, whether the C locale makes each byte a character.
+    RemovePrefix(ShellPattern, bool, bool),
+    RemoveSuffix(ShellPattern, bool, bool),
+    Replace(ShellPattern, pattern::Replacement, ReplaceScope, bool),
+    /// The selector, the mapping, whether every character, whether the locale is UTF-8.
+    CaseConvert(Option<ShellPattern>, CaseMap, bool, bool),
+    Unchanged,
 }
 
 impl Prepared {
     fn compile(env: &mut Environment, expansion_type: &ParamExpansion) -> Result<Prepared> {
+        let bytes = !crate::expand::locale::is_utf8(env);
         Ok(match expansion_type {
             ParamExpansion::RemovePrefix { pattern, longest } => {
-                Prepared::RemovePrefix(compile_pattern(env, pattern)?, *longest)
+                Prepared::RemovePrefix(compile_pattern(env, pattern, bytes)?, *longest, bytes)
             }
             ParamExpansion::RemoveSuffix { pattern, longest } => {
-                Prepared::RemoveSuffix(compile_pattern(env, pattern)?, *longest)
+                Prepared::RemoveSuffix(compile_pattern(env, pattern, bytes)?, *longest, bytes)
             }
             ParamExpansion::Replace {
                 pattern,
                 replacement,
                 scope,
             } => Prepared::Replace(
-                compile_pattern(env, pattern)?,
-                // See the note at the other Replace site: quoting decides whether `&` is the
-                // matched text, and only the runs still carry it.
+                compile_pattern(env, pattern, bytes)?,
+                // Runs rather than a string: an unquoted `&` stands for the matched text and a
+                // quoted one does not, and nothing on the finished string can tell them apart.
                 pattern::Replacement::from_runs(&expand_word_to_pattern(env, replacement)?),
                 *scope,
+                bytes,
             ),
             ParamExpansion::CaseConvert {
                 pattern,
                 upper,
                 all,
-            } => Prepared::CaseConvert(
-                match pattern {
-                    Some(word) => Some(compile_pattern(env, word)?),
-                    None => None,
-                },
-                *upper,
-                *all,
-            ),
+            } => {
+                let map = if *upper {
+                    CaseMap::Upper
+                } else {
+                    CaseMap::Lower
+                };
+                Prepared::case(env, pattern.as_ref(), map, *all)?
+            }
+            ParamExpansion::CaseToggle { pattern, all } => {
+                Prepared::case(env, pattern.as_ref(), CaseMap::Toggle, *all)?
+            }
             // Unreachable: `map_elements` asserts what it was given, and `is_elementwise` admits
-            // exactly the four above. Answering with the value unchanged is what a fifth operator
-            // arriving here should do — not a panic in the middle of somebody's expansion.
-            _ => Prepared::CaseConvert(None, false, false),
+            // only the operators above and the transformations it handles itself. Answering with
+            // the value unchanged is the safe thing for anything else arriving here.
+            _ => Prepared::Unchanged,
         })
+    }
+
+    fn case(
+        env: &mut Environment,
+        selector: Option<&Word>,
+        map: CaseMap,
+        all: bool,
+    ) -> Result<Prepared> {
+        let selector = match selector {
+            Some(word) => Some(compile_pattern(env, word, false)?),
+            None => None,
+        };
+        let utf8 = crate::expand::locale::is_utf8(env);
+        Ok(Prepared::CaseConvert(selector, map, all, utf8))
     }
 
     fn apply(&self, value: &str) -> String {
         match self {
-            Prepared::RemovePrefix(pattern, longest) => {
-                pattern::remove_prefix(value, pattern, *longest)
+            Prepared::RemovePrefix(pattern, longest, bytes) => {
+                let value = in_locale(value, *bytes);
+                out_of_locale(pattern::remove_prefix(&value, pattern, *longest), *bytes)
             }
-            Prepared::RemoveSuffix(pattern, longest) => {
-                pattern::remove_suffix(value, pattern, *longest)
+            Prepared::RemoveSuffix(pattern, longest, bytes) => {
+                let value = in_locale(value, *bytes);
+                out_of_locale(pattern::remove_suffix(&value, pattern, *longest), *bytes)
             }
-            Prepared::Replace(pattern, replacement, scope) => match scope {
-                ReplaceScope::First => pattern::replace(value, pattern, replacement, false),
-                ReplaceScope::All => pattern::replace(value, pattern, replacement, true),
-                ReplaceScope::Prefix => pattern::replace_prefix(value, pattern, replacement),
-                ReplaceScope::Suffix => pattern::replace_suffix(value, pattern, replacement),
-            },
-            Prepared::CaseConvert(selector, upper, all) => {
-                pattern::convert_case(value, selector.as_ref(), *upper, *all)
+            Prepared::Replace(pattern, replacement, scope, bytes) => {
+                let value = &in_locale(value, *bytes);
+                let replaced = match scope {
+                    ReplaceScope::First => pattern::replace(value, pattern, replacement, false),
+                    ReplaceScope::All => pattern::replace(value, pattern, replacement, true),
+                    ReplaceScope::Prefix => pattern::replace_prefix(value, pattern, replacement),
+                    ReplaceScope::Suffix => pattern::replace_suffix(value, pattern, replacement),
+                };
+                out_of_locale(replaced, *bytes)
             }
+            Prepared::CaseConvert(selector, map, all, utf8) => {
+                super::case::convert_case(value, selector.as_ref(), *map, *all, *utf8)
+            }
+            Prepared::Unchanged => value.to_string(),
         }
     }
 }
@@ -339,6 +377,28 @@ pub(super) fn slice_list(
     let (from, to) = window(values.len(), start, count)
         .map_err(|n| ShellError::ExpansionError(format!("{n}: substring expression < 0")))?;
     Ok(values[from..to].to_vec())
+}
+
+/// A slice's offset and count, evaluated: `${a[@]:offset:length}` on an array. A negative length
+/// is fatal for a list, as [`window`] explains.
+pub(super) fn slice_operands(
+    env: &mut Environment,
+    offset: &Word,
+    length: Option<&Word>,
+) -> Result<(i64, Option<usize>)> {
+    let start = eval_operand(env, offset)?;
+    let count = match length {
+        Some(word) => match eval_operand(env, word)? {
+            n if n < 0 => {
+                return Err(ShellError::ExpansionError(format!(
+                    "{n}: substring expression < 0"
+                )));
+            }
+            n => Some(n as usize),
+        },
+        None => None,
+    };
+    Ok((start, count))
 }
 
 /// The half-open element range `offset` and `length` select out of a list of `len` items.
@@ -386,7 +446,11 @@ fn eval_operand(env: &mut Environment, word: &Word) -> Result<i64> {
     if text.is_empty() {
         return Ok(0);
     }
-    eval_arithmetic(env, text)
+    // An error here abandons the line even in POSIX mode, as bash's does.
+    eval_arithmetic(env, text).map_err(|e| match e {
+        ShellError::MalformedExpansion(m) => ShellError::ExpansionError(m),
+        other => other,
+    })
 }
 
 /// Whether an indirection's target names an array element or slice rather than a plain parameter.

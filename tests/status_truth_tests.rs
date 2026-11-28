@@ -46,9 +46,8 @@ fn run_with_stdin(dir: &std::path::Path, script: &str, input: &str) -> (String, 
 /// call that could only fail — and a killed stage was reported as a clean exit.
 #[test]
 fn a_signalled_last_stage_reports_128_plus_the_signal() {
-    // `sh` kills its parent, which is the process oslo forked for the stage — oslo runs an
-    // external command in a further child, so `$PPID` here is the stage and not the shell.
-    let r = common::run(r#"echo x | sh -c 'kill -9 $PPID; sleep 5'; echo "status=$?""#);
+    // The stage is `sh` itself, which the stage's process became, so it kills itself.
+    let r = common::run(r#"echo x | sh -c 'kill -9 $$; sleep 5'; echo "status=$?""#);
     assert_eq!(r.out(), "status=137", "stderr: {}", r.stderr);
 }
 

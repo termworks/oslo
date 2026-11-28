@@ -567,5 +567,6 @@ fn empty_body() -> oslo_base::ast::Command {
         assignments: Vec::new(),
         words: Vec::new(),
         redirections: Vec::new(),
+        unbraced: None,
     })
 }

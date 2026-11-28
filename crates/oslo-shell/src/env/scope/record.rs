@@ -21,10 +21,19 @@ impl Environment {
         // The tree's line, plus however much of the file was consumed before the chunk it came
         // from. See [`Self::set_line_offset`].
         let line = line.saturating_add(self.line_offset);
+        self.current_line = line;
         if line == self.published_line {
             return;
         }
-        self.set_var("LINENO", &line.to_string(), false);
+        self.publish_line(line);
+    }
+
+    /// Write `$LINENO` as the shell's own record, not the script's assignment, until an `unset`.
+    fn publish_line(&mut self, line: u32) {
+        if crate::env::dynamic::retired("LINENO") || self.is_readonly("LINENO") {
+            return;
+        }
+        self.store("LINENO", line.to_string(), false);
         self.published_line = line;
     }
 
@@ -42,6 +51,26 @@ impl Environment {
     /// chunk would lose it.
     pub fn set_line_offset(&mut self, lines: u32) -> u32 {
         std::mem::replace(&mut self.line_offset, lines)
+    }
+
+    /// The line of the command now running, counted from the top of its file.
+    pub fn current_line(&self) -> u32 {
+        self.current_line
+    }
+
+    /// Make `line`, already counted from the top of its file, the current one again.
+    pub fn resume_line(&mut self, line: u32) {
+        self.current_line = line;
+        if line != self.published_line {
+            self.publish_line(line);
+        }
+    }
+
+    /// Number the lines of text about to be parsed and run from the line of the command now
+    /// running, as bash numbers `eval` and `$(…)` bodies. Answers the previous offset.
+    pub fn number_lines_from_here(&mut self) -> u32 {
+        let here = self.current_line.saturating_sub(1);
+        self.set_line_offset(here)
     }
 
     /// How many lines come before the chunk now running — see [`Self::set_line_offset`].
@@ -105,11 +134,11 @@ impl Environment {
         // The array is rebuilt only when the numbers moved. Publishing it unconditionally meant a
         // `Vec`, a `"PIPESTATUS"` `String`, a `BTreeMap` and a `String` per stage after every
         // command — and a run of successful commands reports the same `[0]` every time.
-        if self.pipeline_status == statuses && self.arrays.contains_key("PIPESTATUS") {
+        if self.pipeline_status == statuses && self.get_array("PIPESTATUS").is_some() {
             return;
         }
-        self.arrays.insert(
-            "PIPESTATUS".to_string(),
+        self.publish_array(
+            "PIPESTATUS",
             ShellArray::from_values(statuses.iter().map(i32::to_string)),
         );
         self.pipeline_status = statuses;
@@ -118,6 +147,11 @@ impl Environment {
     /// The stage statuses of the most recent pipeline. Never empty.
     pub fn pipeline_status(&self) -> &[i32] {
         &self.pipeline_status
+    }
+
+    /// Record the text of the command about to run, for `$BASH_COMMAND`.
+    pub fn set_bash_command(&mut self, text: String) {
+        self.bash_command = text;
     }
 
     /// Record what a command substitution exited with. Called by `exec::substitution`.

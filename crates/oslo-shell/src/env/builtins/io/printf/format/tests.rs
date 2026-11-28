@@ -1,114 +1,149 @@
-//! `printf`'s format string, checked a conversion at a time.
-//!
-//! Split out for the 600-line limit; the expectations are bash's, run side by side.
+//! `printf`'s format walker, each expectation taken from bash 5.3.
 
-use super::{parse_int, render};
+use super::super::args::Args;
+use super::super::out::Out;
+use super::{Printer, Stop};
 
-/// One pass of the formatter, as a string.
+/// Every pass `printf` would make, the kept bytes and the status.
+fn run(format: &str, args: &[&str], utf8: bool) -> (Vec<u8>, i32) {
+    let list: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+    let mut printer = Printer {
+        args: Args::new(&list, utf8),
+        out: Out::new(true),
+        utf8,
+        posix: false,
+        counts: Vec::new(),
+    };
+    let status = loop {
+        let before = printer.args.next;
+        if let Err(Stop(code)) = printer.pass(format.as_bytes()) {
+            break code;
+        }
+        if printer.args.next >= printer.args.len() || printer.args.next == before {
+            break i32::from(printer.args.error);
+        }
+    };
+    (printer.out.into_kept(), status)
+}
+
 fn printf(format: &str, args: &[&str]) -> String {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    let mut out = Vec::new();
-    let mut next = 0;
-    render(format, &args, &mut next, &mut out).expect("format");
-    String::from_utf8(out).expect("utf8")
-}
-
-/// **The flags were parsed and then dropped.** `+`, a space and `#` all reached the `Spec` and
-/// none of them reached the output, so `printf '%+d' 5` gave `5` and `printf '%#x' 255` gave
-/// `ff`. Every expectation here is bash's, run side by side.
-#[test]
-fn the_sign_and_alternate_form_flags_are_honoured() {
-    assert_eq!(printf("%+d|%+d", &["5", "-5"]), "+5|-5");
-    assert_eq!(printf("[% d][% d]", &["5", "-5"]), "[ 5][-5]");
-    // `+` wins when both are given, as in C.
-    assert_eq!(printf("%+ d", &["5"]), "+5");
-    assert_eq!(printf("%#o|%#x|%#X", &["8", "255", "255"]), "010|0xff|0XFF");
-    // Zero takes no prefix: `0x0` is not what C prints.
-    assert_eq!(printf("%#o|%#x", &["0", "0"]), "0|0");
-    // And a float carries the sign too.
-    assert_eq!(printf("%+.1f", &["1.5"]), "+1.5");
-}
-
-/// **`%g` is the conversion whose whole purpose is not to print twenty-one digits**, and it
-/// used to fall through to `%f` and do exactly that.
-///
-/// C's rule: `%f` when the exponent fits inside the precision, `%e` otherwise, with the
-/// trailing zeros taken off unless `#` asked for them.
-#[test]
-fn g_chooses_between_fixed_and_exponent_as_c_does() {
-    assert_eq!(printf("%g", &["1.5"]), "1.5");
-    assert_eq!(printf("%g", &["100000"]), "100000");
-    assert_eq!(printf("%g", &["0.0001"]), "0.0001");
-    // Past six significant figures, and past 1e-4, it turns into an exponent.
-    assert_eq!(printf("%g", &["1e20"]), "1e+20");
-    assert_eq!(printf("%g", &["0.00001"]), "1e-05");
-    assert_eq!(printf("%G", &["1e20"]), "1E+20");
-    // `#` keeps the zeros the rule would otherwise strip.
-    assert_eq!(printf("%#g", &["1.5"]), "1.50000");
+    String::from_utf8_lossy(&run(format, args, true).0).into_owned()
 }
 
 #[test]
-fn integers_are_read_in_every_base_a_shell_accepts() {
-    assert_eq!(parse_int("42"), Ok(42));
-    assert_eq!(parse_int("-7"), Ok(-7));
-    assert_eq!(parse_int("+7"), Ok(7));
-    assert_eq!(parse_int("0x1f"), Ok(31));
-    assert_eq!(parse_int("010"), Ok(8));
-    // An empty argument is 0: a reused format runs past its arguments and must not complain.
-    assert_eq!(parse_int(""), Ok(0));
-    // POSIX: a leading quote means the next character's value.
-    assert_eq!(parse_int("'A"), Ok(65));
-    assert_eq!(parse_int("abc"), Err(()));
-}
-
-/// **A precision counts bytes, and a character can be several.** `printf '%.2s' 'héllo'` cut
-/// between the two bytes of `é` and `String::truncate` asserts on that — the shell aborted with
-/// a panic, which is a terminal left in raw mode. bash writes the half character and produces
-/// invalid UTF-8; a Rust `String` cannot, so the character is dropped instead.
-#[test]
-fn a_precision_never_cuts_a_character_in_half() {
-    assert_eq!(printf("%.1s", &["héllo"]), "h");
+fn integers_take_c_flags_and_precision() {
     assert_eq!(
-        printf("%.2s", &["héllo"]),
-        "h",
-        "é is two bytes and does not fit"
+        printf("%05d|%+05d|% 05d|%-5d|", &["-7", "7", "3", "4"]),
+        "-0007|+0007| 0003|4    |"
     );
-    // Every other precision matches bash byte for byte.
-    assert_eq!(printf("%.3s", &["héllo"]), "hé");
-    assert_eq!(printf("%.4s", &["héllo"]), "hél");
-    // A precision past the end is the whole string, not a panic.
-    assert_eq!(printf("%.99s", &["héllo"]), "héllo");
-    // And a four-byte character behaves the same way.
-    assert_eq!(printf("%.2s", &["😀x"]), "");
-    assert_eq!(printf("%.4s", &["😀x"]), "😀");
-}
-
-/// **Rust's formatter takes a `u16` precision and panics above it.** `printf '%.70000f' 1`
-/// aborted the shell with `Formatting argument out of range`; bash prints the number.
-#[test]
-fn an_enormous_float_precision_does_not_abort() {
-    let wide = printf("%.70000f", &["1"]);
-    assert!(
-        wide.starts_with("1."),
-        "it still formats: {}",
-        &wide[..10.min(wide.len())]
-    );
-    assert!(
-        wide.len() > 1000,
-        "and it is long, not truncated to nothing"
-    );
-}
-
-/// **A width is allocated, so an unbounded one is an unbounded allocation.**
-/// `printf '%9999999999s' x` asked for ten gigabytes of spaces. bash reports `Value too large
-/// for defined data type` and carries on; this reports and carries on too.
-#[test]
-fn an_enormous_width_is_refused_rather_than_allocated() {
     assert_eq!(
-        printf("%9999999999s|", &["x"]),
-        "x|",
-        "no padding, and no allocation"
+        printf("%.3d|%.0d|%8.3d|%08.3d|%.3x|", &["7", "0", "5", "5", "10"]),
+        "007||     005|     005|00a|"
     );
-    // A width anybody would really use still pads.
-    assert_eq!(printf("%5s|", &["x"]), "    x|");
+    assert_eq!(
+        printf("%#o|%#x|%#08x|%#.0o|%#.0x|", &["8", "255", "255", "0", "0"]),
+        "010|0xff|0x0000ff|0||"
+    );
+    assert_eq!(
+        printf("%'d|%u|%x", &["1234567", "-1", "-1"]),
+        "1234567|18446744073709551615|ffffffffffffffff"
+    );
+}
+
+#[test]
+fn a_bad_number_prints_its_prefix_and_fails() {
+    assert_eq!(run("%d", &["12abc"], true), (b"12".to_vec(), 1));
+    assert_eq!(
+        run("%d", &["99999999999999999999"], true),
+        (b"9223372036854775807".to_vec(), 1)
+    );
+    assert_eq!(
+        run("%d", &["-9223372036854775808"], true),
+        (b"-9223372036854775808".to_vec(), 0)
+    );
+    assert_eq!(
+        run("%u", &["18446744073709551615"], true),
+        (b"18446744073709551615".to_vec(), 0)
+    );
+    assert_eq!(run("%d", &[""], true), (b"0".to_vec(), 1));
+    assert_eq!(
+        run("%d|%d", &["0b101", "0x1f"], true),
+        (b"5|31".to_vec(), 0)
+    );
+    assert_eq!(
+        run("%d|%f", &["'a", "\"a"], true),
+        (b"97|97.000000".to_vec(), 0)
+    );
+    // A missing argument is zero and no error.
+    assert_eq!(run("%d|%s|", &[], true), (b"0||".to_vec(), 0));
+}
+
+#[test]
+fn backslash_c_in_b_stops_everything() {
+    assert_eq!(run("%b|%s\n", &["a\\cb", "x"], true), (b"a".to_vec(), 0));
+    assert_eq!(run("%d%b", &["abc", "\\c"], true), (b"0".to_vec(), 0));
+    assert_eq!(printf("a\\cb", &[]), "a\\cb");
+    assert_eq!(printf("%5b|%.1b|", &["ab", "abc"]), "   ab|a|");
+}
+
+#[test]
+fn c_takes_one_byte_and_a_missing_one_is_nul() {
+    assert_eq!(run("%c|%c|%c|", &["é", ""], true).0, b"\xc3|\0|\0|");
+    assert_eq!(printf("%.1s|%5s|", &["éa", "é"]), "\u{fffd}|   é|");
+    assert_eq!(printf("%lc|%5ls|%.1ls|", &["é", "é", "éa"]), "é|    é|é|");
+}
+
+#[test]
+fn q_quotes_as_bash_does() {
+    let q = |text: &str, utf8: bool| String::from_utf8(run("%q", &[text], utf8).0).expect("ascii");
+    assert_eq!(q("a b,{c}", true), "a\\ b\\,\\{c\\}");
+    assert_eq!(
+        q("~a a~ :~ #x x# ^", true),
+        "\\~a\\ a~\\ :\\~\\ #x\\ x#\\ \\^"
+    );
+    assert_eq!(q("#x", true), "\\#x");
+    assert_eq!(q("\x1b[1m", true), "$'\\E[1m'");
+    assert_eq!(q("é", true), "é");
+    assert_eq!(q("é", false), "$'\\303\\251'");
+    assert_eq!(q("", true), "''");
+    assert_eq!(
+        printf("%#q|%Q|%.3Q|%.3q|", &["it's", "a b", "a b c", "a b"]),
+        "'it'\\''s'|a\\ b|a\\ b|a\\ |"
+    );
+}
+
+#[test]
+fn a_time_conversion_formats_an_epoch() {
+    // `%s` and `%%` read no zone, so they are the same everywhere.
+    assert_eq!(
+        printf("%(%s)T|%(%%)T|%-4(%s)T|", &["5", "5", "7"]),
+        "5|%|7   |"
+    );
+    assert_eq!(run("%(abc", &[], true).0, b"%(abc");
+}
+
+#[test]
+fn malformed_formats_stop_with_status_one() {
+    assert_eq!(run("a%yb", &[], true), (b"a".to_vec(), 1));
+    assert_eq!(run("x%5", &[], true), (b"x".to_vec(), 1));
+    assert_eq!(run("a%9999999999s|b", &["x"], true), (b"a".to_vec(), 1));
+    assert_eq!(run("a%9999999999b|b", &["x"], true), (b"ax|b".to_vec(), 1));
+    assert_eq!(printf("%zb|%hhd|%Lf", &["x", "1", "1"]), "x|1|1.000000");
+}
+
+#[test]
+fn n_counts_the_bytes_of_this_pass() {
+    let list = [b"c1".to_vec(), b"abc".to_vec(), b"c2".to_vec()];
+    let mut printer = Printer {
+        args: Args::new(&list, true),
+        out: Out::new(true),
+        utf8: true,
+        posix: false,
+        counts: Vec::new(),
+    };
+    assert!(printer.pass(b"%n|%s%n|").is_ok());
+    assert_eq!(
+        printer.counts,
+        vec![("c1".to_string(), 0), ("c2".to_string(), 4)]
+    );
 }

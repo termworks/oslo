@@ -49,14 +49,13 @@ fn the_right_prompt_variables_expand_like_ps1() {
     );
 }
 
-/// `bind` is gone, and a shell that quietly accepted it would be worse than one that says so: an
-/// init script's keybindings would look installed and do nothing.
+/// `bind` is bash's builtin: a script without line editing gets a warning on stderr and status 0.
 #[test]
-fn bind_is_reported_as_missing_rather_than_silently_accepted() {
+fn bind_answers_as_bash_does_without_line_editing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let r = run_in(
         dir.path(),
         "bind -x '\"\\C-r\": handler' 2>/dev/null\necho \"status=$?\"",
     );
-    assert_eq!(r.out(), "status=127");
+    assert_eq!(r.out(), "status=0");
 }

@@ -1,10 +1,12 @@
 //! Command and compound-command conversion.
 
+use super::convert_command_list;
 use super::redirects::{convert_redirects, redirects_of};
-use super::{convert_command_list, unsupported};
+use crate::lexer::TildeMode;
 use crate::syntax::lower::cond;
 use crate::syntax::lower::{
     convert_braced_words_from_str, convert_words_from_str, single_word_from_str,
+    single_word_with_tilde,
 };
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::{Result, ShellError};
@@ -33,6 +35,44 @@ pub(super) fn words_of(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast::Word>> 
     Ok(vec![process_substitution_word(tree, node)?])
 }
 
+/// A list of words being converted, with the unbraced form kept once brace expansion changes one.
+#[derive(Default)]
+struct WordList {
+    words: Vec<oslo_ast::Word>,
+    unbraced: Option<Vec<oslo_ast::Word>>,
+}
+
+impl WordList {
+    /// Add the words a `Word` node stands for.
+    fn push_node(&mut self, tree: &Tree, node: &Node) -> Result<()> {
+        let expanded = words_of(tree, node)?;
+        let text = text_of(tree, node);
+        if text.contains('{') && !holds_a_process_substitution(node) {
+            let plain = convert_words_from_str(text)?;
+            if plain != expanded {
+                if self.unbraced.is_none() {
+                    self.unbraced = Some(self.words.clone());
+                }
+                if let Some(unbraced) = &mut self.unbraced {
+                    unbraced.extend(plain);
+                }
+                self.words.extend(expanded);
+                return Ok(());
+            }
+        }
+        self.push(expanded)
+    }
+
+    /// Add words that brace expansion has no part in.
+    fn push(&mut self, words: Vec<oslo_ast::Word>) -> Result<()> {
+        if let Some(unbraced) = &mut self.unbraced {
+            unbraced.extend(words.iter().cloned());
+        }
+        self.words.extend(words);
+        Ok(())
+    }
+}
+
 /// One word, for the positions that take exactly one — a redirect target, a `case` word.
 ///
 /// Brace expansion does not apply in those places, so this is the un-braced counterpart of
@@ -45,15 +85,48 @@ pub(super) fn word_of(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
     process_substitution_word(tree, node)
 }
 
-fn holds_a_process_substitution(node: &Node) -> bool {
-    node.nodes()
-        .any(|child| child.kind() == SyntaxKind::ProcessSubstitution)
+/// Whether `node` holds a `<( )` of its own, directly or in the value word of an assignment.
+pub(super) fn holds_a_process_substitution(node: &Node) -> bool {
+    node.nodes().any(|child| {
+        child.kind() == SyntaxKind::ProcessSubstitution
+            || (child.kind() == SyntaxKind::Word && holds_a_process_substitution(child))
+    })
 }
 
-fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
+pub(super) fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
+    process_substitution_word_from(tree, node, node.span().start as usize)
+}
+
+/// [`process_substitution_word`] for the part of `node` from byte `from` of the source on: the
+/// value of an `[index]=value` array element.
+pub(super) fn process_substitution_word_from(
+    tree: &Tree,
+    node: &Node,
+    from: usize,
+) -> Result<oslo_ast::Word> {
     let mut parts = Vec::new();
     for child in node.children() {
+        let span = match child {
+            rune::Element::Node(inner) => inner.span(),
+            rune::Element::Token(token) => token.span(),
+        };
+        let (start, end) = (span.start as usize, span.end as usize);
+        if end <= from {
+            continue;
+        }
+        if start < from {
+            let text = &tree.source().text()[from..end];
+            for word in convert_words_from_str(text)? {
+                parts.extend(word.parts);
+            }
+            continue;
+        }
         match child {
+            rune::Element::Node(inner)
+                if inner.kind() == SyntaxKind::Word && holds_a_process_substitution(inner) =>
+            {
+                parts.extend(process_substitution_word(tree, inner)?.parts);
+            }
             rune::Element::Node(inner) if inner.kind() == SyntaxKind::ProcessSubstitution => {
                 let text = text_of(tree, inner);
                 // The body is carried as text and re-parsed when it runs, exactly as `$(cmd)` is.
@@ -84,6 +157,23 @@ fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word>
 
 pub(super) fn convert_command(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Command> {
     match command {
+        // `coproc [NAME] command`: the array a coprocess publishes into is `COPROC` unless named.
+        Command::Coproc(coproc) => {
+            let name = coproc
+                .name()
+                .map(|word| word_text(tree, word).to_string())
+                .unwrap_or_else(|| "COPROC".to_string());
+            let body = coproc.command().ok_or_else(|| {
+                ShellError::SyntaxError("coproc: a command to run was expected".to_string())
+            })?;
+            Ok(oslo_ast::Command::Compound {
+                kind: oslo_ast::CompoundCommand::Coproc {
+                    name,
+                    body: Box::new(convert_command(tree, body)?),
+                },
+                redirections: Vec::new(),
+            })
+        }
         Command::Simple(simple) => Ok(oslo_ast::Command::Simple(convert_simple(tree, simple)?)),
         Command::Function(function) => {
             let name = function
@@ -98,14 +188,27 @@ pub(super) fn convert_command(tree: &Tree, command: Command<'_>) -> Result<oslo_
                     )));
                 }
             };
+            let start = function.span().start as usize;
+            let end = super::redirects::extent_with_heredocs(tree, function.syntax()) as usize;
+            let source = tree
+                .source()
+                .text()
+                .get(start..end)
+                .map(std::sync::Arc::from);
             Ok(oslo_ast::Command::FunctionDef {
                 name,
                 body: Box::new(body),
+                source: oslo_ast::FunctionSource(source),
             })
         }
         Command::Conditional(conditional) => {
             let list = convert_cond(tree, conditional.syntax())?;
-            Ok(cond::as_command(list))
+            let mut command = cond::as_command(list);
+            // `[[ … ]] 2>/dev/null` redirects the whole test.
+            if let oslo_ast::Command::Compound { redirections, .. } = &mut command {
+                *redirections = convert_redirects(tree, redirects_of(conditional.syntax()))?;
+            }
+            Ok(command)
         }
         other => {
             let kind = convert_compound(tree, other)?;
@@ -167,7 +270,10 @@ fn convert_compound(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Compo
         Command::Arithmetic(arithmetic) => {
             oslo_ast::CompoundCommand::Arithmetic(arithmetic.expression(tree.source()).to_string())
         }
-        Command::Simple(_) | Command::Function(_) | Command::Conditional(_) => {
+        Command::Simple(_)
+        | Command::Function(_)
+        | Command::Conditional(_)
+        | Command::Coproc(_) => {
             return Err(ShellError::SyntaxError(
                 "not a compound command".to_string(),
             ));
@@ -196,12 +302,9 @@ fn convert_if(tree: &Tree, conditional: IfCommand<'_>) -> Result<oslo_ast::Compo
 }
 
 fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::CompoundCommand> {
-    if looping.kind() == SyntaxKind::SelectCommand {
-        return Err(unsupported("select"));
-    }
     let body = list_at(tree, looping.body())?;
     if looping.kind() == SyntaxKind::ArithForCommand {
-        let (init, cond, step) = arithmetic_for_sections(tree, looping.syntax());
+        let (init, cond, step) = arithmetic_for_sections(looping.arithmetic(tree.source()));
         return Ok(oslo_ast::CompoundCommand::ArithmeticFor {
             init,
             cond,
@@ -220,19 +323,27 @@ fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::Compoun
         .syntax()
         .tokens()
         .any(|token| token.kind() == SyntaxKind::In);
-    let items = match has_in {
-        false => None,
+    let (items, unbraced) = match has_in {
+        false => (None, None),
         true => {
-            let mut converted = Vec::new();
+            let mut converted = WordList::default();
             for word in looping.items() {
-                converted.extend(words_of(tree, word.syntax())?);
+                converted.push_node(tree, word.syntax())?;
             }
-            Some(converted)
+            (Some(converted.words), converted.unbraced)
         }
     };
+    if looping.kind() == SyntaxKind::SelectCommand {
+        return Ok(oslo_ast::CompoundCommand::Select {
+            var_name,
+            items,
+            body,
+        });
+    }
     Ok(oslo_ast::CompoundCommand::For {
         var_name,
         items,
+        unbraced,
         body,
     })
 }
@@ -243,17 +354,10 @@ fn convert_for(tree: &Tree, looping: ForCommand<'_>) -> Result<oslo_ast::Compoun
 /// middle of `for (( ; ; ))` as a condition would end the loop before its first iteration instead
 /// of running it forever.
 fn arithmetic_for_sections(
-    tree: &Tree,
-    node: &Node,
+    header: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>) {
-    let text = text_of(tree, node);
-    let inner = match text.find("((") {
-        Some(at) => &text[at + 2..],
-        None => return (None, None, None),
-    };
-    let inner = match inner.find("))") {
-        Some(at) => &inner[..at],
-        None => inner,
+    let Some(inner) = header else {
+        return (None, None, None);
     };
     let mut sections = inner
         .splitn(3, ';')
@@ -273,7 +377,7 @@ fn list_at(tree: &Tree, list: Option<CommandList<'_>>) -> Result<oslo_ast::Comma
 
 fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::SimpleCommand> {
     let mut assignments = Vec::new();
-    let mut words = Vec::new();
+    let mut words = WordList::default();
     let mut redirections = Vec::new();
 
     for child in simple.syntax().nodes() {
@@ -286,23 +390,22 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
             // The word is built from the assignment's own source text rather than by rejoining a
             // name and a value: the rejoined text would be a bare literal, so its quotes would
             // survive expansion and the value would then be field-split on its own spaces.
-            SyntaxKind::Assignment if words.is_empty() => {
+            SyntaxKind::Assignment if words.words.is_empty() => {
                 assignments.push(convert_assignment(tree, child)?);
             }
-            SyntaxKind::Assignment => {
-                words.extend(words_of(tree, child)?);
-            }
+            SyntaxKind::Assignment | SyntaxKind::Word => words.push_node(tree, child)?,
             SyntaxKind::Redirect => {
-                if let Some(prefix) = child
-                    .token(SyntaxKind::Text)
-                    .filter(|token| token.text(tree.source()).parse::<i32>().is_err())
+                // A `{name}` prefix belongs to the redirection; any other non-numeric one is a word.
+                let variable = rune::ast::Redirect::cast(child)
+                    .and_then(|redirect| redirect.variable(tree.source()));
+                if variable.is_none()
+                    && let Some(prefix) = child
+                        .token(SyntaxKind::Text)
+                        .filter(|token| token.text(tree.source()).parse::<i32>().is_err())
                 {
-                    words.extend(convert_words_from_str(prefix.text(tree.source()))?);
+                    words.push(convert_words_from_str(prefix.text(tree.source()))?)?;
                 }
                 redirections.extend(super::redirects::convert_redirect(tree, child)?);
-            }
-            SyntaxKind::Word => {
-                words.extend(words_of(tree, child)?);
             }
             _ => {}
         }
@@ -310,8 +413,9 @@ fn convert_simple(tree: &Tree, simple: SimpleCommand<'_>) -> Result<oslo_ast::Si
 
     Ok(oslo_ast::SimpleCommand {
         assignments,
-        words,
+        words: words.words,
         redirections,
+        unbraced: words.unbraced,
     })
 }
 
@@ -328,29 +432,35 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
         .unwrap_or_default();
     let append = node.token(SyntaxKind::PlusEqual).is_some();
 
-    // `name[i]=value`. rune keeps the subscript in the name token's text, because the lexer has no
-    // reason to split a run of ordinary characters; the shape is recovered here.
-    let target = match name.split_once('[') {
-        Some((name, rest)) => oslo_ast::AssignmentTarget::Element {
-            name: name.to_string(),
-            index: single_word_from_str(rest.trim_end_matches(']'))?,
-        },
+    // `name[i]=value`, whose subscript rune gives a node of its own: `a[$i]=x`, `a[ $i + 1 ]=x`.
+    // The subscript is one word however many blanks it holds, and keeps them: `m[ a ]` is the key
+    // ` a `.
+    let target = match node.node(SyntaxKind::Subscript) {
+        Some(subscript) => {
+            let text = text_of(tree, subscript);
+            let inner = text.strip_prefix('[').unwrap_or(text);
+            let inner = inner.strip_suffix(']').unwrap_or(inner);
+            oslo_ast::AssignmentTarget::Element {
+                name,
+                index: crate::lexer::parse_single_word(inner)?,
+            }
+        }
         None => oslo_ast::AssignmentTarget::Name(name),
     };
 
     let value = match node.node(SyntaxKind::ArrayValue) {
         Some(array) => {
-            let mut elements = Vec::new();
-            for element in array.nodes().filter(|node| node.kind() == SyntaxKind::Word) {
-                elements.extend(convert_array_element(tree, text_of(tree, element))?);
-            }
-            oslo_ast::AssignmentValue::Array(elements)
+            oslo_ast::AssignmentValue::Array(super::literal::array_elements(tree, array)?)
         }
-        None => oslo_ast::AssignmentValue::Scalar(single_word_from_str(
-            node.node(SyntaxKind::Word)
-                .map(|word| text_of(tree, word))
-                .unwrap_or_default(),
-        )?),
+        None => match node.node(SyntaxKind::Word) {
+            Some(word) if holds_a_process_substitution(word) => {
+                oslo_ast::AssignmentValue::Scalar(process_substitution_word(tree, word)?)
+            }
+            word => oslo_ast::AssignmentValue::Scalar(single_word_with_tilde(
+                word.map(|word| text_of(tree, word)).unwrap_or_default(),
+                TildeMode::Value,
+            )?),
+        },
     };
 
     Ok(oslo_ast::Assignment {
@@ -358,27 +468,6 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
         value,
         append,
     })
-}
-
-/// One element of an array literal.
-///
-/// An unindexed element may still expand to several words — `a=($list)` and `a=(*.c)` both do — so
-/// it becomes one [`oslo_ast::ArrayElement`] per word rather than being forced into one. An
-/// *indexed* element (`[3]=x`) is a single value by construction.
-fn convert_array_element(tree: &Tree, text: &str) -> Result<Vec<oslo_ast::ArrayElement>> {
-    let _ = tree;
-    if let Some(rest) = text.strip_prefix('[')
-        && let Some((index, value)) = rest.split_once("]=")
-    {
-        return Ok(vec![oslo_ast::ArrayElement {
-            index: Some(single_word_from_str(index)?),
-            value: single_word_from_str(value)?,
-        }]);
-    }
-    Ok(convert_braced_words_from_str(text)?
-        .into_iter()
-        .map(|value| oslo_ast::ArrayElement { index: None, value })
-        .collect())
 }
 
 /// Lower a `[[ ... ]]` expression onto and-or lists and calls to the `[[` builtin.

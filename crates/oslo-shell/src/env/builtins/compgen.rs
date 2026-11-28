@@ -1,83 +1,49 @@
-//! `compgen`, for the scripts and completion functions that call it.
+//! `compgen [-V name] [-abcdefgjksuv] [-o option] [-A action] [-G glob] [-W words] [-F function]
+//! [-C command] [-X filter] [-P prefix] [-S suffix] [word]`.
 //!
-//! The actions that are a word list or a filesystem question — `-G pattern`, `-W words`, `-f` and
-//! `-d`, with an optional word to complete. bash's other actions answer from readline's own tables
-//! (`-A alias`, `-k`), which oslo keeps elsewhere; they are refused by name rather than guessed at.
+//! The completions a spec built from these options would offer for `word`, one per line, or into
+//! the array `-V` names. Status 1 when there are none.
 
-use crate::env::scope::Environment;
+use super::complete::{generate, parse};
+use crate::env::scope::{Environment, ShellArray};
 use oslo_base::error::Result;
-use oslo_base::glob::walk;
+
+const USAGE: &str = "compgen: usage: compgen [-V varname] [-abcdefgjksuv] [-o option] [-A action] \
+     [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] \
+     [word]";
 
 pub fn builtin_compgen(env: &mut Environment, args: &[String]) -> Result<i32> {
-    let mut pattern = None;
-    let mut list = None;
-    let (mut files, mut dirs) = (false, false);
-    let mut word = String::new();
-    let mut rest = args.iter().skip(1);
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "-G" => pattern = rest.next().cloned(),
-            "-W" => list = rest.next().cloned(),
-            "-f" => files = true,
-            "-d" => dirs = true,
-            "--" => {
-                word = rest.next().cloned().unwrap_or_default();
-                break;
-            }
-            flag if flag.starts_with('-') && flag.len() > 1 => {
-                eprintln!("compgen: {flag}: not supported; oslo answers -G, -W, -f and -d");
-                return Ok(2);
-            }
-            other => word = other.to_string(),
+    let parsed = match parse("compgen", args, "abcdefgjksuvoAGWPSXFCV", USAGE) {
+        Ok(parsed) => parsed,
+        Err(status) => return Ok(status),
+    };
+    let spec = &parsed.spec;
+    for (flag, given) in [
+        ("-F", spec.function.is_some()),
+        ("-C", spec.command.is_some()),
+    ] {
+        if given {
+            let body = format!("compgen: warning: {flag} option may not work as you expect");
+            crate::env::complain(args, flag, &body, "here", None);
         }
     }
+    let word = parsed.operands.first().cloned().unwrap_or_default();
+    let mut found = generate::completions(env, spec, &word, "compgen", "")?;
+    if found.is_empty() && (spec.option("bashdefault") || spec.option("default")) {
+        found = generate::paths(&word, false);
+    }
 
-    let mut out = Vec::new();
-    if let Some(pattern) = pattern {
-        out.extend(glob(&pattern));
+    match &parsed.var {
+        Some(name) => {
+            if !env.set_array(name, ShellArray::from_values(found.clone())) {
+                return Ok(1);
+            }
+        }
+        None => {
+            for line in &found {
+                println!("{line}");
+            }
+        }
     }
-    if let Some(list) = list {
-        let ifs = env.get_var("IFS").unwrap_or(" \t\n").to_string();
-        out.extend(
-            list.split(|c: char| ifs.contains(c))
-                .filter(|w| !w.is_empty() && w.starts_with(&word))
-                .map(str::to_string),
-        );
-    }
-    if files || dirs {
-        out.extend(
-            starting_with(&word)
-                .into_iter()
-                .filter(|path| files || std::path::Path::new(path).is_dir()),
-        );
-    }
-    for line in &out {
-        println!("{line}");
-    }
-    Ok(if out.is_empty() { 1 } else { 0 })
-}
-
-/// A pattern's matches, or the name itself when it is plain text naming something that exists.
-fn glob(pattern: &str) -> Vec<String> {
-    let chars: Vec<(char, bool)> = pattern.chars().map(|c| (c, true)).collect();
-    match walk::expand(&chars, &walk::shell_options()) {
-        Some(matched) => matched,
-        None if std::fs::symlink_metadata(pattern).is_ok() => vec![pattern.to_string()],
-        None => Vec::new(),
-    }
-}
-
-/// Every path that begins with `word`, hidden ones only when `word`'s last part asks for a dot.
-fn starting_with(word: &str) -> Vec<String> {
-    let mut chars: Vec<(char, bool)> = word.chars().map(|c| (c, false)).collect();
-    chars.push(('*', true));
-    let mut options = walk::shell_options();
-    if word
-        .rsplit('/')
-        .next()
-        .is_some_and(|last| last.starts_with('.'))
-    {
-        options.dotglob = true;
-    }
-    walk::expand(&chars, &options).unwrap_or_default()
+    Ok(i32::from(found.is_empty()))
 }

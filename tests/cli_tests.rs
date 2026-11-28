@@ -204,11 +204,10 @@ fn a_syntax_error_from_stdin_exits_two() {
 fn dollar_dash_reports_the_invocation_and_the_command_line_options() {
     let out = oslo(&["-fu", "-c", "echo \"[$-]\""]);
     assert_eq!(status_of(&out), 0, "stderr: {}", stderr_of(&out));
-    // `f` and `u` from the command line, `h` because `hashall` is on in every shell that has it,
-    // and `c` because the program came from `-c`. In `ALL` order, which is bash's: `bash -fu -c`
-    // answers `fhuBc`, and the `B` is brace expansion, an option this shell does not have a switch
-    // for and so does not claim.
-    assert_eq!(stdout_of(&out), "[fhuc]\n");
+    // `f` and `u` from the command line, `h` and `B` (hashall, braceexpand) on by default, and `c`
+    // because the program came from `-c` — in `ALL` order, which is bash's: `bash -fu -c` answers
+    // the same.
+    assert_eq!(stdout_of(&out), "[fhuBc]\n");
 }
 
 /// An option letter `set` would refuse is refused here too, with the same usage status.

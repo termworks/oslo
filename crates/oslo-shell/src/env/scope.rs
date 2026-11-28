@@ -1,16 +1,26 @@
 mod array;
+mod assoc;
+mod attrs;
 mod calls;
+mod elements;
 mod environ;
 mod frames;
+mod functions;
+mod level;
+mod listed;
+pub mod nameref;
 mod names;
 mod options;
+mod optvars;
 pub mod origin;
 mod record;
 mod registry;
 mod seed;
+mod special;
 #[cfg(test)]
 mod tests;
 mod traps;
+pub mod value;
 mod vars;
 
 use crate::env::nesting::{DepthGuard, MAX_FUNCTION_DEPTH, MAX_SCRIPT_DEPTH};
@@ -24,9 +34,15 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use value::{Attrs, Var};
 
 pub use array::{ShellArray, array_literal_body};
+pub use assoc::AssocArray;
+pub use calls::{CallFrame, FrameKind};
 pub use registry::{BuiltinFn, is_special_builtin};
+pub use special::is_call_stack_array;
+pub use traps::TrapFrame;
+pub(crate) use vars::take_integer_failure;
 
 /// One running process substitution: the descriptor the caller was given, and the child feeding it.
 ///
@@ -60,10 +76,9 @@ pub fn is_valid_identifier(name: &str) -> bool {
 }
 
 pub struct Environment {
-    vars: HashMap<String, (String, bool)>, // (value, is_exported)
-    /// Indexed arrays, in the same namespace as [`Self::vars`]: a name is a scalar or an array,
-    /// never both. See the `array` submodule for why the two tables stay separate.
-    arrays: HashMap<String, ShellArray>,
+    /// The binding every name resolves to now: scalar, indexed or associative, with its
+    /// attributes. What locals shadowed lives in [`Self::scope_stack`].
+    vars: HashMap<String, Var>,
     positional: Vec<String>,
     pub last_status: i32,
     pub pid: u32,
@@ -78,6 +93,8 @@ pub struct Environment {
     pipeline_status: Vec<i32>,
     /// Exit status of the last command substitution, until something consumes it.
     substitution_status: Option<i32>,
+    /// `$BASH_COMMAND`: the text of the command running, or about to run.
+    bash_command: String,
     /// How many lines of the file come *before* the chunk now running.
     ///
     /// **Nearly always zero.** A script that parses is evaluated whole, and every line number in
@@ -114,17 +131,10 @@ pub struct Environment {
     /// parent had. Keeping the strings here separates the two: nothing ever *runs* from this map,
     /// and [`Self::listable_traps`] is the only thing that reads it.
     inherited_traps: HashMap<String, String>,
-    readonly_vars: HashSet<String>,
-    /// Names declared with `-i`, whose assignments are evaluated as arithmetic. See
-    /// [`Environment::set_integer`].
-    integer_vars: HashSet<String>,
-    /// Names `export` was told about before they existed.
-    ///
-    /// `export V` with no value marks `V` for export and leaves it **unset**: bash gives an empty
-    /// `${V+set}` and no `V=` in `env`, and a later `V=1` is exported. Creating it empty instead
-    /// made it answer "set" to every test, and put a spurious `V=` in every child's environment.
-    /// [`Self::set_var`] spends the intention when the name is finally assigned.
-    pending_exports: HashSet<String>,
+    /// Functions `export -f` marked, handed to children as `BASH_FUNC_name%%`.
+    exported_functions: HashSet<String>,
+    /// Functions `readonly -f` marked, which cannot be redefined or unset.
+    readonly_functions: HashSet<String>,
     dir_stack: Vec<PathBuf>,
     scope_stack: Vec<ScopeFrame>,
     /// How many loops are currently executing in this shell.
@@ -140,17 +150,22 @@ pub struct Environment {
     call_stack: Vec<String>,
     /// How the code now running was reached: `main` for a script file, `source` for a sourced one.
     ///
-    /// **Kept apart from [`Self::call_stack`] on purpose.** bash puts these in `$FUNCNAME` — a
-    /// function called from a script file sees `f main` — but they are not function frames, and
-    /// `caller` decides "am I inside a function at all" by asking whether that stack is empty. A
-    /// sentinel pushed there would make `caller` answer yes at the top level of every script, and
-    /// the `while caller $i` idiom depends on it answering no.
+    /// Decides whether a diagnostic names a file and whether `return` is allowed outside a
+    /// function; the call stack itself is [`Self::frames`].
     script_frames: Vec<String>,
     /// The files whose commands are running, innermost last — for a diagnostic's location only.
     /// See [`Environment::enter_source_file`].
     source_files: Vec<String>,
     /// The `line_offset` each entry of `source_files` displaced, to be put back on the way out.
     source_offsets: Vec<u32>,
+    /// bash's call stack, outermost first; see the `calls` submodule.
+    frames: Vec<CallFrame>,
+    /// The file each function was defined in, for its `BASH_SOURCE` entry.
+    function_files: HashMap<String, String>,
+    /// The text each function was defined with, for `declare -f`.
+    function_sources: HashMap<String, Arc<str>>,
+    /// The line of the command now running, whatever `$LINENO` has been assigned since.
+    current_line: u32,
     /// Whether the command just before this one was an `exit` refused over stopped jobs.
     ///
     /// See `builtins::control::refuse_over_stopped_jobs`. On `Environment` rather than a global
@@ -177,13 +192,17 @@ impl Environment {
         // environment therefore killed the process with `SIGABRT` before a single command ran, and
         // the ordinary way to get one is a directory named in a locale that is not this one.
         //
-        // Such a name is **skipped rather than mangled**. The shell cannot hold it — a Rust
-        // `String` is UTF-8 — and replacing the byte would hand a child a value that is neither
-        // what was set nor what it expects. Skipped, the variable is simply not oslo's to read, and
-        // the real bytes still reach every child through the environment `execve` inherits.
+        // A value is carried as `oslo_base::lossless` carries any other bytes; a name that is not
+        // UTF-8 is never an identifier, so it is left for the children that inherit `environ`.
+        let mut imported_functions = Vec::new();
         for (key, value) in env::vars_os() {
-            if let (Some(key), Some(value)) = (key.to_str(), value.to_str()) {
-                vars.insert(key.to_string(), (value.to_string(), true));
+            if let Some(key) = key.to_str() {
+                let value = oslo_base::lossless::encode(&value);
+                if let Some(name) = functions::exported_function_name(key, &value) {
+                    imported_functions.push((name.to_string(), value));
+                    continue;
+                }
+                vars.insert(key.to_string(), Var::scalar(&value, Attrs::EXPORT));
             }
         }
 
@@ -196,7 +215,6 @@ impl Environment {
 
         let mut env_struct = Self {
             vars,
-            arrays: HashMap::new(),
             positional: Vec::new(),
             last_status: 0,
             pid,
@@ -205,6 +223,7 @@ impl Environment {
             current_pid: pid,
             pipeline_status: vec![0],
             substitution_status: None,
+            bash_command: String::new(),
             published_line: 0,
             line_offset: 0,
             aliases,
@@ -214,9 +233,8 @@ impl Environment {
             procsubs: Vec::new(),
             signal_traps: HashMap::new(),
             inherited_traps: HashMap::new(),
-            readonly_vars: HashSet::new(),
-            integer_vars: HashSet::new(),
-            pending_exports: HashSet::new(),
+            exported_functions: HashSet::new(),
+            readonly_functions: HashSet::new(),
             dir_stack: Vec::new(),
             scope_stack: Vec::new(),
             loop_depth: 0,
@@ -225,6 +243,10 @@ impl Environment {
             script_frames: Vec::new(),
             source_files: Vec::new(),
             source_offsets: Vec::new(),
+            frames: Vec::new(),
+            function_files: HashMap::new(),
+            function_sources: HashMap::new(),
+            current_line: 0,
             exit_warned: false,
             script_depth: DepthGuard::new(MAX_SCRIPT_DEPTH),
             options: ShellOptions::default(),
@@ -237,6 +259,9 @@ impl Environment {
         env_struct.seed_working_directory();
         env_struct.seed_option_index();
         env_struct.seed_compatibility_vars();
+        env_struct.seed_special_vars();
+        env_struct.seed_option_vars();
+        env_struct.import_functions(&imported_functions);
         env_struct
     }
 
@@ -253,10 +278,35 @@ impl Environment {
     /// a subshell (`trap 'echo T' EXIT; (:)` prints `T` once). Deliberately kept: `$$`, the
     /// invoking shell's pid, and `$!`, which bash inherits into a subshell.
     pub fn enter_subshell(&mut self) {
+        self.enter_subshell_counted(true);
+    }
+
+    /// [`Self::enter_subshell`] for a pipeline stage, which bash counts in `$BASH_SUBSHELL` only
+    /// when the stage is more than a simple command.
+    pub fn enter_pipeline_stage(&mut self, counted: bool) {
+        self.enter_subshell_counted(counted);
+    }
+
+    fn enter_subshell_counted(&mut self, counted: bool) {
         self.current_pid = std::process::id();
+        crate::exec::job::forget_background_deaths();
         // Moved rather than dropped: the actions stop applying, but `$(trap)` still has to be
         // able to report them. See [`Self::inherited_traps`].
         self.inherited_traps = std::mem::take(&mut self.signal_traps);
+        self.refresh_subshell_vars(counted);
+        // `-E` keeps the ERR trap running in the child, and `-T` keeps DEBUG and RETURN.
+        let mut kept: Vec<&str> = Vec::new();
+        if self.errtrace() {
+            kept.push("ERR");
+        }
+        if self.functrace() {
+            kept.extend(["DEBUG", "RETURN"]);
+        }
+        for key in kept {
+            if let Some(action) = self.inherited_traps.remove(key) {
+                self.signal_traps.insert(key.to_string(), action);
+            }
+        }
     }
 
     /// This process's real pid, as opposed to `$$`. See [`Self::enter_subshell`].
@@ -285,6 +335,16 @@ impl Environment {
         self.loop_depth > 0
     }
 
+    /// Close every open loop for a function body, which `break` cannot leave; answers how many.
+    pub fn take_loops(&mut self) -> usize {
+        std::mem::take(&mut self.loop_depth)
+    }
+
+    /// Reopen the loops [`Self::take_loops`] closed.
+    pub fn restore_loops(&mut self, loops: usize) {
+        self.loop_depth = loops;
+    }
+
     /// Begin a nested `source` or `eval`; `Err` once the chain is too deep to be safe.
     pub fn enter_nested_script(&mut self) -> Result<()> {
         self.script_depth.enter()
@@ -294,59 +354,15 @@ impl Environment {
         self.script_depth.exit()
     }
 
-    pub fn set_readonly(&mut self, name: &str) {
-        self.readonly_vars.insert(name.to_string());
-    }
-
-    pub fn is_readonly(&self, name: &str) -> bool {
-        self.readonly_vars.contains(name)
-    }
-
-    /// Mark `name` read-only *for the innermost scope*, as `local -r` and `declare -r` do.
-    ///
-    /// **The mark leaves with the scope.** It used to go into the process-wide set with nothing to
-    /// take it out again, so `f() { local -r x=1; }; f` left `x` frozen for the rest of the
-    /// session — a name that could never be assigned and had no value under it. bash scopes the
-    /// mark for `local` and `declare` and keeps it global for the `readonly` builtin, which is why
-    /// this is a second entry point rather than a change to [`Self::set_readonly`].
-    ///
-    /// At the top level there is no frame to leave, so this is the global mark.
-    pub fn set_readonly_here(&mut self, name: &str) {
-        // Already read-only means this scope is not what made it so, and must not release it.
-        if !self.readonly_vars.contains(name) {
-            self.note_scope_readonly(name);
-        }
-        self.set_readonly(name);
-    }
-
-    /// Drop the read-only mark. Only [`Environment::pop_scope`] calls this.
-    pub(super) fn release_readonly(&mut self, name: &str) {
-        self.readonly_vars.remove(name);
-    }
-
-    /// Mark `name` as holding an integer: every assignment to it is arithmetic from now on.
-    ///
-    /// A name set, the way `readonly` is one, because the attribute belongs to the *name* and has
-    /// to outlive any particular value — `local -i n; n=4*5` declares first and assigns after.
-    pub fn set_integer(&mut self, name: &str) {
-        self.integer_vars.insert(name.to_string());
-    }
-
-    pub fn is_integer(&self, name: &str) -> bool {
-        self.integer_vars.contains(name)
-    }
-
-    /// Drop the attribute, for `declare +i`.
-    pub fn clear_integer(&mut self, name: &str) {
-        self.integer_vars.remove(name);
-    }
-
     pub fn push_dir(&mut self, path: PathBuf) {
         self.dir_stack.push(path);
+        self.publish_dirstack();
     }
 
     pub fn pop_dir(&mut self) -> Option<PathBuf> {
-        self.dir_stack.pop()
+        let popped = self.dir_stack.pop();
+        self.publish_dirstack();
+        popped
     }
 
     pub fn get_dir_stack(&self) -> &[PathBuf] {
@@ -361,10 +377,15 @@ impl Environment {
     /// register a function nothing would ever call (PLAN R5.6, R9.8).
     pub fn exec_custom_builtin(&mut self, name: &str, args: &[String]) -> Option<Result<i32>> {
         let func = self.builtins.lookup(name)?;
+        if let Some(help) = crate::env::builtins::help::long_option(name, args) {
+            return Some(help);
+        }
         // Published here because this is the only way in, so one write covers every builtin and
         // every private helper under it — see `origin::here`.
         let _origin = origin::Published::new(self.origin());
-        Some(func(self, args))
+        let result = func(self, args);
+        crate::exec::simple::trace::flush_deferred(self);
+        Some(result)
     }
     pub fn set_positional(&mut self, params: Vec<String>) {
         self.positional = params;

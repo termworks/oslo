@@ -6,6 +6,7 @@
 //! variables, and [`read`] owns the option grammar that connects them.
 
 mod echo;
+mod escape;
 mod printf;
 #[allow(clippy::module_inception)]
 mod read;
@@ -17,8 +18,21 @@ pub use printf::{builtin_printf, shell_quote};
 pub use read::builtin_read;
 
 use crate::env::origin_now;
+use crate::env::scope::Environment;
 use std::io::Write;
 use std::os::fd::BorrowedFd;
+
+/// Whether the shell's character locale is UTF-8: the first non-empty of `LC_ALL`, `LC_CTYPE`
+/// and `LANG` names a UTF-8 codeset. With none of them set the locale is `C`.
+pub(crate) fn utf8_locale(env: &Environment) -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| env.get_var(name).filter(|v| !v.is_empty()))
+        .is_some_and(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("utf-8") || lower.contains("utf8")
+        })
+}
 
 /// Write `bytes` to standard output, reporting a failure the way bash does.
 ///
@@ -36,9 +50,13 @@ use std::os::fd::BorrowedFd;
 ///
 /// Returns the status the calling builtin should return.
 pub(crate) fn write_stdout(name: &str, bytes: &[u8]) -> i32 {
-    let _ = std::io::stdout().flush();
     // A filename that is not UTF-8 is written with the bytes it has; see `oslo_base::lossless`.
-    let bytes = oslo_base::lossless::restore_bytes(bytes);
+    write_raw(name, &oslo_base::lossless::restore_bytes(bytes))
+}
+
+/// Write `bytes` to standard output exactly as given, reporting a failure as [`write_stdout`] does.
+pub(crate) fn write_raw(name: &str, bytes: &[u8]) -> i32 {
+    let _ = std::io::stdout().flush();
 
     // Safety: descriptor 1 is open for the lifetime of the shell, and this borrows it without
     // taking ownership, so nothing here can close it.

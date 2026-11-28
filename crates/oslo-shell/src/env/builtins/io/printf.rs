@@ -11,16 +11,23 @@
 //! * the **format** always has its backslash escapes decoded, so `printf 'a\nb'` prints two lines;
 //! * an **argument** does not, unless it is consumed by `%b`, which is what `%b` is for.
 //!
-//! Both share `echo`'s decoder, so `\0ddd`, `\xHH` and the control escapes mean the same thing in
-//! every builtin that writes bytes.
+//! Everything is bytes from the arguments to the output, so a byte that is not UTF-8 goes out as
+//! the byte it is.
 
+mod args;
+mod float;
 mod format;
+mod out;
+mod quote;
+mod render;
+mod time;
 
 use crate::env::origin_now;
 use crate::env::scope::Environment;
-use format::render;
-pub use format::shell_quote;
+use format::{Printer, Stop};
 use oslo_base::error::Result;
+use oslo_base::lossless;
+pub use quote::shell_quote;
 
 /// The usage line, under the diagnostic that caused it and unprefixed, as bash leaves its own.
 const USAGE: &str = "printf: usage: printf [-v var] format [arguments]";
@@ -37,7 +44,7 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
     };
 
     if let Some(name) = into
-        && !crate::env::scope::is_valid_identifier(name)
+        && crate::env::builtins::arrays::parse_target(name).is_none()
     {
         crate::env::complain(
             args,
@@ -58,40 +65,63 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
         eprintln!("{USAGE}");
         return Ok(2);
     };
-    let arguments = &operands[1..];
-
-    let mut out: Vec<u8> = Vec::new();
-    let mut status = 0;
-    let mut next = 0;
-
-    // POSIX: the format is reused until the arguments run out. `printf '%s\n' a b c` prints three
-    // lines. One pass always happens, even with no arguments at all.
-    loop {
-        let consumed_before = next;
-        match render(format, arguments, &mut next, &mut out) {
-            Ok(()) => {}
-            Err(code) => status = code,
+    if format.is_empty() {
+        if let Some(name) = into {
+            env.set_var(name, "", false);
         }
-        // Stop unless there are arguments left *and* this pass used at least one: a format with no
-        // conversions would otherwise repeat for ever.
-        if next >= arguments.len() || next == consumed_before {
-            break;
+        return Ok(0);
+    }
+    let format = lossless::decode(format);
+    let arguments: Vec<Vec<u8>> = operands[1..].iter().map(|a| lossless::decode(a)).collect();
+    let utf8 = super::utf8_locale(env);
+    let mut printer = Printer {
+        args: args::Args::new(&arguments, utf8).with_words(args, &operands[1..]),
+        out: out::Out::new(into.is_some()),
+        utf8,
+        posix: env.posix(),
+        counts: Vec::new(),
+    };
+
+    // The format is reused while arguments remain and each pass consumes at least one; one pass
+    // always happens. A pass that stops early returns its own status.
+    let status = loop {
+        printer.out.pass = 0;
+        let before = printer.args.next;
+        if let Err(Stop(code)) = printer.pass(&format) {
+            break code;
         }
+        let next = printer.args.next;
+        if next >= printer.args.len() || next == before {
+            break i32::from(printer.args.error);
+        }
+    };
+
+    for (name, count) in std::mem::take(&mut printer.counts) {
+        env.set_var(&name, &count.to_string(), false);
     }
 
-    // `-v` puts the result in a variable rather than on stdout, which is the whole reason scripts
-    // reach for it: building a string with `%s`/`%d` padding without a subshell to capture it.
+    // `-v` keeps the bytes up to the first NUL, as a C string would.
     if let Some(name) = into {
-        env.set_var(name, &String::from_utf8_lossy(&out), false);
-        return Ok(status);
+        let mut bytes = printer.out.into_kept();
+        if let Some(nul) = bytes.iter().position(|&b| b == 0) {
+            bytes.truncate(nul);
+        }
+        let value = lossless::encode(std::os::unix::ffi::OsStrExt::from_bytes(&bytes));
+        return match crate::env::builtins::arrays::assign_target(env, name, &value) {
+            Ok(true) => Ok(status),
+            Ok(false) => Ok(1),
+            Err(e @ oslo_base::error::ShellError::Discard(..)) => Err(e),
+            Err(e) => {
+                let body = format!("printf: {e}");
+                crate::env::complain(args, name, &body, "not an element", None);
+                Ok(1)
+            }
+        };
     }
 
-    // A write failure outranks a formatting one: if the output never arrived, the status has to
-    // say so whatever the format string did.
-    match super::write_stdout("printf", &out) {
-        0 => Ok(status),
-        failed => Ok(failed),
-    }
+    // A failed write outranks the formatting status.
+    printer.out.flush();
+    Ok(printer.out.failed.unwrap_or(status))
 }
 
 /// What the leading operands turned out to be.

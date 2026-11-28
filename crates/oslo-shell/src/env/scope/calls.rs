@@ -1,15 +1,36 @@
 //! Who is calling whom: the shell-function call chain, and what a script can read of it.
 //!
-//! Two stacks, and keeping them apart is the point. [`Environment::call_stack`] is the *functions*
-//! currently executing, which is what `caller` reports and what it asks "am I inside a function at
-//! all" — a question the `while caller $i` idiom depends on. `$FUNCNAME` is nearly the same list
-//! and not quite: bash puts the way the code was reached on the end of it, so a function called
-//! from a script file reads `f main` and one called from a sourced file reads `f source`. Those
-//! are not function frames, so they live in their own list and are added only where the array is
-//! published.
+//! Two stacks. [`Environment::call_stack`] is the *functions* currently executing, which answers
+//! "am I inside a function at all". [`Environment::frames`] is bash's own call stack: one frame
+//! per function call, per `source`, and one `main` frame under a script file. It is published as
+//! the three parallel arrays `FUNCNAME`, `BASH_SOURCE` and `BASH_LINENO`, innermost first, and
+//! `caller` reads it.
 
 use super::{Environment, ShellArray, UNNAMED_FUNCTION};
 use oslo_base::error::Result;
+
+/// What a [`CallFrame`] was entered by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    /// The script file itself.
+    Main,
+    /// A `source` or `.` of a file.
+    Source,
+    /// A shell function call.
+    Function,
+}
+
+/// One frame of bash's call stack.
+#[derive(Debug, Clone)]
+pub struct CallFrame {
+    /// The `FUNCNAME` entry: the function's name, `source` or `main`.
+    pub name: String,
+    /// The `BASH_SOURCE` entry: the file the function was defined in, or the file being run.
+    pub file: String,
+    /// The `BASH_LINENO` entry: the line the frame was entered from, in the caller's file.
+    pub line: u32,
+    pub kind: FrameKind,
+}
 
 impl Environment {
     /// Begin a shell-function call; `Err` once the call chain is too deep to be safe.
@@ -17,20 +38,25 @@ impl Environment {
     /// The caller must pair this with [`Self::exit_function`] on every path out of the call,
     /// including an unwinding `return` or error. A refused entry is not entered and must not be
     /// exited.
-    ///
-    /// Prefer [`Self::enter_function_named`]: `caller` can only report a name that was recorded
-    /// on the way in, and this form records the placeholder bash prints when it has none.
     pub fn enter_function(&mut self) -> Result<()> {
         self.enter_function_named(UNNAMED_FUNCTION)
     }
 
-    /// Begin a shell-function call, recording which function it is.
-    ///
-    /// The name is what `caller n` reports as the second field. Kept beside the depth counter
-    /// rather than in a table of its own so the two cannot drift: one push, one pop, both here.
+    /// Begin a shell-function call, recording which function it is and where it was called from.
     pub fn enter_function_named(&mut self, name: &str) -> Result<()> {
         self.function_depth.enter()?;
         self.call_stack.push(name.to_string());
+        let file = self
+            .function_files
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| self.shell_name.clone());
+        self.frames.push(CallFrame {
+            name: name.to_string(),
+            file,
+            line: self.current_line,
+            kind: FrameKind::Function,
+        });
         self.publish_call_stack();
         Ok(())
     }
@@ -38,97 +64,90 @@ impl Environment {
     pub fn exit_function(&mut self) {
         self.function_depth.exit();
         self.call_stack.pop();
+        self.pop_frame(FrameKind::Function);
+    }
+
+    /// Drop the innermost frame if it is of `kind`, and republish the arrays.
+    ///
+    /// The caller's line is current again, so `$LINENO` names the line the frame was entered from
+    /// until the next command publishes its own.
+    fn pop_frame(&mut self, kind: FrameKind) {
+        if self.frames.last().is_some_and(|frame| frame.kind == kind)
+            && let Some(frame) = self.frames.pop()
+            && kind != FrameKind::Main
+        {
+            self.resume_line(frame.line);
+        }
         self.publish_call_stack();
     }
 
-    /// Publish `$FUNCNAME`, which is the call stack a script can read.
-    ///
-    /// **It was empty, and said nothing about being empty.** `f() { echo "$FUNCNAME"; }` printed a
-    /// blank line where bash prints `f` — so a log line or an error handler built on it lost the
-    /// one piece of information it existed to carry, silently, in every script that used one.
-    ///
-    /// An array, as in bash: `${FUNCNAME[0]}` is the function running now and `${FUNCNAME[1]}` is
-    /// whoever called it, so the order is the reverse of [`Self::call_stack`], which reads
-    /// outermost first. A bare `$FUNCNAME` is element 0, which the array machinery already does.
-    ///
-    /// Rebuilt on entry and exit rather than synthesised when read, because `get_array` hands back
-    /// a reference into the table and cannot make one up. The depth is capped at
-    /// [`MAX_FUNCTION_DEPTH`], so the copy is bounded and small — the same way `PIPESTATUS` is
-    /// published by whoever computes it.
-    ///
-    /// Unset outside every function, which is also bash: `${FUNCNAME+set}` is how a script asks
-    /// whether it is inside one at all.
-    fn publish_call_stack(&mut self) {
-        if self.call_stack.is_empty() {
-            self.arrays.remove("FUNCNAME");
-            return;
+    /// The file a function defined now belongs to: the innermost frame's, or `$0` outside any.
+    pub(super) fn defining_file(&self) -> String {
+        match self.frames.last() {
+            Some(frame) => frame.file.clone(),
+            None => self.shell_name.clone(),
         }
-        let frames: Vec<String> = self
-            .call_stack
-            .iter()
-            .rev()
-            .chain(self.script_frames.iter().rev())
-            .cloned()
-            .collect();
-        self.set_array("FUNCNAME", ShellArray::from_values(frames));
     }
 
-    /// Note how the code about to run was reached, for `$FUNCNAME`'s outermost entries.
+    /// Publish `FUNCNAME`, `BASH_SOURCE` and `BASH_LINENO`, innermost frame first.
     ///
-    /// `main` for a script file and `source` for a sourced one, which is what bash calls them.
-    /// Nothing is pushed for `-c` or for standard input, and bash pushes nothing there either.
+    /// `FUNCNAME` is visible only while a function is executing, as in bash; the other two
+    /// always describe the whole stack.
+    fn publish_call_stack(&mut self) {
+        let inner_first = || self.frames.iter().rev();
+        let sources = ShellArray::from_values(inner_first().map(|f| f.file.clone()));
+        let lines = ShellArray::from_values(inner_first().map(|f| f.line.to_string()));
+        let names = (!self.call_stack.is_empty())
+            .then(|| ShellArray::from_values(inner_first().map(|f| f.name.clone())));
+        for (name, array) in [("BASH_SOURCE", Some(sources)), ("BASH_LINENO", Some(lines))]
+            .into_iter()
+            .chain([("FUNCNAME", names)])
+        {
+            match array {
+                Some(array) => self.publish_array(name, array),
+                // Declared, with no value: `declare -p FUNCNAME` still names it, as in bash.
+                None => self.unpublish_array(name),
+            };
+        }
+    }
+
+    /// Note how the code about to run was reached: `main` for a script file, `source` for a
+    /// sourced one. Nothing is pushed for `-c` or for standard input, as in bash.
     pub fn enter_script_frame(&mut self, kind: &str) {
         self.script_frames.push(kind.to_string());
+        if kind == "main" {
+            self.frames.push(CallFrame {
+                name: kind.to_string(),
+                file: self.shell_name.clone(),
+                line: 0,
+                kind: FrameKind::Main,
+            });
+        }
         self.publish_call_stack();
-        self.publish_source_stack();
     }
 
     /// Leave the frame [`Self::enter_script_frame`] pushed.
     pub fn exit_script_frame(&mut self) {
-        self.script_frames.pop();
-        self.publish_call_stack();
-        self.publish_source_stack();
+        if self.script_frames.pop().as_deref() == Some("main") {
+            self.pop_frame(FrameKind::Main);
+        }
     }
 
-    /// `$BASH_SOURCE` — the files being executed, innermost first.
+    /// Note the file whose commands are about to run, for the call stack and for a diagnostic's
+    /// location.
     ///
-    /// **`dirname "${BASH_SOURCE[0]}"` is how a bash script finds its own directory**, and with
-    /// nothing here it expanded to the empty string: the usual
-    /// `cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` then answered the *caller's* directory instead
-    /// of the script's, silently and with status 0. Every script that loads a file beside itself
-    /// depends on this, and it is the reason `$BASH_SOURCE` cannot simply be `$0` — a sourced file
-    /// has to name itself, while `$0` deliberately does not change across `source`.
-    ///
-    /// The stack is the one [`Self::enter_source_file`] already keeps for diagnostics, with the
-    /// script itself underneath. Unset where bash leaves it unset: `-c` and standard input push no
-    /// script frame and source nothing.
-    fn publish_source_stack(&mut self) {
-        if self.script_frames.is_empty() && self.source_files.is_empty() {
-            self.arrays.remove("BASH_SOURCE");
-            return;
-        }
-        let mut frames: Vec<String> = self.source_files.iter().rev().cloned().collect();
-        if !self.script_frames.is_empty() {
-            frames.push(self.shell_name.clone());
-        }
-        self.set_array("BASH_SOURCE", ShellArray::from_values(frames));
-    }
-
-    /// Note the file whose commands are about to run, for a diagnostic's location.
-    ///
-    /// **Its own stack rather than `$0`.** A diagnostic from inside a sourced file names *that*
-    /// file — bash reports `inner.sh: line 4:` for a failure there, not the script that sourced it
-    /// — but `$0` deliberately does *not* change across `source`, because POSIX says a sourced
-    /// file shares the caller's positional parameters and `$0` is one of them. Swapping
-    /// `shell_name` would have made the message right and `$0` wrong.
-    ///
-    /// A stack because a sourced file may source another, and the innermost is the one a failure
-    /// belongs to. See [`Environment::origin`](crate::env::Environment::origin).
+    /// Its own stack rather than `$0`: a diagnostic from inside a sourced file names that file,
+    /// while `$0` does not change across `source`. A sourced file is parsed whole, so its tree
+    /// counts from its own line 1; the outer offset is put back by [`Self::exit_source_file`].
     pub fn enter_source_file(&mut self, path: &str) {
+        self.frames.push(CallFrame {
+            name: "source".to_string(),
+            file: path.to_string(),
+            line: self.current_line,
+            kind: FrameKind::Source,
+        });
         self.source_files.push(path.to_string());
-        self.publish_source_stack();
-        // A sourced file is parsed whole, so its tree already counts from its own line 1. The
-        // outer file's offset is put back by [`Self::exit_source_file`] — see `set_line_offset`.
+        self.publish_call_stack();
         let outer = self.set_line_offset(0);
         self.source_offsets.push(outer);
     }
@@ -136,7 +155,7 @@ impl Environment {
     /// Leave the file [`Self::enter_source_file`] pushed.
     pub fn exit_source_file(&mut self) {
         self.source_files.pop();
-        self.publish_source_stack();
+        self.pop_frame(FrameKind::Source);
         if let Some(outer) = self.source_offsets.pop() {
             self.set_line_offset(outer);
         }
@@ -155,6 +174,11 @@ impl Environment {
         &self.call_stack
     }
 
+    /// bash's call stack, outermost first.
+    pub fn frames(&self) -> &[CallFrame] {
+        &self.frames
+    }
+
     /// Whether a shell function is currently executing.
     ///
     /// `local` needs this rather than the scope-frame stack, because a prefix assignment
@@ -167,10 +191,7 @@ impl Environment {
     /// Whether a `.`/`source` is running, which is the other place `return` is allowed.
     ///
     /// A *script file* is not one: `bash script.sh` with a top-level `return` refuses it and goes
-    /// on to the next command, and so does `-c`. That is the distinction [`enter_script_frame`]
-    /// records as `source` versus `main`.
-    ///
-    /// [`enter_script_frame`]: Self::enter_script_frame
+    /// on to the next command, and so does `-c`.
     pub fn in_sourced_script(&self) -> bool {
         self.script_frames.iter().any(|kind| kind == "source")
     }

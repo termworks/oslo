@@ -19,20 +19,18 @@
 //!
 //! - Here-document bodies are carried through verbatim; whether an unquoted body expands is
 //!   decided from the delimiter's quoting, which rune records.
-//! - `coproc` is refused by name rather than approximated: it has no representation in oslo's AST
-//!   and cannot get one until there are arrays to publish the descriptors in and job control to
-//!   manage the child.
 //! - `time -p` is carried as plain `time`: [`oslo_base::ast::Pipeline`] records *that* a pipeline
 //!   is timed, not which of bash's two report formats was asked for.
 //! - `[[ ... ]]` becomes calls to the `[[` builtin, with `&&`, `||` and `!` expressed using the
 //!   shell's own and-or lists and pipeline negation; see [`super::lower::cond`].
 
 mod commands;
+mod literal;
 mod redirects;
 
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::{Result, ShellError};
-use rune::ast::{AndOrList, Command, CommandList, ListItem, Pipeline, Script, SimpleCommand};
+use rune::ast::{AndOrList, Command, CommandList, ListItem, Pipeline, Script};
 use rune::{SyntaxKind, Tree};
 
 /// Parse `script` and lower it into something oslo can run.
@@ -44,9 +42,6 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
     oslo_base::nesting::check_nesting(script)?;
 
     let parsed = rune::parse(script);
-    if let Some(construct) = unsupported_command(parsed.tree(), parsed.tree().root()) {
-        return Err(unsupported(construct));
-    }
     // **The first error is the one to report, and rune orders them by position.** It finds every
     // mistake in the file, which is what a checker wants; a shell about to run the script wants
     // the earliest one, because that is where the program stopped making sense.
@@ -55,29 +50,74 @@ pub fn parse_bash_script(script: &str) -> Result<oslo_ast::CommandList> {
     let deferred = |error: &&rune::Error| {
         inside_closed_substitution(parsed.tree(), parsed.tree().root(), error.span.start)
     };
-    if let Some(error) = parsed.errors().iter().find(|error| !deferred(error)) {
+    let (warnings, errors): (Vec<_>, Vec<_>) = parsed
+        .errors()
+        .iter()
+        .filter(|error| !deferred(error))
+        .partition(|error| error.severity == rune::Severity::Warning);
+    if let Some(error) = errors.first() {
         return Err(ShellError::SyntaxError(error.message.clone()));
+    }
+    // bash reads an `extglob` group only with the option on, and refuses the line otherwise. A
+    // program that turns the option on before the group fails here as a whole and is read again
+    // a command at a time, each command with the option as the ones before it left it.
+    if !oslo_base::glob::walk::extglob()
+        && opens_group(script)
+        && refused_group(parsed.tree(), parsed.tree().root())
+    {
+        return Err(ShellError::SyntaxError(
+            "syntax error near unexpected token `('".to_string(),
+        ));
+    }
+    // bash runs a here-document the input ends inside, and says so.
+    for warning in warnings {
+        let (line, _) = parsed.tree().source().line_col(warning.span.start);
+        match warning.message.contains("here-document") {
+            true => {
+                eprintln!("oslo: warning: here-document at line {line} delimited by end-of-file")
+            }
+            false => eprintln!("oslo: warning: line {line}: {}", warning.message),
+        }
     }
     convert_script(parsed.tree())
 }
 
-fn unsupported_command(tree: &Tree, node: &rune::Node) -> Option<&'static str> {
+/// Whether the tree holds an `extglob` group outside the places bash reads one regardless.
+///
+/// A `[[ ]]` test takes patterns with the option off. A substitution's body is read again when it
+/// runs, and arithmetic, a subscript and a `${…}` operand are not words that could hold a group.
+fn refused_group(tree: &Tree, node: &rune::Node) -> bool {
     if matches!(
         node.kind(),
-        SyntaxKind::CommandSubstitution | SyntaxKind::ProcessSubstitution
-    ) && closed(tree, node)
-    {
-        return None;
+        SyntaxKind::CondCommand
+            | SyntaxKind::CommandSubstitution
+            | SyntaxKind::ProcessSubstitution
+            | SyntaxKind::ParameterExpansion
+            | SyntaxKind::ArithmeticExpansion
+            | SyntaxKind::ArithCommand
+            | SyntaxKind::ArithForCommand
+            | SyntaxKind::Subscript
+    ) {
+        return false;
     }
-    if let Some(command) = SimpleCommand::cast(node)
-        && command
-            .name()
-            .is_some_and(|word| tree.source().slice(word.span()) == "coproc")
-    {
-        return Some("coproc");
-    }
-    node.nodes()
-        .find_map(|child| unsupported_command(tree, child))
+    // Inside `"…"` a parenthesis is a character, so the quotes a word opens are followed.
+    let mut quoted = false;
+    node.children().any(|child| match child {
+        rune::Element::Node(inner) => refused_group(tree, inner),
+        rune::Element::Token(token) => {
+            if token.kind() == SyntaxKind::DoubleQuote {
+                quoted = !quoted;
+            }
+            !quoted && token.kind() == SyntaxKind::Text && opens_group(token.text(tree.source()))
+        }
+    })
+}
+
+/// Whether `text` holds an `extglob` operator with its `(`: `@(`, `!(`, `*(`, `+(` or `?(`.
+fn opens_group(text: &str) -> bool {
+    text.as_bytes()
+        .windows(2)
+        .any(|pair| matches!(pair, [b'?' | b'*' | b'+' | b'@' | b'!', b'(']))
 }
 
 /// Whether an offset falls inside a command substitution that was properly closed.
@@ -119,6 +159,39 @@ fn closed(tree: &Tree, node: &rune::Node) -> bool {
         true => text.len() >= 2 && text.ends_with('`'),
         false => text.ends_with(')'),
     }
+}
+
+/// The elements of the array literal `(body)`, read exactly as the value of `a=(body)` is.
+///
+/// This is what the declaration builtins receive: `declare -a a=([0]=x [2]=y)` passes them the
+/// text `a=([0]=x [2]=y)` unexpanded, as bash does, and the literal is read here with the same
+/// rules a bare assignment's is — indices, quoting, newlines and comments included.
+pub fn array_literal(body: &str) -> Result<Vec<oslo_ast::ArrayElement>> {
+    let text = format!("a=({body})");
+    let bad = || ShellError::SyntaxError(format!("({body}): bad array value"));
+    let parsed = rune::parse(&text);
+    if !parsed.is_clean() {
+        return Err(bad());
+    }
+    let tree = parsed.tree();
+    let mut items = Script::of(tree).items();
+    let (Some(item), None) = (items.next(), items.next()) else {
+        return Err(bad());
+    };
+    let Some(Command::Simple(simple)) = item.command() else {
+        return Err(bad());
+    };
+    let mut children = simple.syntax().nodes();
+    let (Some(assignment), None) = (children.next(), children.next()) else {
+        return Err(bad());
+    };
+    let Some(array) = assignment
+        .node(SyntaxKind::ArrayValue)
+        .filter(|array| array.span().end as usize == text.len())
+    else {
+        return Err(bad());
+    };
+    literal::array_elements(tree, array)
 }
 
 fn convert_script(tree: &Tree) -> Result<oslo_ast::CommandList> {
@@ -253,8 +326,21 @@ fn pipeline_around(tree: &Tree, command: Command<'_>) -> Result<oslo_ast::Pipeli
 
 fn convert_pipeline_node(tree: &Tree, pipeline: Pipeline<'_>) -> Result<oslo_ast::Pipeline> {
     let mut converted = Vec::new();
-    for command in pipeline.commands() {
-        converted.push(commands::convert_command(tree, command)?);
+    for child in pipeline.syntax().children() {
+        match child {
+            rune::Element::Node(node) => {
+                if let Some(command) = Command::cast(node) {
+                    converted.push(commands::convert_command(tree, command)?);
+                }
+            }
+            // `a |& b` is `a 2>&1 | b`, the duplication made after `a`'s own redirections.
+            rune::Element::Token(token) if token.kind() == SyntaxKind::PipeAmp => {
+                if let Some(previous) = converted.last_mut() {
+                    redirects::merge_stderr(previous);
+                }
+            }
+            rune::Element::Token(_) => {}
+        }
     }
     Ok(oslo_ast::Pipeline {
         negated: pipeline.is_negated(),
@@ -262,12 +348,4 @@ fn convert_pipeline_node(tree: &Tree, pipeline: Pipeline<'_>) -> Result<oslo_ast
         timed: pipeline.is_timed(),
         commands: converted,
     })
-}
-
-/// A construct oslo parses but cannot yet execute.
-///
-/// Reported as a syntax error so it reaches the user with a non-zero status and the name of the
-/// thing that is missing, rather than being approximated into something that runs.
-pub(super) fn unsupported(construct: &str) -> ShellError {
-    ShellError::SyntaxError(format!("{construct} is not supported yet"))
 }

@@ -29,6 +29,14 @@ struct Invocation<'a> {
 }
 
 pub fn builtin_kill(_env: &mut Environment, args: &[String]) -> Result<i32> {
+    // `kill -s` with nothing after it: bash names the option and answers 1, with no usage line.
+    if let [_, flag] = args
+        && matches!(flag.as_str(), "-s" | "-n")
+    {
+        let body = format!("kill: {flag}: option requires an argument");
+        crate::env::complain(args, flag, &body, "needs a signal", None);
+        return Ok(1);
+    }
     let Some(inv) = parse_args(args.get(1..).unwrap_or(&[])) else {
         return Ok(usage());
     };
@@ -159,8 +167,7 @@ fn usage() -> i32 {
 /// `kill -l`: the whole table, or the other half of each spec given.
 fn list(args: &[String], specs: &[String]) -> i32 {
     if specs.is_empty() {
-        let names: Vec<String> = signals::all().into_iter().map(|(_, name)| name).collect();
-        println!("{}", names.join(" "));
+        print!("{}", signals::table());
         return 0;
     }
 
@@ -186,6 +193,9 @@ fn list(args: &[String], specs: &[String]) -> i32 {
 /// A number becomes a name, a name becomes a number.
 fn describe(spec: &str) -> Option<String> {
     let Ok(num) = spec.parse::<i32>() else {
+        if spec.eq_ignore_ascii_case("EXIT") || spec.eq_ignore_ascii_case("SIGEXIT") {
+            return Some("0".to_string());
+        }
         return signals::number_from_name(spec).map(|n| n.to_string());
     };
     if num == 0 {
@@ -231,7 +241,7 @@ fn send(pid: i32, signum: i32) -> std::result::Result<(), Errno> {
     // SAFETY: kill(2) takes two scalars, reads no memory owned by this process and cannot
     // invalidate any Rust invariant. Failure is reported through errno, which is what
     // `Errno::result` reads.
-    let res = unsafe { nix::libc::kill(pid, signum) };
+    let res = unsafe { nix::libc::kill(pid, signals::real(signum)) };
     Errno::result(res).map(|_| ())
 }
 
@@ -296,7 +306,7 @@ mod tests {
             builtin_kill(&mut env, &words(&["kill", "-TERM"])).unwrap(),
             2
         );
-        assert_eq!(builtin_kill(&mut env, &words(&["kill", "-s"])).unwrap(), 2);
+        assert_eq!(builtin_kill(&mut env, &words(&["kill", "-s"])).unwrap(), 1);
     }
 
     #[test]

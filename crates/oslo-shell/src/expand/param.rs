@@ -13,12 +13,19 @@
 //! that fallback into a diagnostic instead.
 
 mod array;
+pub mod case;
+mod indirect;
+mod lists;
 mod operators;
 mod pattern;
+mod positional;
+pub(crate) mod transform;
+mod whole;
 
 use crate::env::Environment;
+use crate::env::builtins::arrays::Key;
 use crate::expand::word::{Field, Origin, Run};
-use oslo_base::ast::ParamExpansion;
+use oslo_base::ast::{ParamExpansion, Subscript};
 use oslo_base::error::{Result, ShellError};
 
 pub use array::expand_array_ref;
@@ -31,8 +38,8 @@ pub use array::expand_array_ref;
 pub(crate) enum Target<'a> {
     /// A parameter by name: a variable, a positional, or a special parameter.
     Param(&'a str),
-    /// One element of an indexed array, with its subscript already evaluated.
-    Element { name: &'a str, index: i64 },
+    /// One element, with its subscript already evaluated: an index, or an associative key.
+    Element { name: &'a str, key: Key },
 }
 
 impl Target<'_> {
@@ -40,12 +47,15 @@ impl Target<'_> {
     fn value(&self, env: &Environment) -> Option<String> {
         match self {
             Self::Param(name) => env.get_param(name),
-            // **A scalar is an array of one.** `v=x; echo ${v[0]}` answers `x` in bash, and
-            // `whole_array` already implements that identity for `${v[@]}` — its comment even
-            // claims this function does too. It did not: `${v[0]}` expanded to nothing, `${#v[0]}`
-            // to 0, and under `set -u` the whole shell exited. Any script indexing a name that
-            // happens to hold a scalar read empty and said nothing about it.
-            Self::Element { name, index } => match env.get_array(name) {
+            Self::Element {
+                name,
+                key: Key::Name(key),
+            } => env.get_assoc(name)?.get(key).map(str::to_string),
+            // **A scalar is an array of one.** `v=x; echo ${v[0]}` answers `x` in bash.
+            Self::Element {
+                name,
+                key: Key::Index(index),
+            } => match env.get_array(name) {
                 Some(array) => array.get(*index).map(str::to_string),
                 None if *index == 0 => env.get_var(name).map(str::to_string),
                 None => None,
@@ -55,22 +65,57 @@ impl Target<'_> {
 
     /// Persist `text` — what `${x:=v}` does. An element assignment writes the element, not the
     /// whole variable, so `${a[2]:=x}` leaves the rest of the array alone.
-    fn assign(&self, env: &mut Environment, text: &str) {
+    ///
+    /// A positional or special parameter cannot be assigned this way, and neither can a readonly
+    /// name; both are fatal expansion errors.
+    fn assign(&self, env: &mut Environment, text: &str) -> Result<()> {
+        let name = match self {
+            Self::Param(name) | Self::Element { name, .. } => *name,
+        };
+        if !crate::env::scope::is_valid_identifier(name) {
+            return Err(ShellError::MalformedExpansion(format!(
+                "${name}: cannot assign in this way"
+            )));
+        }
+        if env.is_readonly(name) {
+            let message = format!("{name}: readonly variable");
+            return Err(match env.posix() && !env.interactive() {
+                true => ShellError::MalformedExpansion(message),
+                false => ShellError::AssignmentRefused(message),
+            });
+        }
         match self {
             Self::Param(name) => {
                 env.set_var(name, text, false);
             }
-            Self::Element { name, index } => {
+            Self::Element {
+                name,
+                key: Key::Index(index),
+            } => {
                 env.set_array_element(name, *index, text);
             }
+            Self::Element {
+                name,
+                key: Key::Name(key),
+            } => {
+                env.set_assoc_element(name, key, text);
+            }
         }
+        Ok(())
     }
 
     /// How the reference is named in a diagnostic — as the script wrote it.
     fn display(&self) -> String {
         match self {
             Self::Param(name) => (*name).to_string(),
-            Self::Element { name, index } => format!("{name}[{index}]"),
+            Self::Element {
+                name,
+                key: Key::Index(index),
+            } => format!("{name}[{index}]"),
+            Self::Element {
+                name,
+                key: Key::Name(key),
+            } => format!("{name}[{key}]"),
         }
     }
 }
@@ -89,6 +134,7 @@ pub fn expand_param(
 
     // A stored variable is a line until somebody reads the name, and a value from then on.
     materialise(env, name);
+    env.note_read(name);
 
     // `$@` and `$*` are the only parameters that stand for a *list*, and only `$@` keeps its
     // members apart. Everything list-valued has to be answered here: falling through to the
@@ -101,6 +147,30 @@ pub fn expand_param(
         if let Some(fields) = array::positional_list(env, name, expansion_type, origin)? {
             return Ok(fields);
         }
+        if let Some(fields) = positional::operator_fields(env, name, expansion_type, in_quotes)? {
+            return Ok(fields);
+        }
+    }
+
+    if let ParamExpansion::Indirect(inner) = expansion_type
+        && let Some(fields) = indirect::fields(env, name, inner, in_quotes)?
+    {
+        return Ok(fields);
+    }
+
+    // A reference to an element reads it as `${a[sub]}` would, its subscript expanded.
+    if env.nameref_target(name).is_some()
+        && let Some(crate::env::scope::nameref::Target::Element {
+            name: array,
+            subscript,
+        }) = env.deref(name)
+    {
+        let index = match subscript.as_str() {
+            "@" => Subscript::All,
+            "*" => Subscript::Joined,
+            text => Subscript::Index(crate::lexer::parse_single_word(text)?),
+        };
+        return array::expand_array_ref(env, &array, &index, expansion_type, in_quotes);
     }
 
     if let Some(fields) = payload_fields(env, name, expansion_type, in_quotes)? {
@@ -159,6 +229,17 @@ fn payload_fields(
     expansion_type: &ParamExpansion,
     in_quotes: bool,
 ) -> Result<Option<Vec<Field>>> {
+    // Read only for the two operators that need it: reading `$RANDOM` draws a number.
+    if !matches!(
+        expansion_type,
+        ParamExpansion::UseAlternative { .. }
+            | ParamExpansion::DefaultValue {
+                assign_if_unset: false,
+                ..
+            }
+    ) {
+        return Ok(None);
+    }
     let value = Target::Param(name).value(env);
     let payload = match expansion_type {
         ParamExpansion::UseAlternative {
@@ -172,7 +253,15 @@ fn payload_fields(
         } if !operators::is_present(&value, *test_null) => default,
         _ => return Ok(None),
     };
+    payload_word_fields(env, payload, in_quotes).map(Some)
+}
 
+/// Expand the payload of `${x-word}` or `${x+word}` where it stands.
+pub(super) fn payload_word_fields(
+    env: &mut Environment,
+    payload: &oslo_base::ast::Word,
+    in_quotes: bool,
+) -> Result<Vec<Field>> {
     let mut fields = crate::expand::word::expand_word_fields_in(env, payload, in_quotes)?;
     // A quoted expansion is one field even when it is empty: a payload with no parts expands to
     // no fields at all, so `"${x-}"` vanished instead of becoming an empty word. Unquoted it
@@ -192,7 +281,7 @@ fn payload_fields(
             }
         }
     }
-    Ok(Some(fields))
+    Ok(fields)
 }
 
 /// Where an expansion's output came from, which decides whether it may be field-split.
@@ -279,12 +368,17 @@ fn is_param_name(name: &str) -> bool {
 /// runs `cmd` rather than `cmd ""`. `$*` is always exactly one field, joined by the first
 /// character of IFS.
 fn positional_fields(env: &Environment, name: &str, origin: Origin) -> Vec<Field> {
-    array::list_fields(
+    let star_apart = name == "*" && array::star_stays_apart(env, origin);
+    let fields = array::list_fields(
         env.get_positional(),
-        name == "@",
+        name == "@" || star_apart,
         &env.ifs_separator(),
         origin,
-    )
+    );
+    if star_apart {
+        return crate::expand::join::marked(fields, Origin::Glue);
+    }
+    fields
 }
 
 #[cfg(test)]

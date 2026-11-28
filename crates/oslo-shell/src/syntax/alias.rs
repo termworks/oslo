@@ -26,16 +26,14 @@
 //! Quoted text, comments and here-document bodies are copied through untouched. The heredoc rule
 //! is not a nicety: `config.guess` writes a C program through `<<EOF`, and a body is data.
 
+mod definitions;
 mod scan;
 /// When a verb name outranks an alias of the same name.
 mod verbs;
 use verbs::a_verb_follows;
 
 use oslo_base::nesting::heredoc_delimiters;
-use scan::{
-    Balance, Quote, is_assignment, is_function_definition, is_plain_name, split_words, unquote,
-    word_end,
-};
+use scan::{Balance, Quote, is_assignment, is_function_definition, is_plain_name, word_end};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -64,13 +62,36 @@ enum Case {
     Body,
 }
 
-/// Substitute aliases throughout `source`.
+/// Substitute aliases throughout `source`, as an interactive prompt reads it.
 ///
 /// `lookup` answers what the *environment* knows; definitions the text makes for itself are found
 /// by this scanner and take effect from the line after they appear. `any_defined` says whether the
 /// environment holds any alias at all, which is what makes the early-out below possible.
 pub fn substitute<'a>(
     source: &'a str,
+    any_defined: bool,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Cow<'a, str> {
+    scan(source, true, true, any_defined, lookup)
+}
+
+/// [`substitute`], starting with `expand_aliases` in the state `expanding` says and following the
+/// literal `shopt -s expand_aliases` / `shopt -u expand_aliases` the text runs, from the next line.
+/// A verb outranks an alias only when the shell is interactive.
+pub fn substitute_while<'a>(
+    source: &'a str,
+    expanding: bool,
+    any_defined: bool,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Cow<'a, str> {
+    let verbs_first = crate::exec::pipeline::is_interactive();
+    scan(source, expanding, verbs_first, any_defined, lookup)
+}
+
+fn scan<'a>(
+    source: &'a str,
+    expanding: bool,
+    verbs_first: bool,
     any_defined: bool,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Cow<'a, str> {
@@ -81,7 +102,13 @@ pub fn substitute<'a>(
     if !any_defined && !source.contains("alias") {
         return Cow::Borrowed(source);
     }
+    if !expanding && !source.contains("expand_aliases") {
+        return Cow::Borrowed(source);
+    }
     let mut scanner = Scanner {
+        expanding,
+        verbs_first,
+        partial: None,
         lookup,
         defined: HashMap::new(),
         out: String::with_capacity(source.len()),
@@ -102,6 +129,12 @@ pub fn substitute<'a>(
 }
 
 struct Scanner<'a> {
+    /// Whether `expand_aliases` is on for the line being scanned.
+    expanding: bool,
+    /// Whether a structured verb in a pipeline outranks an alias of the same name.
+    verbs_first: bool,
+    /// The lines of a command whose quoted text has not closed yet, for its definitions.
+    partial: Option<String>,
     lookup: &'a dyn Fn(&str) -> Option<String>,
     /// Aliases the text defines, and the line each was defined on.
     defined: HashMap<String, (usize, String)>,
@@ -164,9 +197,17 @@ impl Scanner<'_> {
                     self.check_next_word = false;
                 }
             }
-            // A line's alias definitions take effect on the next line, never on this one.
+            // A line's alias definitions take effect on the next line, never on this one. A
+            // quoted value that runs on is gathered until its quote closes.
             if self.pending.is_none() {
-                self.record_definitions(line);
+                let mut text = self.partial.take().unwrap_or_default();
+                text.push_str(line);
+                if scan::leaves_quote_open(&text) {
+                    text.push('\n');
+                    self.partial = Some(text);
+                } else {
+                    self.record_definitions(&text);
+                }
             }
             index += 1;
 
@@ -429,8 +470,10 @@ impl Scanner<'_> {
         // the rule the rest of the shell already follows: a bare `df` is the external command, and
         // structure is what you get by piping it somewhere.
         //
-        // So the two readings never overlap, and only a name oslo invented is affected.
-        if oslo_base::vocab::kind_of(word) == Some("verb")
+        // So the two readings never overlap, and only a name oslo invented is affected. Only at an
+        // interactive prompt: a script that turns on `expand_aliases` gets bash's expansion.
+        if self.verbs_first
+            && oslo_base::vocab::kind_of(word) == Some("verb")
             && (self.after_pipe || a_verb_follows(chars, after))
         {
             return false;
@@ -454,6 +497,9 @@ impl Scanner<'_> {
 
     /// The replacement text for `word`, from the script's own definitions or the environment.
     fn body_for(&self, word: &str) -> Option<String> {
+        if !self.expanding {
+            return None;
+        }
         if let Some((defined_on, body)) = self.defined.get(word) {
             // Not on the line that defined it: `alias x=y; x` finds no `x`, in bash either.
             if *defined_on < self.line {
@@ -465,15 +511,17 @@ impl Scanner<'_> {
 
     /// What a word leaves behind: whether the next one still begins a command.
     fn after_word(&mut self, word: &str) {
+        // A reserved word is one only where a command can start: `echo if ll` runs no `ll`.
+        let was_command = self.cmd_pos;
         self.check_next_word = false;
         match word {
-            "case" => self.cases.push(Case::AwaitingIn),
-            "esac" => {
+            "case" if was_command => self.cases.push(Case::AwaitingIn),
+            "esac" if was_command || self.in_case_patterns() => {
                 self.cases.pop();
             }
             // `for x in a b c` and `select x in …` introduce a *word list*, not commands, and it
             // runs until `do`.
-            "for" | "select" => self.word_list = true,
+            "for" | "select" if was_command => self.word_list = true,
             "in" if self.cases.last() == Some(&Case::AwaitingIn) => {
                 *self.cases.last_mut().expect("checked") = Case::Patterns;
             }
@@ -482,9 +530,9 @@ impl Scanner<'_> {
         }
         // A command prefix is not the command: in `LC_ALL=C sort`, `sort` is still the command
         // word, and an alias for it must still be found.
-        self.after_assignment = is_assignment(word);
-        self.cmd_pos =
-            !self.in_word_context() && (INTRODUCERS.contains(&word) || self.after_assignment);
+        self.after_assignment = was_command && is_assignment(word);
+        self.cmd_pos = !self.in_word_context()
+            && ((was_command && INTRODUCERS.contains(&word)) || self.after_assignment);
         // A prefix is not a new stage, so it leaves the pipeline position alone; any other
         // introducer decides it, and only `|` opens a stage with an upstream.
         if self.cmd_pos && !self.after_assignment {
@@ -528,35 +576,6 @@ impl Scanner<'_> {
             self.cases.last(),
             Some(Case::AwaitingIn) | Some(Case::Patterns)
         )
-    }
-
-    /// Record the `alias name=value` definitions a line makes, for use from the next line on.
-    ///
-    /// Only the literal form is recognised. `eval "alias $x=$y"` is beyond a text scan, and
-    /// guessing at it would be worse than not trying: the environment's own table still answers
-    /// for anything defined before this unit was parsed.
-    fn record_definitions(&mut self, line: &str) {
-        let words = split_words(line);
-        let mut rest = words.as_slice();
-        // Definitions can follow `;` or `&&`, so look for `alias` anywhere a command may start.
-        while let Some(position) = rest.iter().position(|w| w == "alias") {
-            rest = &rest[position + 1..];
-            for word in rest {
-                if word == ";" || word == "&&" || word == "||" || word == "|" || word == "&" {
-                    break;
-                }
-                if word.starts_with('-') {
-                    continue;
-                }
-                let Some((name, value)) = word.split_once('=') else {
-                    continue;
-                };
-                if is_plain_name(name) {
-                    self.defined
-                        .insert(name.to_string(), (self.line, unquote(value)));
-                }
-            }
-        }
     }
 }
 

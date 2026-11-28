@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// printed `yes: standard output: Broken pipe` instead of dying quietly on the closed pipe.
 /// SIGHUP and SIGTERM are here for [`catch_fatal_for_exit_trap`]: `exec` would reset a *handled*
 /// signal on its own, but a forked subshell never execs, and one carrying the parent's handler
-/// would record a fatal signal instead of dying of it.
-const RESET_IN_CHILD: [Signal; 8] = [
+/// would record a fatal signal instead of dying of it. SIGSEGV and SIGBUS carry the runtime's
+/// stack-overflow handler, which survives a `kill -SEGV` sent before the child execs.
+const RESET_IN_CHILD: [Signal; 10] = [
     Signal::SIGPIPE,
     Signal::SIGINT,
     Signal::SIGQUIT,
@@ -27,6 +28,8 @@ const RESET_IN_CHILD: [Signal; 8] = [
     Signal::SIGTTOU,
     Signal::SIGHUP,
     Signal::SIGTERM,
+    Signal::SIGSEGV,
+    Signal::SIGBUS,
 ];
 
 /// The signals a `trap '' SIG` has deliberately ignored, one bit per signal number.
@@ -42,6 +45,42 @@ const RESET_IN_CHILD: [Signal; 8] = [
 /// is; bit `n - 1` is signal `n`, the same shape [`super::super::super::env::builtins::process`]
 /// uses for pending signals.
 static IGNORED_ON_PURPOSE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The signals ignored when the shell started, one bit per signal number.
+static IGNORED_AT_ENTRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Note which signals the shell was started with ignored. Called first thing in `main`.
+pub fn note_ignored_at_entry() {
+    let mut bits = 0u64;
+    for signum in 1..=31 {
+        if currently_ignored(signum) {
+            bits |= 1u64 << (signum - 1);
+        }
+    }
+    IGNORED_AT_ENTRY.store(bits, Ordering::SeqCst);
+}
+
+/// Whether `signum` was ignored when the shell started: a non-interactive shell can neither trap
+/// nor reset it, as in bash.
+pub fn ignored_at_entry(signum: i32) -> bool {
+    (1..=64).contains(&signum)
+        && IGNORED_AT_ENTRY.load(Ordering::SeqCst) & (1u64 << (signum - 1)) != 0
+}
+
+/// List the signals ignored at entry as `trap ''` dispositions, and keep them ignored in children.
+pub fn adopt_ignored_at_entry(env: &mut crate::env::Environment) {
+    for signum in 1..=31 {
+        let Ok(signal) = Signal::try_from(signum) else {
+            continue;
+        };
+        if ignored_at_entry(signum)
+            && let Some(name) = signal.as_str().strip_prefix("SIG")
+        {
+            env.set_trap(name, "");
+            note_deliberate_ignore(signum, true);
+        }
+    }
+}
 
 /// Record whether `signum` is ignored because a trap said so. Called by the `trap` builtin.
 pub fn note_deliberate_ignore(signum: i32, deliberate: bool) {
@@ -163,6 +202,37 @@ pub fn fatal_signal_pending() -> Option<i32> {
         0 => None,
         signum => Some(signum),
     }
+}
+
+/// End this process by `signum` at its default action; returns only if that did not kill it.
+pub fn die_of(signum: i32) {
+    let Ok(signal) = Signal::try_from(signum) else {
+        return;
+    };
+    let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+    let mut only = SigSet::empty();
+    only.add(signal);
+    unsafe {
+        let _ = signal::sigaction(signal, &dfl);
+    }
+    let _ = signal::sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&only), None);
+    let _ = signal::raise(signal);
+}
+
+/// Set when a foreground wait returned with a fatal signal standing.
+static IN_WAIT: AtomicBool = AtomicBool::new(false);
+
+/// Note that a foreground wait has just returned, so a fatal signal standing arrived during it.
+pub fn note_wait_returned() {
+    if FATAL_RECEIVED.load(Ordering::SeqCst) != 0 {
+        IN_WAIT.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether the fatal signal arrived during a foreground wait, whose command's status bash has not
+/// yet made `$?` when it runs the EXIT trap. Cleared as it is taken.
+pub fn fatal_arrived_in_wait() -> bool {
+    IN_WAIT.swap(false, Ordering::SeqCst)
 }
 
 /// Whether a fatal signal is waiting, **without** taking it.

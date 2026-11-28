@@ -87,23 +87,27 @@ pub fn open(
                 let _ = close(theirs);
             }
             env.enter_subshell();
-            let status = status_of(run(env, &ast));
+            env.number_lines_from_here();
+            crate::exec::simple::trace::nest();
+            crate::exec::pipeline::quiet_deaths();
+            use crate::exec::simple::oneshot::{Tail, tail_list_next};
+            tail_list_next(Tail::ProcSub);
+            let status = status_of(crate::exec::pipeline::as_string_program(run(env, &ast)));
             flush_stdout();
             std::process::exit(crate::env::builtins::run_exit_trap(env, status));
         }
         Ok(ForkResult::Parent { child }) => {
             let _ = close(theirs);
-            // **Moved out of the script's own range first.** `pipe()` hands back the lowest free
-            // numbers, which is 3 in a plain shell — and 3..9 belongs to the script: `cat <(echo
-            // hi) 3>/dev/null` had the command's own redirection land on top of the substitution
-            // it was reading, so it silently read nothing. bash allocates from 63 downward for
-            // this reason; here the floor the rest of the shell already respects is enough.
+            // **Moved out of the script's own range first**, to the highest free number below 64
+            // as bash does, so a script sees the same `/dev/fd/63`, then 62.
             let ours = above_the_scripts_range(ours);
             // `/dev/fd/N` is opened by the *program*, which is a different process image after
             // `exec` — so the descriptor has to survive it. Rust opens everything `O_CLOEXEC`,
             // and a pipe from `nix` is no exception, so clearing it is what makes the path
             // resolvable on the other side of the `exec`.
             let _ = fcntl(ours, FcntlArg::F_SETFD(FdFlag::empty()));
+            // bash publishes the substitution's child as `$!`, as for any asynchronous command.
+            env.last_bg_pid = Some(child.as_raw() as u32);
             Ok((format!("/dev/fd/{ours}"), Substitution { fd: ours, child }))
         }
         Err(e) => {
@@ -116,22 +120,53 @@ pub fn open(
     }
 }
 
-/// Move a descriptor above the range a script is entitled to redirect, if it is not already there.
+/// Move a descriptor to the highest free number from 63 down, bash's `move_to_high_fd`.
 ///
-/// The original is closed on success. On failure the original is kept: a substitution on a low
-/// number still works for every command that does not redirect that number, which is a great deal
-/// better than refusing to run.
+/// The original is closed on success. With nothing free above 3 the original is kept: a
+/// substitution on a low number still works for every command that does not redirect it.
 fn above_the_scripts_range(fd: RawFd) -> RawFd {
-    use crate::exec::redirect::SAVE_FD_FLOOR;
-    if fd >= SAVE_FD_FLOOR {
+    let Some(free) = (4..64)
+        .rev()
+        .find(|&n| fcntl(n, FcntlArg::F_GETFD).is_err())
+    else {
+        return fd;
+    };
+    if free == fd {
         return fd;
     }
-    match fcntl(fd, FcntlArg::F_DUPFD(SAVE_FD_FLOOR)) {
+    match nix::unistd::dup2(fd, free) {
         Ok(moved) => {
             let _ = close(fd);
             moved
         }
         Err(_) => fd,
+    }
+}
+
+thread_local! {
+    /// The address of a simple command whose substitutions stay open after it.
+    static KEPT_BY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A top-level command of a `-c`, `eval` or `source` string that stands alone keeps its
+/// substitutions open after it, as bash's string reader does: a later line sees `/dev/fd/62`.
+pub(crate) fn keep_after(simple: &oslo_base::ast::SimpleCommand) {
+    KEPT_BY.with(|kept| kept.set(std::ptr::from_ref(simple) as usize));
+}
+
+/// Whether `simple` is the command [`keep_after`] named.
+pub(crate) fn kept_after(simple: &oslo_base::ast::SimpleCommand) -> bool {
+    let kept = KEPT_BY.with(|kept| kept.get());
+    kept != 0 && kept == std::ptr::from_ref(simple) as usize
+}
+
+/// Close the substitutions opened since `env.procsubs` held `before` of them.
+///
+/// Each command closes only its own, so a loop's `<(…)` words outlive the commands in its body.
+pub fn finish_from(env: &mut Environment, before: usize) {
+    if env.procsubs.len() > before {
+        let mut open = env.procsubs.split_off(before);
+        finish(&mut open);
     }
 }
 
@@ -143,7 +178,7 @@ fn above_the_scripts_range(fd: RawFd) -> RawFd {
 ///
 /// Reaping never blocks: a substitution's child is asynchronous, and `exec 8< <(gen)` keeps one
 /// running on purpose. See the `UNREAPED` list above.
-pub fn finish(open: &mut Vec<Substitution>) {
+fn finish(open: &mut Vec<Substitution>) {
     for sub in open.iter() {
         let _ = close(sub.fd);
     }

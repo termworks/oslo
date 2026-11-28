@@ -11,17 +11,26 @@
 mod assign;
 mod autocd;
 pub(crate) mod autoload;
+mod call;
 mod declare;
 /// `\command` and `\\command`, which decide how much of the shell a name skips past.
 mod escape;
 mod external;
+/// bash's unforked last command of a `-c` program.
+pub(crate) mod oneshot;
 mod posix;
-mod trace;
+/// The assignments in front of a command word.
+mod prefix;
+pub(crate) mod trace;
 
 pub use autocd::set_autocd;
 
+/// The `-c` program about to run is the shell's last, so its final command is not forked.
+pub fn program_ends_the_shell() {
+    oneshot::tail_list_next(oneshot::Tail::Program);
+}
+
 use crate::env::Environment;
-use crate::exec::pipeline::eval_command;
 use crate::exec::redirect::RedirectGuard;
 use crate::exec::simple::declare::{is_declaration_builtin, looks_like_an_assignment};
 use crate::exec::simple::external::{Lookup, look_up_command, run_external};
@@ -32,12 +41,19 @@ pub(crate) fn eval_simple_command(env: &mut Environment, simple: &SimpleCommand)
     // Any `<(cmd)` in this command's words opens a pipe during expansion; it has to stay open
     // until the command has run and be closed afterwards, whichever way the command ends. The
     // wrapper is what guarantees the second half on the error paths too.
+    let opened_before = env.procsubs.len();
+    oneshot::begin(simple);
+    crate::env::scope::take_integer_failure();
     let result = eval_simple_command_inner(env, simple);
-    if !env.procsubs.is_empty() {
-        let mut open = std::mem::take(&mut env.procsubs);
-        crate::exec::procsub::finish(&mut open);
+    oneshot::end();
+    if !crate::exec::procsub::kept_after(simple) {
+        crate::exec::procsub::finish_from(env, opened_before);
     }
-    result
+    // An integer variable's value that did not evaluate abandons the command it was assigned in.
+    match crate::env::scope::take_integer_failure() {
+        Some(failure) => Err(failure),
+        None => result,
+    }
 }
 
 fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> Result<i32> {
@@ -45,25 +61,39 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     // where the trap body can run ordinary shell code. See `run_pending_traps`.
     crate::env::builtins::run_pending_traps(env)?;
 
-    // Before expansion, as bash fires it: a hook that times a command has to start counting
-    // before the work, not after.
+    // `$BASH_COMMAND` names the command before the DEBUG trap fires for it, and stays put while
+    // a trap runs.
+    if !crate::env::builtins::in_trap() {
+        env.set_bash_command(crate::env::builtins::control::format_simple(simple));
+    }
     crate::env::builtins::run_debug_trap(env);
 
     if simple.words.is_empty() {
         return apply_assignments_only(env, simple);
     }
+    // A command whose words all expand away reports its last substitution's status: `$(exit 3)`.
+    env.take_substitution_status();
 
     // The command name decides how the rest of the words expand, so it is expanded first: a
     // declaration builtin's `name=value` operands are assignments and must not be field-split or
     // globbed. See `declare` for what that cost when they were.
     let mut words = Vec::new();
-    let mut rest = simple.words.iter();
+    let mut keyword_assignments = Vec::new();
+    // `set +B` runs the words as they were written, braces and all.
+    let written = match &simple.unbraced {
+        Some(unbraced) if !env.braceexpand() => unbraced,
+        _ => &simple.words,
+    };
+    let mut rest = written.iter();
     // Read from the word's *shape*, before expansion turns it into a string and the backslash
     // stops being visible. See `escape`, which is also where the interactive gate lives.
     let mut escape = escape::Escape::None;
     let mut backslashes = 0;
+    // A lowered `[[ … ]]`, whose operands are never split: each is one string.
+    let mut testing = false;
     if let Some(first) = rest.next() {
         (escape, backslashes) = escape::intent(first, env.interactive());
+        testing = matches!(first.parts.as_slice(), [WordPart::Literal(w)] if w == "[[");
         words.extend(crate::expand::expand_command_word(env, first)?);
     }
 
@@ -73,16 +103,43 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
             words.extend(expand_word(env, w)?);
         }
         if words.is_empty() {
-            return apply_assignments_only(env, simple);
+            let expanded = env.take_substitution_status();
+            let status = apply_assignments_only(env, simple)?;
+            let assigned = env.take_substitution_status();
+            return Ok(match status {
+                0 => assigned.or(expanded).unwrap_or(0),
+                failed => failed,
+            });
         }
     } else {
         let declaring = is_declaration_builtin(words[0].trim());
+        // `set -k`: an assignment anywhere among the arguments belongs to the command's environment.
+        let keyword = env.option(crate::env::options::ShellOption::Keyword);
+        // For a declaration builtin, which of its words were written `name=(…)`.
+        let mut shapes = vec![false; words.len()];
         for w in rest {
-            if declaring && looks_like_an_assignment(w) {
+            shapes.resize(words.len(), false);
+            if testing {
+                words.push(crate::expand::word::expand_word_to_test_string(env, w)?);
+            } else if declaring && looks_like_an_assignment(w) {
+                let compound = declare::written_as_compound(w);
+                if compound {
+                    declare::refuse_unkeyed(env, &words, w)?;
+                }
+                shapes.push(compound);
                 words.push(crate::expand::expand_word_to_string(env, w)?);
+            } else if keyword && looks_like_an_assignment(w) {
+                let text = crate::expand::expand_word_to_string(env, w)?;
+                if let Some((name, value)) = text.split_once('=') {
+                    keyword_assignments.push((name.to_string(), value.to_string()));
+                }
             } else {
                 words.extend(expand_word(env, w)?);
             }
+        }
+        if declaring {
+            shapes.resize(words.len(), false);
+            crate::env::builtins::declare::note_written(shapes);
         }
     }
 
@@ -97,65 +154,23 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     let cmd_name = words[0].trim()[backslashes..].to_string();
     words[0] = cmd_name.clone();
 
-    let is_declaration = is_declaration_builtin(&cmd_name);
-
-    // A prefix assignment on a *declaration* builtin is really that builtin's argument:
-    // `export FOO=bar` must reach `export`, not be applied behind its back.
-    let mut prefix_assignments = Vec::new();
-    for assign in &simple.assignments {
-        // A prefix assignment lasts exactly as long as the command, and oslo undoes it by
-        // restoring a *scalar* from the scope frame. `a=(1 2) cmd` and `a[1]=x cmd` have no such
-        // undo, so they are refused rather than left behind after the command finishes.
-        let (AssignmentTarget::Name(name), AssignmentValue::Scalar(value)) =
-            (&assign.target, &assign.value)
-        else {
-            return Err(ShellError::SyntaxError(format!(
-                "{}: an array assignment cannot be a command prefix",
-                assign.name()
-            )));
-        };
-        let val_str = expand_word_to_string(env, value)?;
-        if is_declaration {
-            words.push(format!("{}={}", name, val_str));
-        } else {
-            prefix_assignments.push((name.clone(), val_str));
-        }
-    }
-
-    trace::trace_command(env, &prefix_assignments, &words);
-
-    // `FOO=bar cmd` exports FOO for the duration of `cmd` only.
-    //
-    // The scope is pushed only when there is something to put in it. Pushing unconditionally
-    // would give `local` a throwaway frame to write into, so `local V=x` would be undone the
-    // moment the command finished.
-    if prefix_assignments.is_empty() {
+    // `FOO=bar cmd` exports FOO for the duration of `cmd` only. The scope is pushed only when there
+    // is something to put in it, or `local V=x` would write into a throwaway frame.
+    if simple.assignments.is_empty() && keyword_assignments.is_empty() {
+        trace::trace_command(env, &[], &words);
         let result = run_command_word(env, &cmd_name, &words, &simple.redirections, escape);
-        remember_last_argument(env, &words);
+        // A `[[ … ]]` leaves `$_` as it was.
+        if !testing {
+            remember_last_argument(env, &words);
+        }
         return result;
     }
-
-    // **A here-document is expanded without the prefix assignments in scope**, which is what bash
-    // and dash both do:
-    //
-    // ```text
-    // x=1 cat <<EOF     bash, dash: []
-    // [$x]              oslo, before this: [1]
-    // EOF
-    // ```
-    //
-    // The body used to be expanded down in `redirect::apply`, which runs after the scope below is
-    // pushed — so the document saw a variable that belongs to the command's environment and not to
-    // the shell's. Expanded here instead, and carried down as a literal: the parser already uses
-    // that shape for a quoted delimiter, so nothing expands it a second time.
-    let redirections = heredocs_expanded(env, &simple.redirections)?;
-
-    env.push_scope();
-    for (name, value) in &prefix_assignments {
-        env.set_local_exported_var(name, value);
-    }
-    let result = run_command_word(env, &cmd_name, &words, &redirections, escape);
-    env.pop_scope();
+    let command = prefix::Command {
+        name: &cmd_name,
+        words: &words,
+        escape,
+    };
+    let result = prefix::run(env, simple, keyword_assignments, command);
     remember_last_argument(env, &words);
     result
 }
@@ -199,7 +214,10 @@ fn heredocs_expanded(
             RedirectKind::Heredoc | RedirectKind::HeredocStrip
         ) && let Some(word) = &redir.heredoc_content
         {
-            let text = expand_word_to_string(env, word)?;
+            let text = match redir.here_string {
+                true => expand_word_to_string(env, word)?,
+                false => crate::expand::join::expand_heredoc_to_string(env, word)?,
+            };
             redir.heredoc_content = Some(Word::from_literal(&text));
         }
         out.push(redir);
@@ -215,25 +233,20 @@ fn heredocs_expanded(
 /// traces it.
 ///
 /// An assignment that the environment *refused* — a read-only name, or one `environ` cannot hold
-/// — is a failed command. This used to answer `Ok(0)` regardless: `set_var` printed
-/// `r: is read only`, returned `false`, and the `false` was dropped on the floor, so `r=2; echo
-/// $?` said the assignment had worked (PLAN C3).
+/// — abandons the rest of the top-level command, as bash does; see `posix::assignment_failure`.
 fn apply_assignments_only(env: &mut Environment, simple: &SimpleCommand) -> Result<i32> {
-    let mut assignments = Vec::with_capacity(simple.assignments.len());
     let mut refused: Option<String> = None;
     for assign in &simple.assignments {
         // Applied before the next one is expanded, not batched at the end: POSIX 2.9.1 evaluates
         // assignments left to right and makes each visible to the next, so `a=1 b=${a}2` sets
         // `b` to `12`. What each shape means is `assign`'s business.
+        // Each is traced as it is made, as bash does; see `assign`.
         let outcome = assign::apply_assignment(env, assign)?;
         if !outcome.assigned && refused.is_none() {
             refused = Some(assign.name().to_string());
         }
-        assignments.push((assign.name().to_string(), outcome.trace));
     }
-    // Traced first: `set -x` shows what the shell tried to do, and the refusal is on stderr
-    // beside it. The first name to fail is the one reported, as bash reports the first.
-    trace::trace_command(env, &assignments, &[]);
+    // The first name to fail is the one reported, as bash reports the first.
     if let Some(name) = refused {
         return posix::assignment_failure(env, &name);
     }
@@ -306,7 +319,13 @@ fn run_command_word(
     }
 
     if let Some(func_body) = env.shared_function(name) {
-        return call_function_command(env, &func_body, words, redirections);
+        let declared = match is_declaration_builtin(name) {
+            true => declare::compounds_before_a_function(env, words),
+            false => None,
+        };
+        crate::env::builtins::declare::forget_written();
+        let words = declared.as_deref().unwrap_or(words);
+        return call::call_function_command(env, &func_body, words, redirections);
     }
 
     if !escape.skips_builtin() && env.is_builtin(name) {
@@ -341,55 +360,6 @@ fn run_builtin(
     }
     let result = execute_builtin(env, name, words);
     posix::resolve_builtin_result(env, name, result)
-}
-
-/// Call the function registered under `name`.
-///
-/// Looking it up here rather than taking a body keeps [`autoload`] from having to know how a
-/// function is stored — it loads a file and asks for the name back.
-pub(super) fn call_named_function(
-    env: &mut Environment,
-    name: &str,
-    words: &[String],
-    redirections: &[Redirection],
-) -> Result<i32> {
-    let Some(body) = env.shared_function(name) else {
-        return Ok(127);
-    };
-    call_function_command(env, &body, words, redirections)
-}
-
-/// Call a shell function, absorbing the control flow that must not escape it.
-fn call_function_command(
-    env: &mut Environment,
-    body: &Command,
-    words: &[String],
-    redirections: &[Redirection],
-) -> Result<i32> {
-    // Checked before anything is set up, so a refused call has nothing to unwind. `f() { f; }`
-    // recurses through the whole evaluator; without this the stack overflows and Rust aborts
-    // the process outright, status 134 and a core dump.
-    // **Named**, because the name is the whole point of recording the frame. `enter_function`
-    // records `NULL`, which is what `caller` printed as the source of every frame and what
-    // `status current-function` would answer for a function that plainly has a name. The API to
-    // do this right already existed; nothing called it outside its own tests.
-    env.enter_function_named(words.first().map_or("", String::as_str))?;
-    let res = call_function(env, body, words, redirections);
-    env.exit_function();
-
-    // **A call is judged on its own, whatever the body did.** The `set -e` exemption a compound
-    // inherits from its last command stops at the function boundary: `set -e; f() { false && :; };
-    // f` ends the shell in bash and dash even though the same `false && :` written inline inside
-    // an `if` does not. The body's status crosses the boundary; its exemption does not.
-    crate::exec::pipeline::clear_status_exempt();
-
-    // `return` unwinds to here and becomes the function's exit status. `break`/`continue`
-    // are also absorbed: they must not escape into a loop in the caller.
-    match res {
-        Err(ShellError::Return(code)) => Ok(code),
-        Err(ShellError::Break(_)) | Err(ShellError::Continue(_)) => Ok(0),
-        other => other,
-    }
 }
 
 /// Run an external program, or explain why the word does not name one.
@@ -449,31 +419,6 @@ fn run_program(
 /// The end of the command search, and how it is reported.
 mod notfound;
 use notfound::{nothing_to_run, report_unrunnable};
-
-/// Run a shell function body with its own positional parameters and variable scope.
-///
-/// Split out from [`run_command_word`] so the call-depth counter can be entered and exited around
-/// exactly one expression: a redirection failure here still has to leave the depth balanced.
-fn call_function(
-    env: &mut Environment,
-    body: &Command,
-    words: &[String],
-    redirections: &[Redirection],
-) -> Result<i32> {
-    let mut guard = RedirectGuard::new();
-    if let Err(e) = guard.apply(env, redirections) {
-        // The body does not run at all: `f < /nonexistent` is a failed command, not a call whose
-        // stdin happens to be the shell's.
-        return Ok(report_redirect_failure(&env.origin(), &e));
-    }
-
-    let old_pos = env.swap_positional(words[1..].to_vec());
-    env.push_scope();
-    let res = eval_command(env, body);
-    env.pop_scope();
-    env.set_positional(old_pos);
-    res
-}
 
 /// Report a redirection failure and hand back the status the failed command takes on.
 ///

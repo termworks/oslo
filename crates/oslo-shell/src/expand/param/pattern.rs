@@ -116,8 +116,10 @@ impl Replacement {
     /// Read the runs of an expanded replacement word into a template.
     pub fn from_runs(runs: &[Run]) -> Replacement {
         let mut pieces = Vec::new();
+        // `shopt -u patsub_replacement` makes every `&` literal.
+        let splices = crate::env::builtins::shopt::on("patsub_replacement");
         for run in runs {
-            if run.origin == Origin::Quoted {
+            if run.origin == Origin::Quoted || !splices {
                 push_text(&mut pieces, &run.text);
                 continue;
             }
@@ -274,29 +276,6 @@ pub fn substring(value: &str, offset: i64, length: Option<i64>) -> Result<String
         .collect())
 }
 
-/// `${v^pat}` / `${v,,pat}` — convert the characters matching `pattern` (all of them when it is
-/// `None`), either just the first or every one.
-pub fn convert_case(value: &str, pattern: Option<&ShellPattern>, upper: bool, all: bool) -> String {
-    let mut out = String::new();
-    for (index, ch) in value.chars().enumerate() {
-        let selected = match pattern {
-            None => true,
-            Some(p) => p.matches(&ch.to_string()),
-        };
-        // The single-character forms examine the first character and no other, so
-        // `v=hello; ${v^l}` leaves the value alone: `h` is not what the pattern named.
-        let eligible = selected && (all || index == 0);
-        if eligible && upper {
-            out.extend(ch.to_uppercase());
-        } else if eligible {
-            out.extend(ch.to_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,21 +389,6 @@ mod tests {
     fn substring_counts_characters() {
         assert_eq!(substring("héllo", 1, Some(2)), Ok("él".into()));
         assert_eq!(remove_prefix("héllo", &pat("h?"), false), "llo");
-    }
-
-    #[test]
-    fn case_conversion_respects_the_doubled_form() {
-        assert_eq!(convert_case("hello", None, true, true), "HELLO");
-        assert_eq!(convert_case("hello", None, true, false), "Hello");
-        assert_eq!(convert_case("WORLD", None, false, true), "world");
-        assert_eq!(convert_case("WORLD", None, false, false), "wORLD");
-        assert_eq!(convert_case("hello", Some(&pat("l")), true, true), "heLLo");
-        // `${v^l}`: only the first character is a candidate, and it is not an `l`.
-        assert_eq!(convert_case("hello", Some(&pat("l")), true, false), "hello");
-        assert_eq!(
-            convert_case("hello", Some(&pat("[el]")), true, true),
-            "hELLo"
-        );
     }
 }
 

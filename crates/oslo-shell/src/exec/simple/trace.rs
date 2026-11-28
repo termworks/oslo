@@ -1,80 +1,151 @@
 //! `set -x`: the execution trace.
 //!
-//! One line per simple command, on stderr, after expansion and before the command runs. The
-//! "after expansion" half is the whole value of the option: a trace of the *source* text would
-//! show `cp $src $dst`, which is exactly the two words whose values the reader is trying to find
-//! out. oslo prints what the command is actually about to receive.
-//!
-//! stderr, never stdout: the trace has to stay out of `$(…)` and out of a redirected `> out`, or
-//! turning the option on changes the script's own output.
+//! One line per traced step, on stderr, after expansion and before the step runs, in bash's
+//! format: the expanded `$PS4` with its first character repeated once per level of `eval`,
+//! `source`, trap or command substitution, then the words quoted the way bash quotes them.
+//! Each line is written with one `write(2)`, so concurrent pipeline stages cannot tear it.
 
 use crate::env::Environment;
+use crate::env::options::ShellOption;
+use std::io::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Emit the trace line for a command, if `set -x` is on.
+mod declared;
+mod quote;
+#[cfg(test)]
+mod tests;
+
+pub(crate) use declared::{flush as flush_deferred, trace_list};
+pub use quote::{assignment_text, list_assignment_text, quote_word};
+
+/// How many levels of `eval`, `source`, trap or command substitution enclose the command.
+static LEVEL: AtomicUsize = AtomicUsize::new(0);
+
+/// One more trace level for as long as the value lives.
+pub struct Nested(());
+
+impl Nested {
+    pub fn enter() -> Self {
+        LEVEL.fetch_add(1, Ordering::Relaxed);
+        Nested(())
+    }
+}
+
+impl Drop for Nested {
+    fn drop(&mut self) {
+        LEVEL.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// One more trace level for the rest of this process: a command substitution's child.
+pub fn nest() {
+    LEVEL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Whether a trace line should be written now.
+fn tracing(env: &Environment) -> bool {
+    // A vetoed command is not traced: the trace prints every expanded argument.
+    env.xtrace() && !oslo_base::quiet::active()
+}
+
+/// Trace a simple command: each assignment on its own line, then the words.
 ///
-/// `assignments` are the `NAME=value` prefixes in the order they were written, already expanded;
-/// `words` is the expanded argument vector. Either may be empty — `x=1` on its own is traced with
-/// no words, and a plain `echo hi` with no assignments.
-pub fn trace_command(env: &Environment, assignments: &[(String, String)], words: &[String]) {
-    // **A vetoed command is not traced.** `set -x` prints every expanded argument, which is the one
-    // place a credential reaches the terminal from *inside* execution rather than from the loop that
-    // decided to hide the line.
-    if !env.xtrace() || oslo_base::quiet::active() {
+/// `assignments` are already rendered by [`assignment_text`]. `export` and `readonly` trace each
+/// `NAME=value` operand as an assignment too, as bash does.
+pub fn trace_command(env: &mut Environment, assignments: &[String], words: &[String]) {
+    if !tracing(env) {
         return;
     }
-    let fields = assignments
-        .iter()
-        .map(|(name, value)| format!("{}={}", name, quote_for_trace(value)))
-        .chain(words.iter().map(|word| quote_for_trace(word)));
-    eprintln!("{}{}", ps4(env), fields.collect::<Vec<_>>().join(" "));
+    for assignment in assignments {
+        trace_line(env, assignment);
+    }
+    let Some(name) = words.first() else {
+        return;
+    };
+    if name == "[[" {
+        let body = quote::conditional_text(&words[1..]);
+        trace_line(env, &body);
+        return;
+    }
+    // A declaration builtin given `name=(…)` traces each list first; see `declared`.
+    let shapes = crate::env::builtins::declare::written_shapes();
+    let reduced = shapes.and_then(|shapes| declared::reduced(words, &shapes));
+    let words = reduced.as_deref().unwrap_or(words);
+    let body: Vec<String> = words.iter().map(|word| quote_word(word)).collect();
+    let mut lines = vec![body.join(" ")];
+    if matches!(name.as_str(), "export" | "readonly") {
+        for operand in &words[1..] {
+            if let Some((lhs, value)) = operand.split_once('=')
+                && crate::env::scope::is_valid_identifier(lhs)
+            {
+                lines.push(assignment_text(lhs, false, value));
+            }
+        }
+    }
+    if reduced.is_some() {
+        return declared::defer(lines);
+    }
+    for line in lines {
+        trace_line(env, &line);
+    }
 }
 
-/// The trace prefix: `$PS4`, or `+ ` when it is unset.
-///
-/// Taken literally rather than re-expanded. bash expands PS4 on every trace line, which is how
-/// `PS4='+ $LINENO '` works; oslo has no `LINENO` yet, and expanding here would mean running
-/// command substitutions from inside the tracer — with the tracer's own `set -x` still on.
-fn ps4(env: &Environment) -> String {
-    env.get_var("PS4").unwrap_or("+ ").to_string()
+/// Trace one assignment that has just been made.
+pub fn trace_assignment(env: &mut Environment, text: &str) {
+    if tracing(env) {
+        trace_line(env, text);
+    }
 }
 
-/// Quote a word the way the trace has to, so the line says how many arguments there were.
-///
-/// An empty argument and an argument containing a space are both invisible in a bare
-/// space-joined line — `cmd '' x` and `cmd x` would trace identically — and that ambiguity is
-/// precisely what someone reading a trace is trying to resolve.
-fn quote_for_trace(word: &str) -> String {
-    let plain = !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_alphanumeric() || "_-.,:/=+@%^".contains(c));
-    if plain {
-        return word.to_owned();
+/// Trace `(( expr ))`, with the expression as it was expanded.
+pub fn trace_arithmetic(env: &mut Environment, expanded: &str) {
+    if tracing(env) {
+        trace_line(env, &format!("(( {expanded} ))"));
     }
-    // Single quotes protect everything but a single quote itself, which is spliced in the only
-    // way the shell can: close, escape, reopen.
-    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ps4, quote_for_trace};
-    use crate::env::Environment;
-
-    #[test]
-    fn ps4_defaults_to_a_plus_and_a_space() {
-        let mut env = Environment::new();
-        assert_eq!(ps4(&env), "+ ");
-        env.set_var("PS4", "## ", false);
-        assert_eq!(ps4(&env), "## ");
+/// Trace a compound command's header — `for x in …`, `case w in`, `select x in …` — whose
+/// text is printed as it was written.
+pub fn trace_header(env: &mut Environment, text: &str) {
+    if tracing(env) {
+        trace_line(env, text);
     }
+}
 
-    #[test]
-    fn a_word_is_quoted_only_when_the_line_would_otherwise_lie() {
-        assert_eq!(quote_for_trace("echo"), "echo");
-        assert_eq!(quote_for_trace("/usr/bin/env"), "/usr/bin/env");
-        assert_eq!(quote_for_trace(""), "''");
-        assert_eq!(quote_for_trace("a b"), "'a b'");
-        assert_eq!(quote_for_trace("it's"), r"'it'\''s'");
+/// Write `$PS4` and `body` as one line.
+fn trace_line(env: &mut Environment, body: &str) {
+    let mut line = prefix(env);
+    line.push_str(body);
+    line.push('\n');
+    let _ = std::io::stderr().write_all(&oslo_base::lossless::restore_bytes(line.as_bytes()));
+}
+
+/// The trace prefix: `$PS4` expanded, its first character repeated once per level.
+fn prefix(env: &mut Environment) -> String {
+    let Some(ps4) = env.get_var("PS4").map(str::to_string) else {
+        return String::new();
+    };
+    let expanded = expand_ps4(env, &ps4);
+    let mut chars = expanded.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let levels = 1 + LEVEL.load(Ordering::Relaxed);
+    let mut out: String = std::iter::repeat_n(first, levels).collect();
+    out.push_str(chars.as_str());
+    out
+}
+
+/// Expand `$PS4` as a prompt string — its backslash escapes, then its expansions — with the
+/// trace off so its own substitutions are not traced.
+fn expand_ps4(env: &mut Environment, ps4: &str) -> String {
+    if !ps4.contains(['$', '`', '\\']) {
+        return ps4.to_string();
     }
+    let status = env.last_status;
+    env.set_option(ShellOption::XTrace, false);
+    let expanded = crate::expand::prompt::expand_ps4(env, ps4);
+    env.set_option(ShellOption::XTrace, true);
+    env.last_status = status;
+    expanded.unwrap_or_else(|_| ps4.to_string())
 }

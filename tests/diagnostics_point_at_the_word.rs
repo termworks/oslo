@@ -91,6 +91,10 @@ const KEPT: &[(&str, &str)] = &[
     ("mapfile: read error: {}", "an errno"),
     ("{name}: write error: {}", "an errno on a descriptor"),
     (
+        "{name}: filename argument required",
+        "the name is the builtin's own, and the missing operand has no word to point at",
+    ),
+    (
         "from {format}: {e}",
         "the parser's message; the format is already named in it",
     ),
@@ -110,22 +114,19 @@ const KEPT: &[(&str, &str)] = &[
         "nav: {program}: {error}",
         "the program is one oslo chose to run, not one you typed",
     ),
+    (
+        "TIMEFORMAT: `{bad}': invalid format character",
+        "a character of a variable's value, read where no command line is in hand",
+    ),
+    (
+        "{pid} {name:<27}{core}{text}",
+        "bash's job report for a command a signal killed, not a diagnostic about a word",
+    ),
+    (
+        "{}: {why}",
+        "an errno from `execve`, printed in the child that tried it",
+    ),
     // ── A value already consumed, or a function with neither the word nor a line to put it in.
-    (
-        "printf: {}: invalid number",
-        "`Spec::render` is handed one argument and no argv — the words are three frames up, and \
-         threading them through a formatter called once per conversion is a lot of signature for \
-         a caret under the only word in the message",
-    ),
-    (
-        "printf: {value}: invalid number",
-        "the same function, the same reason",
-    ),
-    (
-        "printf: {width}: width is too large",
-        "the same formatter and the same reason — the padding guard sits inside the conversion, \
-         which is handed a width and no argv",
-    ),
     (
         "getopts: {} -- {}",
         "the message is `getopts`'s own OPTERR text, not a word of the command",
@@ -156,11 +157,6 @@ const KEPT: &[(&str, &str)] = &[
         "an errno from `getcwd`",
     ),
     (
-        "printf: `%{}': invalid format character",
-        "`Spec::render` has the conversion character and not the format string it came from; the
-         sibling `missing format character`, which does have it, points into the format",
-    ),
-    (
         "mark: {here} has no name to mark it by; `mark NAME` chooses one",
         "`here` is $PWD, which nobody typed on this line",
     ),
@@ -168,6 +164,50 @@ const KEPT: &[(&str, &str)] = &[
         "{}: registered builtin could not be resolved",
         "an internal inconsistency — a builtin dispatched under a name it is not registered as;
          there is no user word involved at all",
+    ),
+    (
+        "error importing function definition for `{name}'",
+        "an environment entry read at startup, before there is any command line to point into",
+    ),
+    (
+        "`{target}': invalid variable name for name reference",
+        "raised inside an assignment through a nameref, which reaches the store with no words",
+    ),
+    (
+        "{name}: readonly function",
+        "a function definition reaches the evaluator as a tree, with no source words to point at",
+    ),
+    (
+        "{message}",
+        "the array layer's own message about a subscript, already naming the element",
+    ),
+    (
+        "{name}: bad array subscript",
+        "raised during expansion, which holds the parameter but not the command line",
+    ),
+    (
+        "{name}[]: bad array subscript",
+        "the same expansion, for an empty key",
+    ),
+    (
+        "fc: {message}",
+        "fc's conditions — a history range, a missing command, a temporary file's errno",
+    ),
+    (
+        "[[: {error}",
+        "the arithmetic evaluator's message about the whole expression",
+    ),
+    (
+        "ulimit: {}: cannot get limit",
+        "a resource's label from the limit table, not a word the script wrote",
+    ),
+    (
+        "ulimit: {}: cannot modify limit: {}",
+        "the same label, and an errno",
+    ),
+    (
+        "`{target}': not a valid identifier",
+        "a prefix assignment, which is not among the command's words",
     ),
 ];
 

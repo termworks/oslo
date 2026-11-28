@@ -46,8 +46,61 @@ pub fn report_error_status(err: ShellError) -> i32 {
     if let Some(status) = err.control_flow_status() {
         return status;
     }
+    if matches!(err, ShellError::Abandoned) {
+        return 1;
+    }
     eprintln!("oslo: {}", err);
     err.failure_status()
+}
+
+thread_local! {
+    /// The last child reaped because a signal killed it: its pid, the signal, and a core dump.
+    static DEATH: std::cell::Cell<Option<(Pid, i32, bool)>> = const { std::cell::Cell::new(None) };
+    /// Set in a command substitution and in a pipeline stage before the last, which report no
+    /// deaths, as bash's do not.
+    static QUIET_DEATHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Report no signal deaths from this process on.
+pub(crate) fn quiet_deaths() {
+    QUIET_DEATHS.with(|q| q.set(true));
+}
+
+/// Record that `pid` died of `signal`, for [`announce_death`].
+pub(crate) fn note_death(pid: Pid, signal: i32, core: bool) {
+    DEATH.with(|d| d.set(Some((pid, signal, core))));
+}
+
+/// Forget any death recorded so far, before waiting on a command that may report one.
+pub(crate) fn forget_death() {
+    DEATH.with(|d| d.set(None));
+}
+
+/// Say on stderr that a foreground command was killed by a signal, as a non-interactive bash
+/// does: `Killed`, `Segmentation fault (core dumped)` and the rest, but not SIGINT or SIGPIPE.
+///
+/// Only `of`, when it is given: a pipeline reports the death of its last stage alone.
+pub(crate) fn announce_death(env: &Environment, of: Option<Pid>, command: impl FnOnce() -> String) {
+    let Some((pid, signal, core)) = DEATH.with(|d| d.take()) else {
+        return;
+    };
+    let quiet = QUIET_DEATHS.with(std::cell::Cell::get) || is_interactive() || env.posix();
+    if quiet || signal == nix::libc::SIGINT || signal == nix::libc::SIGPIPE {
+        return;
+    }
+    if of.is_some_and(|wanted| wanted != pid) {
+        return;
+    }
+    // SAFETY: `strsignal` returns a pointer to a static string, read before anything else runs.
+    let name = unsafe { std::ffi::CStr::from_ptr(nix::libc::strsignal(signal)) };
+    let name = name.to_string_lossy();
+    let core = if core { "(core dumped) " } else { "" };
+    let text = command();
+    if signal == nix::libc::SIGTERM {
+        eprintln!("{name:<27}{core}{text}");
+    } else {
+        eprintln!("{}{pid} {name:<27}{core}{text}", env.origin());
+    }
 }
 
 /// Reap `pid` and turn its wait status into the number a shell reports for it.
@@ -75,9 +128,14 @@ pub fn wait_for_status(pid: Pid) -> i32 {
 /// a killed one is simply over.
 pub(crate) fn wait_for_child(pid: Pid) -> (i32, bool) {
     loop {
-        return match waitpid(pid, Some(WaitPidFlag::WUNTRACED)) {
+        let waited = waitpid(pid, Some(WaitPidFlag::WUNTRACED));
+        crate::exec::job::note_wait_returned();
+        return match waited {
             Ok(WaitStatus::Exited(_, code)) => (code, false),
-            Ok(WaitStatus::Signaled(_, sig, _)) => (128 + sig as i32, false),
+            Ok(WaitStatus::Signaled(_, sig, core)) => {
+                note_death(pid, sig as i32, core);
+                (128 + sig as i32, false)
+            }
             Ok(WaitStatus::Stopped(_, sig)) => (128 + sig as i32, true),
             Ok(WaitStatus::StillAlive) => continue,
             // A SIGTERM or SIGHUP with an EXIT trap set ends the *wait*, not just this call: the

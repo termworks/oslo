@@ -14,9 +14,11 @@ use oslo_base::error::Result;
 
 /// `times` — print the shell's and its children's CPU time.
 pub fn builtin_times(_env: &mut Environment, args: &[String]) -> Result<i32> {
-    // `times` takes nothing at all, so anything given to it is a mistake worth naming rather than
-    // discarding — a discarded `-p` is a script asking for a format it will not get.
-    if let Some(extra) = args.get(1) {
+    // `times` takes no options, so an option given to it is named; an operand is ignored, as in bash.
+    if let Some(extra) = args
+        .get(1)
+        .filter(|arg| arg.len() > 1 && arg.starts_with('-') && *arg != "--")
+    {
         crate::env::complain_with_usage(
             args,
             extra,

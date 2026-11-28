@@ -2,26 +2,18 @@
 
 mod cli;
 mod handoff;
+mod program;
+mod stream;
 
-// Startup, the Lua API and history expansion all live at the top of the stack now, in
-// `oslo-runtime`. History expansion in particular must stay reachable only from the interactive
-// prompt — it rewrites a line before it is parsed, so a `-c` or a script able to reach it would let
-// data turn into a different command — and being above everything the shell can be driven through
-// is what makes that impossible rather than merely unlikely.
-use oslo_runtime::absorb_loop_control;
+// Startup, the Lua API and history expansion all live at the top of the stack, in `oslo-runtime`.
+// History expansion must stay reachable only from the interactive prompt.
 use oslo_runtime::startup;
 
-use cli::{Action, Invocation};
+use cli::Action;
 use handoff::{block_every_signal, inherited_stack_limit, restore_signal_mask};
-use oslo::env::Environment;
-use oslo::env::builtins::run_exit_trap;
-use oslo::env::options::ShellOption;
-use oslo::error::ShellError;
-use oslo::exec::eval_command_list;
-use oslo::parser::parse_with_aliases;
+use program::run_program;
 use startup::language::{self, Language};
 use std::env;
-use std::fs;
 use std::io::Read;
 
 /// Undo the Rust runtime's `SIG_IGN` for SIGPIPE, which a shell must not have.
@@ -82,6 +74,8 @@ fn main() {
     oslo::version::install(env!("CARGO_PKG_VERSION"));
     // Before any thread exists, as the safety note on the function requires.
     restore_default_sigpipe();
+    // Before the shell changes any disposition of its own.
+    oslo::exec::job::note_ignored_at_entry();
     #[cfg(all(feature = "watch", feature = "scratch"))]
     {
         let args: Vec<String> = arguments();
@@ -170,7 +164,7 @@ fn dispatch() {
         // of detection is worth being wrong about that one.
         Action::Command(ref text) => {
             begin_shell(false);
-            run_program(&invocation, text)
+            run_program(&invocation, text, None)
         }
         // A script operand names a file whose language is worked out from the file itself.
         Action::Script(ref path) => {
@@ -206,13 +200,9 @@ fn run_script(invocation: &cli::Invocation, path: &str) -> ! {
                 &invocation.positional,
                 invocation.modes,
             )),
-            // Streamed: a file is what polyglots and partial execution are about.
-            // A script file is `main` in `$FUNCNAME`, which is what bash calls the frame a
-            // function was reached from. `-c` and standard input get none, and neither do they in
-            // bash.
-            Language::Shell => {
-                run_program_reading(invocation, &script, Reading::Streamed, Some("main"))
-            }
+            // A script file is `main` in `$FUNCNAME`, the frame bash says a function was reached
+            // from.
+            Language::Shell => run_program(invocation, &script, Some("main")),
         },
         Err(problem) => {
             let (message, status) = why_it_would_not_run(&problem);
@@ -224,12 +214,10 @@ fn run_script(invocation: &cli::Invocation, path: &str) -> ! {
 
 /// A script as text, whatever bytes are actually in it.
 ///
-/// `read_to_string` refuses a file holding one non-UTF-8 byte, which a Latin-1 comment or a binary
-/// heredoc is enough to produce — and every such script was reported as missing. A shell has no
-/// business deciding a valid script is unreadable, so the bytes are taken as they are and the
-/// undecodable ones become U+FFFD, exactly where they already were.
+/// A byte that is not part of valid UTF-8 is carried losslessly, so a Latin-1 comment or a binary
+/// here-document reaches its command as the bytes the file holds.
 fn read_script(path: &str) -> std::io::Result<String> {
-    Ok(String::from_utf8_lossy(&fs::read(path)?).into_owned())
+    oslo_base::lossless::read_file(oslo_base::lossless::to_os(path))
 }
 
 /// What to say, and what to exit with — bash's answers.
@@ -261,7 +249,7 @@ fn run_stdin(invocation: &cli::Invocation) -> ! {
         eprintln!("oslo: cannot read standard input: {}", e);
         std::process::exit(1);
     }
-    let script = String::from_utf8_lossy(&bytes).into_owned();
+    let script = oslo_base::lossless::from_bytes(&bytes);
     match language::detect_asked(invocation.modes, None, &script) {
         Language::Lua => std::process::exit(startup::lua_init::run_lua_source(
             &script,
@@ -269,9 +257,7 @@ fn run_stdin(invocation: &cli::Invocation) -> ! {
             &invocation.positional,
             invocation.modes,
         )),
-        // A pipe is a stream, and bash and dash both run what they have read of one before a later
-        // syntax error stops them.
-        Language::Shell => run_program_reading(invocation, &script, Reading::Streamed, None),
+        Language::Shell => run_program(invocation, &script, None),
     }
 }
 
@@ -283,314 +269,12 @@ fn stdin_is_a_terminal() -> bool {
     nix::unistd::isatty(0).unwrap_or(false) && nix::unistd::isatty(2).unwrap_or(false)
 }
 
-/// How a program's text reaches the evaluator.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Reading {
-    /// **A command at a time**, as a shell reads a file or a stream.
-    ///
-    /// POSIX says the shell reads its input and parses and executes it; every shell does so a
-    /// command at a time, and scripts are written for that. Two things depend on it:
-    ///
-    /// - **`#!/bin/sh` polyglots.** `/usr/bin/pnmflip` and nine of its netpbm siblings are Perl
-    ///   below an `exec perl -x -S -- "$0"` on line 23. Reading a command at a time reaches the
-    ///   `exec`, and the process is replaced before the Perl is ever looked at. Parsing the file
-    ///   first meant a syntax error at line 51 and nothing running at all.
-    /// - **Partial execution.** A syntax error on line 500 leaves the first 499 lines run, which
-    ///   is what bash, dash and busybox all do. oslo used to run none of them.
-    ///
-    /// `oslo -n` is still how you check a whole file without running it — that is what it is for,
-    /// and it is what makes doing this implicitly on every run unnecessary.
-    Streamed,
-    /// All at once. `-c` only, because bash and dash both parse a `-c` string whole:
-    /// `sh -c 'echo RAN; if true; then'` prints nothing in either.
-    Whole,
-}
-
-fn run_program(invocation: &Invocation, script: &str) -> ! {
-    run_program_reading(invocation, script, Reading::Whole, None)
-}
-
-fn run_program_reading(
-    invocation: &Invocation,
-    script: &str,
-    reading: Reading,
-    frame: Option<&str>,
-) -> ! {
-    let mut env = Environment::new();
-    // **The name first**, because pushing the frame publishes `$BASH_SOURCE` and the script's own
-    // path is its outermost entry — pushed first, the array named `oslo` instead of the script and
-    // `dirname "${BASH_SOURCE[0]}"` answered the wrong directory.
-    env.shell_name = invocation.name.clone();
-    // How this program was reached, for `$FUNCNAME`'s outermost entry. See
-    // `Environment::enter_script_frame`; nothing is pushed for `-c` or standard input.
-    if let Some(frame) = frame {
-        env.enter_script_frame(frame);
-    }
-    env.set_positional(invocation.positional.clone());
-    apply_invocation_options(&mut env, invocation);
-    startup::history::register(&mut env);
-    // **A script sees them too.** "Every running session" has to include the `-c` a Makefile just
-    // started, or a universal variable is a thing only a prompt can read — and setting one from a
-    // script that cannot then read it back is the worst of both. Before the startup files, so
-    // `$ENV` can read one.
-    #[cfg(feature = "universal")]
-    oslo::env::universal::sync_into(&mut env);
-
-    // R9.10: a non-interactive shell still reads `$ENV` — that is what POSIX defines it for, and
-    // it runs before the program so a function defined there is callable from it.
-    if let Some(status) = startup::rc::load_startup_files(
-        &mut env,
-        invocation.force_interactive,
-        invocation.login,
-        invocation.no_profile,
-    ) {
-        std::process::exit(run_exit_trap(&mut env, status));
-    }
-
-    // `-c` only, and only when `$OSLO_ALLHIST` asks: a script's *contents* are not commands
-    // anybody typed, and recording them would put every line of every `#!/bin/sh` script on the
-    // machine into the history the moment oslo becomes `/bin/sh`.
-    if reading == Reading::Whole && startup::history::record_commands() {
-        startup::history::record_command(&env, script);
-    }
-
-    let status = match reading {
-        Reading::Whole => run_whole(&mut env, script),
-        Reading::Streamed => run_streamed(&mut env, script),
-    };
-    // R6.5: every way out of a script converges here, so a cleanup handler that fires on a clean
-    // finish also fires on `exit 3` and on a fatal error.
-    std::process::exit(run_exit_trap(&mut env, status));
-}
-
-/// Parse the whole program, then run it.
-fn run_whole(env: &mut Environment, script: &str) -> i32 {
-    // Parsing is kept out of `run_string` so the two kinds of failure stay distinguishable. A
-    // program that does not parse never runs at all and exits 2; anything that goes wrong later
-    // happened *during* execution, and gets the 127 below.
-    match run_chunk(env, script, script) {
-        Ok(status) => status,
-        Err(status) => status,
-    }
-}
-
-/// Run a file or a stream: whole if it parses, a command at a time if it does not.
+/// This process's arguments, with any byte that is not UTF-8 carried losslessly.
 ///
-/// **The split is a performance one, and it changes nothing observable.** A program that parses
-/// has no syntax error to be partial about, so running it whole and running it a command at a time
-/// produce the same thing — and parsing once is enormously cheaper. Classifying after every line
-/// re-parses a growing buffer, which is quadratic in the length of a single command: a one-megabyte
-/// here-document is one command, and `tests/redirection_tests.rs` timed out at ten seconds on it.
-///
-/// Only a program that does *not* parse takes the slow path, and there the cost is the point: it
-/// is the only way to run the lines before the mistake, which is what
-/// [`Reading::Streamed`] exists for.
-fn run_streamed(env: &mut Environment, script: &str) -> i32 {
-    if let Ok(ast) = parse_with_aliases(script, !env.get_aliases().is_empty(), &|n| {
-        env.get_alias(n).map(str::to_string)
-    }) {
-        return match absorb_loop_control(eval_command_list(env, &ast)) {
-            Ok(status) => status,
-            Err(e) => exit_error_status(env, e),
-        };
-    }
-    run_line_at_a_time(env, script)
-}
-
-/// Read a command at a time, running each before looking at the next.
-///
-/// The buffer is emptied after every complete command, so each re-parse covers one command's worth
-/// of text rather than the whole file.
-fn run_line_at_a_time(env: &mut Environment, script: &str) -> i32 {
-    use oslo::ui::syntax::{InputStatus, classify};
-
-    let mut buffer = String::new();
-    let mut status = 0;
-    // **Each chunk is parsed on its own, so its tree counts from 1.** Telling the environment how
-    // much of the file came before it is what keeps `$LINENO` and every diagnostic's `line N`
-    // talking about the file rather than about the piece. Without it, one syntax error anywhere in
-    // a script made every diagnostic before it say `line 1` — worse than saying nothing, because a
-    // line number is believed.
-    for (consumed, line) in (0_u32..).zip(script.split_inclusive('\n')) {
-        // Counted before the chunk runs, and only up to where it *starts*: the offset is added to
-        // a line number inside the chunk, and the chunk's own first line is its line 1.
-        if buffer.is_empty() {
-            env.set_line_offset(consumed);
-        }
-        buffer.push_str(line);
-        match classify(&buffer) {
-            // The command has not ended yet — an open `if`, a heredoc still looking for its
-            // delimiter, a trailing `|`.
-            InputStatus::Incomplete => continue,
-            // Not shell at all. Stop reading and let the parse below report it the usual way,
-            // *after* everything already read has run — which is the whole point.
-            InputStatus::Invalid => break,
-            InputStatus::Complete => {
-                // A blank line or a comment parses to nothing; there is no command to run and no
-                // status to take from it.
-                if !buffer.trim().is_empty() {
-                    match run_chunk(env, &buffer, script) {
-                        Ok(next) => status = next,
-                        Err(failed) => return failed,
-                    }
-                }
-                buffer.clear();
-            }
-        }
-    }
-
-    // Whatever is left never became a complete command: an unterminated `if`, or the invalid text
-    // the loop stopped at. Running it produces the same diagnostic a whole-file parse would.
-    if !buffer.trim().is_empty() {
-        match run_chunk(env, &buffer, script) {
-            Ok(next) => status = next,
-            Err(failed) => return failed,
-        }
-    }
-    env.set_line_offset(0);
-    status
-}
-
-/// Parse one piece of program text and run it.
-///
-/// `Err` carries the status the shell should exit with; the caller stops there.
-/// `whole` is the file the chunk came from, so a syntax error can be reported against it rather
-/// than against the piece: a script run a command at a time would otherwise say `line 1` for a
-/// mistake forty lines in. The two are the same string when the program parsed and was run whole.
-fn run_chunk(env: &mut Environment, source: &str, whole: &str) -> std::result::Result<i32, i32> {
-    let ast = match parse_with_aliases(source, !env.get_aliases().is_empty(), &|n| {
-        env.get_alias(n).map(str::to_string)
-    }) {
-        Ok(ast) => ast,
-        Err(e) => {
-            // The one place a report points into something that really is a program. The parser's
-            // message already carries the line and column; `complain_at` reads them back out and
-            // quotes the failing line, and answers `false` for a message with no position in it —
-            // `syntax error at end of input` is about the absence of text, not a place in it.
-            let body = e.to_string();
-            // **The parser knows which line it stopped on, and nothing ran on it.** `origin` reports
-            // the last line that *did* run, so a syntax error on line 5 was announced as line 4 —
-            // publishing the parser's own line first is what makes the prefix and the report agree.
-            // A positioned error names its own line. One with no position — `syntax error at end
-            // of input` — names the line the *chunk* began on, which is where the construct that
-            // never closed starts, because everything before it parsed and ran. Without this the
-            // prefix falls back to the last line that ran, which is a different bug entirely.
-            match oslo_shell::env::parsed_position(&body) {
-                Some((line, _)) => env.note_line(line as u32),
-                None => env.note_line(1),
-            }
-            if !oslo_shell::env::complain_at(
-                &env.origin(),
-                env.diagnostic_source(),
-                whole,
-                env.line_offset(),
-                &body,
-            ) {
-                eprintln!("{}{}", env.origin(), e);
-            }
-            return Err(e.failure_status());
-        }
-    };
-    match absorb_loop_control(eval_command_list(env, &ast)) {
-        // The shell's exit status is that of the last command it ran.
-        Ok(status) => Ok(status),
-        Err(e) => Err(exit_error_status(env, e)),
-    }
-}
-
-/// Put the invocation's own flags into the option set, so `$-` describes this shell.
-///
-/// The two halves are different in kind: `-e`/`-x` are ordinary options a script could also set,
-/// while `c` and `s` say where the program came from and no `set` command can change them. Both
-/// live in the same bitset because `$-` reports both.
-fn apply_invocation_options(env: &mut Environment, invocation: &Invocation) {
-    // `Invocation::options` covers both spellings. Walking `set_options` here instead would drop
-    // every option that has no letter — `--posix` is exactly that shape.
-    for option in invocation.options() {
-        env.set_option(option, true);
-    }
-    // The `+` forms, after the `-` ones so that `sh -x +x` ends up off — last wins, as `set` does.
-    for option in invocation.unset_options() {
-        env.set_option(option, false);
-    }
-    match invocation.action {
-        Action::Command(_) => env.set_option(ShellOption::CommandString, true),
-        Action::Stdin => env.set_option(ShellOption::StdinInput, true),
-        _ => {}
-    }
-    if invocation.force_interactive {
-        env.set_option(ShellOption::Interactive, true);
-    }
-}
-
-/// The status a non-interactive shell ends with after it could not finish its script.
-///
-/// Returns rather than exiting: the EXIT trap still has to run, because `trap 'rm -f "$tmp"' EXIT`
-/// exists precisely for the runs that go wrong.
-///
-/// **`-c` and a script file end differently, and bash is the reason.** The three failures
-/// [`ShellError::fatal_exit_status`] answers 127 for are 127 only from `bash -c`; run as a file,
-/// the same program exits 1 for a fatal expansion error and 2 for a syntax error. So the 127 is
-/// asked for only where bash gives one, and a script gets the ordinary failure status:
-///
-/// ```text
-///   bash -c 'set -u; echo $nope'   ->  127        bash file  ->  1
-///   bash -c 'echo $(if)'           ->  127        bash file  ->  2
-/// ```
-///
-/// A script is where the number is read by something else — a Makefile, a CI step — and 127 there
-/// says "command not found" about a shell that found its command and could not expand its
-/// arguments.
-fn exit_error_status(env: &Environment, err: ShellError) -> i32 {
-    match err {
-        ShellError::Exit(code) => code,
-        // Everything else aborted the script mid-flight. `ShellError::fatal_exit_status` decides
-        // what that is worth — deliberately *not* the status the same error produces elsewhere:
-        // inside a subshell or a pipeline stage it is just a failed command, worth 1, and an
-        // interactive shell only sets `$?` and carries on.
-        e => {
-            // **`set -e` unwinds as a failed command, and carries that command's status.**
-            // Checked against bash 5.3:
-            //
-            // ```text
-            //   bash -c 'set -u;  echo $nope'   ->  127
-            //   bash -c 'set -eu; echo $nope'   ->  1
-            //   bash -c 'set -e;  echo $(if)'   ->  127
-            // ```
-            //
-            // The unset variable failed the command and `-e` ended the script on that failure, so
-            // the status is the failure's. A syntax error keeps 127 either way, because it never
-            // became a command that could fail.
-            //
-            // It matters because 127 means "command not found" to make, to a CI runner and to
-            // `case $? in 127)` — and `set -eu` is the standard opening line of a careful script,
-            // where an unset variable is the commonest thing to go wrong.
-            let unwound_by_errexit =
-                env.option(ShellOption::ErrExit) && matches!(e, ShellError::UnsetParameter(_));
-            let status = match env.option(ShellOption::CommandString) && !unwound_by_errexit {
-                true => e.fatal_exit_status(env.posix()),
-                false => e.failure_status(),
-            };
-            // **Where it happened, not just what.** A `oslo: ` prefix names the shell; a script
-            // that died on line 140 of 200 needs the line, and `origin` already knows it because
-            // `$LINENO` is published at every command boundary. Three diagnostics carried the
-            // location — command not found, a failing builtin, a failing redirection — and the
-            // fatal expansion errors did not, which is backwards: those are the ones that end the
-            // run. `-c` and a prompt still get `oslo: `, because neither has a file to name.
-            eprintln!("{}{}", env.origin(), e);
-            status
-        }
-    }
-}
-
-/// This process's arguments, with any byte that is not UTF-8 replaced rather than fatal.
-///
-/// **`env::args()` panics on such a byte**, before `main` has done anything: `oslo ./café.sh` with
-/// the name in Latin-1 died with `SIGABRT` and no message a person could act on, where bash runs
-/// the script. A positional parameter cannot be skipped the way an environment variable can —
-/// `$2` has to stay `$2` — so the byte is replaced and the argument keeps its place.
+/// `env::args()` panics on such a byte, so the arguments are read as `OsString`s and each keeps
+/// its place and its bytes: `oslo ./café.sh` with the name in Latin-1 runs the file it names.
 fn arguments() -> Vec<String> {
     env::args_os()
-        .map(|arg| arg.to_string_lossy().into_owned())
+        .map(|arg| oslo_base::lossless::encode(&arg))
         .collect()
 }

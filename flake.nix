@@ -75,8 +75,8 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "luna-0.6.1" = "sha256-s9UFDofrLdJGf9h2ovSXBYm9D3dlrVekAlRjiVu/ZsU=";
-                "rune-0.1.5" = "sha256-03yaB4bv+iXYGVStpGDCNdJQzYh/oiB8hRFrIKuMfvU=";
+                "luna-0.7.0" = "sha256-AUwrRu5lvj+A9zFy3DRZm0B554Jv0IN1nJGhVLANo80=";
+                "rune-0.1.7" = "sha256-UOIEHTppVeuucvZeueSwLuG4JrmyrJJ92nDr3w8XJDM=";
                 "tagdata-0.1.4" = "sha256-L/Fa0gS4hTrbaWvuvBB4NJ85xud8ixv7sSalLKRINQU=";
                 "vista-recall-0.1.2" = "sha256-Zi3pKV0pZNZh/XM8dE+uhHIJuieT977D0bAD91/qrhY=";
               };

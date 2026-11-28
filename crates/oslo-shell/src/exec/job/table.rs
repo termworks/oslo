@@ -54,6 +54,8 @@ pub struct Job {
     /// The text the user typed, for `jobs` and for the `[1]+ Done` notice.
     pub command: String,
     pub state: JobState,
+    /// The signal that ended the job's last process, and whether it dumped core.
+    pub signal: Option<(i32, bool)>,
     /// Whether the user has already been told about the state this entry is in.
     ///
     /// A finished job is not dropped the instant it is reaped: bash reports it once — `jobs`
@@ -95,6 +97,9 @@ pub struct JobTable {
     /// calling one from inside would be a handler waiting for a lock its own caller holds. The
     /// transitions queue instead, and [`super::reap`] drains and fires them once the lock is gone.
     transitions: Vec<Transition>,
+    /// The processes of jobs a command substitution inherited from its parent, which it lists but
+    /// cannot wait for.
+    foreign: Vec<Pid>,
 }
 
 /// Something that happened to a job or one of its processes, waiting to be announced.
@@ -224,6 +229,7 @@ impl JobTable {
             ended: Vec::new(),
             command,
             state,
+            signal: None,
             notified: false,
             background,
         });
@@ -333,6 +339,14 @@ impl JobTable {
     pub fn take_status(&mut self, pid: Pid) -> Option<i32> {
         let index = self.statuses.iter().position(|(p, _)| *p == pid)?;
         Some(self.statuses.remove(index).1)
+    }
+
+    /// The remembered status of `pid`, left in place for the next `wait` to ask about.
+    pub fn peek_status(&self, pid: Pid) -> Option<i32> {
+        self.statuses
+            .iter()
+            .find(|(p, _)| *p == pid)
+            .map(|(_, status)| *status)
     }
 
     /// Take everything that has happened since the last drain, for a caller that no longer holds

@@ -281,6 +281,7 @@ fn simple(words: &[&str]) -> Command {
         assignments: Vec::new(),
         words: words.iter().map(|w| literal(w)).collect(),
         redirections: Vec::new(),
+        unbraced: None,
     })
 }
 
@@ -330,6 +331,7 @@ fn an_assignment_is_claimed_only_where_a_brace_expands() {
     let array = assigned(AssignmentValue::Array(vec![oslo_base::ast::ArrayElement {
         index: None,
         value: literal("{0:0}"),
+        append: false,
     }]));
     assert!(
         command_uses_coordinates(&array),
@@ -362,5 +364,6 @@ fn assigned(value: AssignmentValue) -> Command {
         }],
         words: Vec::new(),
         redirections: Vec::new(),
+        unbraced: None,
     })
 }

@@ -9,6 +9,7 @@
 //! true, 1 for false) or fails to parse (a diagnostic on stderr and **exit 2**). There is no third
 //! outcome in which an unrecognised operator quietly becomes an answer.
 
+mod arith;
 mod grammar;
 mod matching;
 mod operators;
@@ -34,7 +35,23 @@ pub fn builtin_test(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     }
 
-    report(name, grammar::evaluate(env, expr))
+    let expr = resolve_set_tests(env, expr)?;
+    report(name, grammar::evaluate(env, &expr))
+}
+
+/// The operands of `-v` with an element's subscript expanded and evaluated, as bash evaluates
+/// `-v 'a[i+1]'`, so the tests themselves never need to evaluate anything.
+fn resolve_set_tests(env: &mut Environment, expr: &[String]) -> Result<Vec<String>> {
+    let mut resolved = expr.to_vec();
+    for at in 1..resolved.len() {
+        if resolved[at - 1] == "-v"
+            && let Some(element) =
+                crate::env::builtins::arrays::resolve_element(env, &resolved[at])?
+        {
+            resolved[at] = element;
+        }
+    }
+    Ok(resolved)
 }
 
 /// `[[ ... ]]` — the extended test.
@@ -53,11 +70,20 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
     if expr.last().map(String::as_str) == Some("]]") {
         expr = &expr[..expr.len() - 1];
     }
+    let mut negated = false;
+    while expr.len() > 1 && expr[0] == crate::syntax::lower::cond::NEGATION {
+        negated = !negated;
+        expr = &expr[1..];
+    }
 
+    let resolved = match expr.len() {
+        2 => resolve_set_tests(env, expr)?,
+        _ => Vec::new(),
+    };
     let outcome: TestResult<bool> = match expr.len() {
         0 => Ok(false),
         1 => Ok(!expr[0].is_empty()),
-        2 => operators::eval_unary(env, &expr[0], &expr[1]),
+        2 => operators::eval_unary(env, &resolved[0], &resolved[1]),
         // `=~` is routed before the shared table because it is the one operator that *writes*:
         // it publishes `BASH_REMATCH`, so it needs `&mut Environment`, which the POSIX `test`
         // grammar sharing `eval_binary` does not have. That split is also the enforcement of
@@ -65,11 +91,26 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
         3 if matching::is_regex_op(&expr[1]) => {
             matching::eval_regex_match(env, &expr[0], &expr[1], &expr[2])
         }
+        3 if arith::is_arithmetic_op(&expr[1]) => {
+            return arith::compare(env, &expr[0], &expr[1], &expr[2]);
+        }
+        // The C locale matches a pattern a byte to a character.
+        3 if matches!(expr[1].as_str(), "==" | "=" | "!=")
+            && !crate::expand::locale::is_utf8(env) =>
+        {
+            let bytewise = crate::expand::locale::bytewise;
+            operators::eval_binary(
+                Mode::Extended,
+                &bytewise(&expr[0]),
+                &expr[1],
+                &bytewise(&expr[2]),
+            )
+        }
         3 => operators::eval_binary(Mode::Extended, &expr[0], &expr[1], &expr[2]),
         _ => Err(TestError::new("too many arguments")),
     };
 
-    report("[[", outcome)
+    report("[[", outcome.map(|truth| truth != negated))
 }
 
 /// One place that turns an evaluation into an exit status, so `test`, `[` and `[[` cannot drift

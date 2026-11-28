@@ -15,35 +15,42 @@
 //! knows which command of a list POSIX makes it answerable for. Constructs whose *conditions* are
 //! exempt reach in through `suspend_errexit`.
 
+mod abandon;
 mod coordinates;
-mod describe;
+pub(crate) mod describe;
 mod errexit;
 mod interrupt;
 mod jobs;
 /// What each link of `a && b` did — see the module docs.
 pub mod segments;
+mod stage;
+mod stages;
 mod structured;
 mod timing;
 
+pub(crate) use abandon::as_string_program;
+pub(super) use stages::pipeline_status;
+use stages::run_byte_stages;
+
 pub(crate) use errexit::{clear_status_exempt, errexit_suspended, suspend_errexit};
-use errexit::{err_reported, set_err_reported, set_status_exempt, status_exempt};
+use errexit::{reports_own_status, set_status_exempt, status_exempt};
 
 use crate::env::Environment;
-use crate::env::builtins::run_exit_trap;
 use crate::exec::compound::{eval_compound_command, flush_stdout};
 use crate::exec::job;
 use crate::exec::redirect::RedirectGuard;
+use crate::exec::simple::oneshot::Tail;
 use crate::exec::simple::{eval_simple_command, report_redirect_failure};
 use interrupt::ListFrame;
+pub use interrupt::eval_command_unit;
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, close, dup2, fork, pipe};
+use nix::unistd::Pid;
 use oslo_base::ast::*;
 use oslo_base::error::{Result, ShellError};
-use std::os::fd::{AsRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 /// Waiting on a child, and turning what came back into a status.
 mod waiting;
-pub(crate) use waiting::wait_for_child;
+pub(crate) use waiting::{announce_death, forget_death, note_death, quiet_deaths, wait_for_child};
 pub use waiting::{
     is_interactive, report_error_status, set_interactive, status_of, wait_for_status,
 };
@@ -66,18 +73,69 @@ pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Resul
         ));
     }
     let frame = ListFrame::enter();
-    let outermost = frame.is_outermost();
-    frame.absorb(run_list_items(env, cmd_list, outermost))
+    let catches = Catches {
+        line: frame.catches_abandoned(),
+        discard: frame.is_outermost(),
+    };
+    frame.absorb(run_list_items(env, cmd_list, catches))
 }
 
-fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool) -> Result<i32> {
+/// Which abandoned commands a list stops: a line abandoned below stops at the nearest `eval`,
+/// `source` or top level; a [`ShellError::Discard`] only at the top level.
+#[derive(Clone, Copy)]
+struct Catches {
+    line: bool,
+    discard: bool,
+}
+
+fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catches) -> Result<i32> {
+    let outermost = catches.line;
+    // Whether this process ends with this list, which lets its last command run unforked.
+    let tail = crate::exec::simple::oneshot::take_tail_list();
     let mut last_status = 0;
     // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
     let mut abandoned: Option<u32> = None;
+    // Each line of the top level is one command read: `\#` counts those of a script, and a
+    // background job a signal killed is announced before the next one.
+    let reading = catches.discard && !env.option(crate::env::options::ShellOption::CommandString);
+    let mut read: Option<u32> = None;
+    // `$?` before the item now running, for an EXIT trap a fatal signal runs during it.
+    let mut before = env.last_status;
 
-    for item in &cmd_list.items {
+    for (index, item) in cmd_list.items.iter().enumerate() {
         if abandoned.is_some_and(|line| line > 0 && item.line == line) {
             continue;
+        }
+        let new_line = catches.discard && read != Some(item.line);
+        if new_line {
+            read = Some(item.line);
+            if reading {
+                crate::expand::prompt::count_command_read();
+            }
+        }
+        if tail == Some(Tail::Program) && cmd_list.items.last().is_some_and(|l| l.line == item.line)
+        {
+            crate::exec::simple::oneshot::reach_last_line();
+        }
+        if index + 1 == cmd_list.items.len()
+            && let Some(kind) = tail
+        {
+            crate::exec::simple::oneshot::arm(env, item, kind, cmd_list.items.len() == 1);
+        }
+        // A string's top-level line that is one simple command keeps its `<( )` open.
+        let alone = (index == 0 || cmd_list.items[index - 1].line != item.line)
+            && cmd_list
+                .items
+                .get(index + 1)
+                .is_none_or(|next| next.line != item.line);
+        if alone
+            && catches.line
+            && (!catches.discard || env.option(crate::env::options::ShellOption::CommandString))
+            && item.op != ListOp::Background
+            && item.and_or.rest.is_empty()
+            && let [Command::Simple(simple)] = item.and_or.first.commands.as_slice()
+        {
+            crate::exec::procsub::keep_after(simple);
         }
         // `set -n`: read the program, run none of it. Checked per command rather than once before
         // the list so that `set -n` *within* a script stops execution from that point, which is
@@ -102,6 +160,10 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
         // R7.4: a command boundary is the one moment the shell is provably not waiting for a
         // foreground child, which is what makes reaping every finished background job here safe.
         job::reap_background_jobs();
+        if new_line {
+            job::announce_background_deaths(env);
+        }
+        crate::exec::coproc::reap(env);
         // R7.2: and the one moment a Ctrl-C can be acted on when nothing has entered the kernel —
         // `while true; do :; done` never blocks, so polling is the only way out of it.
         if job::interrupt_pending() {
@@ -111,8 +173,9 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
         // `exit 128 + signo` is what runs that trap: the shell dies of the signal either way, and
         // this is the difference between the cleanup happening and not.
         if let Some(signum) = job::fatal_signal_pending() {
-            return Err(ShellError::Exit(128 + signum));
+            return Err(die_of_signal(env, signum, before));
         }
+        before = env.last_status;
 
         if item.op == ListOp::Background {
             jobs::spawn_background(env, &item.and_or)?;
@@ -122,29 +185,72 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
             env.last_status = 0;
         } else {
             last_status = match eval_and_or_list(env, &item.and_or) {
-                // **`failglob` abandons the top-level command, not the script.** bash drops the
-                // rest of that line — the whole `if` around the miss, the function it was in —
-                // reports it with status 1, and carries on with the next line. Only the outermost
-                // list catches it; everywhere below, it unwinds like any other error.
-                Err(e @ ShellError::NoMatch(_)) if outermost => {
+                // `exit 1 2` ends a `-c` program, and abandons the rest of a script's line.
+                Err(e @ ShellError::Discard(..)) if catches.discard => {
                     eprintln!("{}{e}", env.origin());
+                    let status = e.failure_status();
+                    if env.option(crate::env::options::ShellOption::CommandString) {
+                        return Err(ShellError::Exit(status));
+                    }
                     abandoned = Some(item.line);
-                    env.last_status = 1;
-                    1
+                    env.last_status = status;
+                    status
+                }
+                // **A `failglob` miss, a refused assignment or an expansion error abandons the
+                // top-level command, not the script.** bash drops the rest of that line — the
+                // whole `if` around it, the function it was in — with status 1, and carries on
+                // with the next line. A refused assignment's reason is already printed.
+                Err(e) if outermost && abandon::abandons_line(env, &e) => {
+                    if !matches!(e, ShellError::Abandoned) {
+                        eprintln!("{}{e}", env.origin());
+                    }
+                    // In a child, an `eval` or `source` takes the rest of the child with it.
+                    if !catches.discard && abandon::in_child(env) {
+                        return Err(ShellError::Abandoned);
+                    }
+                    abandoned = Some(item.line);
+                    env.last_status = abandon::line_status(env, &e, catches.discard);
+                    env.last_status
                 }
                 other => other?,
             };
         }
+        // A signal that arrived during this command runs its trap now, before the next one —
+        // and before the shell ends, when this was the last.
+        crate::env::builtins::run_pending_traps(env)?;
     }
 
     // And once more on the way out, for a signal that arrived during the *last* command of the
     // list: there is no boundary after it, and the shell would otherwise end normally and report
     // the command's status rather than the signal's.
     if let Some(signum) = job::fatal_signal_pending() {
-        return Err(ShellError::Exit(128 + signum));
+        return Err(die_of_signal(env, signum, before));
     }
 
     Ok(last_status)
+}
+
+/// End the shell over a fatal signal that arrived while an EXIT trap was set.
+///
+/// A signal that arrived during a foreground wait leaves `$?` as the command *before* the waited
+/// one left it, since bash runs the trap from inside that wait. The shell ends with `128 + signo`
+/// whatever the trap exits with.
+fn die_of_signal(env: &mut Environment, signum: i32, before: i32) -> ShellError {
+    let status = match job::fatal_arrived_in_wait() {
+        true => before,
+        false => env.last_status,
+    };
+    env.last_status = status;
+    crate::env::builtins::run_exit_trap(env, status);
+    // A subshell then dies of the signal itself, as bash's does, so its parent sees the signal.
+    if env
+        .get_param("$")
+        .is_some_and(|shell| shell != std::process::id().to_string())
+    {
+        crate::exec::compound::flush_stdout();
+        job::die_of(signum);
+    }
+    ShellError::Exit(128 + signum)
 }
 
 pub fn eval_and_or_list(env: &mut Environment, and_or: &AndOrList) -> Result<i32> {
@@ -236,7 +342,6 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
     // evaluation — a compound's body setting it on the way out — and never left over from an
     // unrelated command that ran earlier.
     set_status_exempt(false);
-    set_err_reported(false);
 
     if !judged {
         let _exempt = suspend_errexit();
@@ -247,6 +352,10 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
         return Ok(status);
     }
 
+    // An ERR trap the command itself installs does not fire for that command.
+    let err_armed = env
+        .get_trap("ERR")
+        .is_some_and(|action| !action.is_empty() && action != "-");
     let status = eval_pipeline(env, pipeline)?;
     env.last_status = status;
     // **A compound inherits its body's last status, exemption included.** `if true; then false &&
@@ -256,12 +365,11 @@ fn run_and_record(env: &mut Environment, pipeline: &Pipeline, judged: bool) -> R
     // `! cmd` is exempt whichever way it comes out, so `set -e; ! true` does not end the shell
     // even though the pipeline reports 1.
     // The ERR trap shares this condition and not `set -e` itself: bash fires it for exactly the
-    // failures errexit is allowed to judge, whether or not errexit is on. See `run_err_trap`.
+    // failures errexit is allowed to judge, whether or not errexit is on — but only for a command
+    // that reports its own status, never for a compound carrying its body's out.
     if status != 0 && !pipeline.negated && !inherited && !errexit_suspended() {
-        // Once per failure, not once per construct carrying its status out — see `ERR_REPORTED`.
-        if !err_reported() {
+        if err_armed && reports_own_status(pipeline) {
             crate::env::builtins::run_err_trap(env)?;
-            set_err_reported(true);
         }
         if env.errexit() {
             return Err(ShellError::Exit(status));
@@ -285,6 +393,9 @@ pub fn eval_pipeline(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> 
         return run_pipeline(env, pipeline);
     }
 
+    // `time -p` reaches here as a first word `-p`: the POSIX report, whatever `TIMEFORMAT` says.
+    let posix = timing::without_posix_flag(pipeline);
+    let pipeline = posix.as_ref().unwrap_or(pipeline);
     let timer = timing::Timer::start();
     let result = run_pipeline(env, pipeline);
     // Stopped on the error path too: bash prints the three lines for `time exit 3` and *then*
@@ -293,7 +404,11 @@ pub fn eval_pipeline(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> 
     // The flush is not cosmetic. stdout is buffered and stderr is not, so `time echo hi >f 2>&1`
     // would otherwise record the timing above the output it timed.
     flush_stdout();
-    timer.report();
+    let format = match posix {
+        Some(_) => Some(timing::POSIX_FORMAT.to_string()),
+        None => env.get_var("TIMEFORMAT").map(str::to_string),
+    };
+    timer.report(format.as_deref());
     result
 }
 
@@ -331,12 +446,12 @@ fn run_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
     // stage, not to a descriptor — and letting it fall through answered `first: command not found`
     // while creating the empty file the redirection named. A name only oslo invented can reach
     // this, so no script written against another shell can.
-    if let Some(problem) = structured::refuse_redirected_middle(pipeline) {
+    if let Some(problem) = structured::refuse_redirected_middle(env, pipeline) {
         eprintln!("{}{problem}", crate::env::origin_now());
         env.set_pipeline_status(vec![2]);
         return Ok(2);
     }
-    if let Some(sinks) = structured::structured_sinks(pipeline) {
+    if let Some(sinks) = structured::structured_sinks(env, pipeline) {
         // Nothing takes this path yet — the tools that would are the next stage of the work. It is
         // wired now, with the corpus proving it is never reached, so that the commit which adds
         // the first structured tool is small and its blast radius is already measured.
@@ -346,134 +461,11 @@ fn run_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
     // that reads its upstream by coordinate cannot start until that upstream has finished, so the
     // whole pipeline runs one stage at a time. A pipeline with no coordinate in it — which is
     // nearly all of them — answers `false` here and forks concurrently as it always has.
-    if coordinates::uses_coordinates(pipeline) {
+    // Coordinates are prompt syntax: a script reads `{1..}` and `{0:0}` as bash does.
+    if env.interactive() && coordinates::uses_coordinates(pipeline) {
         return coordinates::run(env, pipeline);
     }
     run_byte_stages(env, pipeline)
-}
-
-/// The pipeline as oslo has always run it: one process per stage, bytes on every descriptor.
-fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
-    if pipeline.commands.len() == 1 {
-        let status = eval_command(env, &pipeline.commands[0])?;
-        // R4.10: a one-command pipeline still has a stage vector, as bash's `PIPESTATUS` does.
-        env.set_pipeline_status(vec![status]);
-        return Ok(status);
-    }
-
-    let num_cmds = pipeline.commands.len();
-    let mut pipes = Vec::new();
-
-    for _ in 0..num_cmds - 1 {
-        let p = pipe()
-            .map_err(|e| ShellError::ExecutionError(format!("Pipe creation failed: {}", e)))?;
-        pipes.push(p);
-    }
-
-    let mut pids = Vec::new();
-    // R7.1: every stage of a foreground pipeline shares one process group, led by the first
-    // stage. That is what makes Ctrl-C reach the whole pipe and only the pipe — `kill(-pgid)` is
-    // how the tty driver delivers it — and what lets Ctrl-Z stop all of it at once.
-    let mut pgid: Option<Pid> = None;
-
-    for (idx, cmd) in pipeline.commands.iter().enumerate() {
-        unsafe {
-            match oslo_base::forksafe::quiesced(|| fork()) {
-                Ok(ForkResult::Child) => {
-                    // Before the signal reset, and before any of this stage's own work: the
-                    // parent is about to hand the terminal to this group, and a stage that had
-                    // not joined it yet would be a background process reading from the tty.
-                    job::join_foreground_group(pgid);
-                    // R4.7: a stage is a new process running commands, so it gets a fresh signal
-                    // state — otherwise the Rust runtime's inherited `SIG_IGN` for SIGPIPE turns
-                    // `while :; do echo x; done | head -1` from an instant death on the closed
-                    // pipe into a loop that spins to completion swallowing EPIPE.
-                    crate::exec::job::reset_signals_for_child();
-                    if idx > 0 {
-                        let prev_read = pipes[idx - 1].0.as_raw_fd();
-                        let _ = dup2(prev_read, 0);
-                    }
-                    if idx < num_cmds - 1 {
-                        let curr_write = pipes[idx].1.as_raw_fd();
-                        let _ = dup2(curr_write, 1);
-                    }
-
-                    for p in &pipes {
-                        let _ = close(p.0.as_raw_fd());
-                        let _ = close(p.1.as_raw_fd());
-                    }
-
-                    // R4.1: a stage is a subshell — same environment, subshell-local state only.
-                    env.enter_subshell();
-                    // R4.2: `echo x | exit 3` exits the stage with 3, not with 1.
-                    let status = status_of(eval_command(env, cmd));
-                    flush_stdout();
-                    // Each stage is a subshell, so a trap it installed for its own exit fires here.
-                    std::process::exit(run_exit_trap(env, status));
-                }
-                Ok(ForkResult::Parent { child }) => {
-                    // The same `setpgid` the child just made, from the other side: whichever
-                    // process is scheduled first, the group exists before anyone signals it.
-                    pgid = job::place_foreground_child(child, pgid).or(pgid);
-                    pids.push(child);
-                }
-                Err(e) => return Err(ShellError::ExecutionError(format!("Fork failed: {}", e))),
-            }
-        }
-    }
-
-    for p in pipes {
-        let _ = close(p.0.into_raw_fd());
-        let _ = close(p.1.into_raw_fd());
-    }
-
-    // R7.1: the pipeline is the foreground job now, so it — not the shell — owns the terminal
-    // until it is done. The handover and the take-back are both `tcsetpgrp` calls made from a
-    // process that is no longer the foreground group, so both go through the SIGTTOU block.
-    if let Some(pgid) = pgid {
-        job::give_terminal_to(pgid);
-    }
-
-    // R4.10: every stage's status is kept, not just the last one, so `false | true` leaves a
-    // trace of the failure for `PIPESTATUS` (Round 8) and `pipefail` (Round 6) to read.
-    let mut stage_statuses = Vec::with_capacity(pids.len());
-    let mut stopped = false;
-    for pid in &pids {
-        // R4.3: exactly one `waitpid` per child, inside `wait_for_child`.
-        let (status, was_stopped) = wait_for_child(*pid);
-        stopped |= was_stopped;
-        stage_statuses.push(status);
-    }
-    // Every stage exited on its own, and none was stopped: the terminal is as they left it on
-    // purpose. See `job::reclaim_terminal`.
-    job::reclaim_terminal(
-        !stopped
-            && stage_statuses
-                .iter()
-                .all(|status| job::left_it_deliberately(*status)),
-    );
-    if stopped && let Some(pgid) = pgid {
-        jobs::remember_stopped_pipeline(pgid, &pids, pipeline);
-    }
-    segments::note_pipeline(&pipeline.commands, &stage_statuses);
-    let final_status = pipeline_status(env, &stage_statuses);
-    env.set_pipeline_status(stage_statuses);
-    Ok(final_status)
-}
-
-/// The status a pipeline reports, given what each of its stages returned.
-///
-/// R6.4: `set -o pipefail` swaps "the last stage" for "the rightmost stage that failed", so
-/// `false | true` reports 1 while `true | false | true` still reports the 1 in the middle. Without
-/// the option the leftmost stages are invisible, which is the default POSIX rule.
-pub(super) fn pipeline_status(env: &Environment, stages: &[i32]) -> i32 {
-    if env.pipefail() {
-        // Rightmost, not first: `exit 3 | exit 4` is 4 in bash, the failure closest to the output.
-        if let Some(failed) = stages.iter().rev().find(|s| **s != 0) {
-            return *failed;
-        }
-    }
-    stages.last().copied().unwrap_or(0)
 }
 
 pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {
@@ -483,19 +475,24 @@ pub fn eval_command(env: &mut Environment, command: &Command) -> Result<i32> {
         }
         Command::Simple(simple) => eval_simple_command(env, simple),
         Command::Compound { kind, redirections } => {
+            // A process substitution in the construct's own words (`for f in <(a) <(b)`) stays
+            // open until the whole construct has run, not just the first command inside it.
+            let opened_before = env.procsubs.len();
             let mut guard = RedirectGuard::new();
             // R4.8: a redirection the shell cannot perform fails the *command*, it does not abort
             // the script — `{ echo hi; } < /nonexistent` prints a diagnostic, leaves `$?` at 1 and
             // the next command still runs. Propagating the error here made it fatal, which is the
             // one thing bash reserves for a special builtin in POSIX mode.
-            if let Err(e) = guard.apply(env, redirections) {
-                return Ok(report_redirect_failure(&env.origin(), &e));
-            }
-            eval_compound_command(env, kind)
+            let result = match guard.apply(env, redirections) {
+                Ok(()) => eval_compound_command(env, kind),
+                Err(e) => Ok(report_redirect_failure(&env.origin(), &e)),
+            };
+            drop(guard);
+            crate::exec::procsub::finish_from(env, opened_before);
+            result
         }
-        Command::FunctionDef { name, body } => {
-            env.set_function(name, *body.clone());
-            Ok(0)
+        Command::FunctionDef { name, body, source } => {
+            Ok(i32::from(!env.define_function(name, body, source)))
         }
     }
 }

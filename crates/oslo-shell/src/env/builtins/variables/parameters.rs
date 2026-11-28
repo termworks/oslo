@@ -1,7 +1,5 @@
 //! `set` and `shift`: the shell options, the positional parameters, and the state listing.
 
-use super::quoting::quote_minimal;
-use crate::env::builtins::control::format_function;
 use crate::env::options::{SetError, SetListing, ShellOption, parse_set_args};
 use crate::env::origin_now;
 use crate::env::scope::{Environment, is_valid_identifier};
@@ -58,11 +56,9 @@ pub fn builtin_set(env: &mut Environment, args: &[String]) -> Result<i32> {
 
     let mut status = 0;
     for (option, on) in parsed.changes {
-        // An option oslo does not implement is refused when you ask to turn it *on*, and accepted
-        // when you ask to turn it off — it is already off, so there is nothing to disagree with.
-        // Accepting both and doing neither is the failure mode `shopt`'s fixed states exist to
-        // avoid: a script that sets an option and gets status 0 is entitled to believe it took.
+        // The editing modes belong to oslo's editor, so a prompt refuses them.
         if on
+            && env.interactive()
             && let Some(spec) = crate::env::options::OptionSpec::of(option)
             && let Some(why) = spec.unsupported
         {
@@ -72,6 +68,13 @@ pub fn builtin_set(env: &mut Environment, args: &[String]) -> Result<i32> {
             );
             status = 1;
             continue;
+        }
+        // `vi` and `emacs` exclude each other, as bash's two editing modes do.
+        if on && option == ShellOption::Vi {
+            env.set_option(ShellOption::Emacs, false);
+        }
+        if on && option == ShellOption::Emacs {
+            env.set_option(ShellOption::Vi, false);
         }
         env.set_option(option, on);
         // `-m` is the one option that has to *do* something rather than be remembered: job control
@@ -97,9 +100,21 @@ pub fn builtin_set(env: &mut Environment, args: &[String]) -> Result<i32> {
     // must not wipe the arguments the script was called with.
     if let Some(positional) = parsed.positional {
         env.set_positional(positional);
+        POSITIONAL_SETS.with(|n| n.set(n.get() + 1));
     }
 
     Ok(status)
+}
+
+thread_local! {
+    /// How many times `set` has replaced the positional parameters.
+    static POSITIONAL_SETS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A count that moves whenever `set` replaces the positional parameters, so `source` can tell
+/// whether the file it ran did.
+pub fn positional_sets() -> u64 {
+    POSITIONAL_SETS.with(std::cell::Cell::get)
 }
 
 /// Turn job control on or off to match `set -m` / `set +m`.
@@ -144,8 +159,12 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
             eprintln!("{}set -U -e: needs the name of a variable", origin_now());
             return 2;
         }
+        let utf8 = crate::expand::locale::is_utf8(env);
         for (name, value) in universal::all() {
-            println!("{name}={}", quote_minimal(&value));
+            println!(
+                "{name}={}",
+                crate::env::builtins::declare::set_style(&value, utf8)
+            );
         }
         return 0;
     };
@@ -197,37 +216,50 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
 /// Names `environ` accepted but no shell can parse — bash's `BASH_FUNC_x%%` entries arrive this
 /// way — are skipped, because the listing's contract is that a shell can read it back.
 fn print_variables(env: &Environment) {
-    let vars = env.get_all_vars();
-    let mut names: Vec<&String> = vars
-        .keys()
-        .filter(|name| is_valid_identifier(name))
-        .collect();
-    names.sort();
-    for name in names {
-        println!("{}={}", name, quote_minimal(&vars[name]));
+    let utf8 = crate::expand::locale::is_utf8(env);
+    for (name, var) in env.listing() {
+        if !is_valid_identifier(&name) {
+            continue;
+        }
+        if let Some(line) = crate::env::builtins::declare::set_line(&name, &var, utf8) {
+            println!("{line}");
+        }
     }
 }
 
 /// Print every function definition, sorted by name.
 fn print_functions(env: &Environment) {
-    let functions = env.get_functions();
-    let mut names: Vec<&String> = functions.keys().collect();
+    let mut names: Vec<&String> = env.get_functions().keys().collect();
     names.sort();
     for name in names {
-        // **The same printer `type` uses.** There were two, and they disagreed: `set` rendered
-        // `if true; then echo hi; fi` on one line where `type` — and bash — put it on three. One
-        // function, two definitions, depending on which builtin you asked.
-        print!("{}", format_function(name, &functions[name]));
+        // The same printer `type` and `declare -f` use.
+        if let Some(definition) = env.function_definition(name) {
+            println!("{definition}");
+        }
     }
 }
 
 /// `shift [n]` — drop the first `n` positional parameters.
 pub fn builtin_shift(env: &mut Environment, args: &[String]) -> Result<i32> {
+    if args.len() > 2 {
+        return Err(crate::env::builtins::control::too_many_arguments(
+            env, "shift",
+        ));
+    }
     let n = if args.len() > 1 {
-        match args[1].parse::<usize>() {
-            Ok(num) => num,
-            // 2, not 1: a bad operand is a *usage* error, and bash numbers those apart from the
-            // ordinary failure `shift` past the end reports.
+        match args[1].trim().parse::<i64>() {
+            Ok(num) if num < 0 => {
+                crate::env::complain(
+                    args,
+                    &args[1],
+                    &format!("shift: {num}: shift count out of range"),
+                    "a count cannot be negative",
+                    None,
+                );
+                return Ok(1);
+            }
+            Ok(num) => usize::try_from(num).unwrap_or(usize::MAX),
+            // 2, not 1: a bad operand is a *usage* error, which only POSIX mode makes fatal.
             Err(_) => {
                 crate::env::complain(
                     args,
@@ -236,7 +268,7 @@ pub fn builtin_shift(env: &mut Environment, args: &[String]) -> Result<i32> {
                     "not a number",
                     Some("shift takes a count, and defaults to 1"),
                 );
-                return Ok(2);
+                return Err(ShellError::utility_error("shift", 2));
             }
         }
     } else {
@@ -251,7 +283,7 @@ pub fn builtin_shift(env: &mut Environment, args: &[String]) -> Result<i32> {
     // arguments wrote a line of stderr on its way out — and `shopt` reported `shift_verbose`
     // permanently *off* while the shell behaved as though it were permanently on.
     if n > pos.len() {
-        if env.posix() {
+        if env.posix() || crate::env::builtins::shopt::on("shift_verbose") {
             crate::env::complain(
                 args,
                 &n.to_string(),
@@ -300,8 +332,8 @@ mod tests {
         assert_eq!(set(&mut env, &["-euo", "pipefail"]), 0);
         assert!(env.errexit() && env.nounset() && env.pipefail());
         assert_eq!(env.get_positional(), &words(&["keep", "me"])[..]);
-        // `h` is on by default, the way bash has it — see `env::options::ShellOptions::default`.
-        assert_eq!(env.get_param("-").as_deref(), Some("ehu"));
+        // `h` and `B` are on by default — see `env::options::ShellOptions::default`.
+        assert_eq!(env.get_param("-").as_deref(), Some("ehuB"));
     }
 
     #[test]

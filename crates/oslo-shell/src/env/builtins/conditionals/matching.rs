@@ -21,7 +21,7 @@
 
 use super::operators::{TestError, TestResult};
 use crate::env::scope::{Environment, ShellArray};
-use regex::{Regex, RegexBuilder};
+use regex::bytes::{Regex, RegexBuilder};
 
 /// The operator word the adapter emits when the right operand was **unquoted**: an ERE.
 pub(super) const REGEX_OP: &str = "=~";
@@ -89,11 +89,22 @@ pub(super) fn eval_regex_match(
         with_quoted_runs_escaped(operand)
     };
 
-    let re = compile(&source)?;
+    let utf8 = crate::expand::locale::is_utf8(env);
+    // Named as it was written, not as the classes were rewritten for the crate.
+    let invalid = |why: &str| {
+        TestError::new(format!(
+            "invalid regular expression `{}'{why}",
+            truncate_for_message(operand)
+        ))
+    };
+    let source =
+        posix_classes(&source, utf8).ok_or_else(|| invalid(": Invalid character class name"))?;
+    let re = compile(&byte_pattern(&source, utf8), utf8).map_err(|_| invalid(""))?;
+    let subject = oslo_base::lossless::decode(subject);
 
     // `find`, not `is_match`, because the captures are the point: the caller reads them back out
     // of BASH_REMATCH.
-    let Some(caps) = re.captures(subject) else {
+    let Some(caps) = re.captures(&subject) else {
         // bash clears BASH_REMATCH on a failed match rather than leaving the last success in
         // place, so a script cannot read a stale group and believe it matched.
         env.set_array("BASH_REMATCH", ShellArray::default());
@@ -102,9 +113,108 @@ pub(super) fn eval_regex_match(
 
     // A group that took part in no alternative is the empty string, not a missing element:
     // `[[ ab =~ (a)(x)?(b) ]]` leaves `${#BASH_REMATCH[@]}` at 4 in bash, with element 2 empty.
-    let groups = (0..caps.len()).map(|i| caps.get(i).map_or("", |m| m.as_str()));
+    let groups = (0..caps.len())
+        .map(|i| oslo_base::lossless::from_bytes(caps.get(i).map_or(&[][..], |m| m.as_bytes())));
     env.set_array("BASH_REMATCH", ShellArray::from_values(groups));
     Ok(true)
+}
+
+/// The POSIX classes of a bracket expression as `regcomp` reads them, or `None` for a class name
+/// it does not know. The C locale's are the regex crate's own ASCII ones. A UTF-8 locale's take in
+/// every character: each is the set glibc's `gen-unicode-ctype` derives from the Unicode
+/// properties, where a space is not a no-break one and `print`, `graph` and `punct` hold every
+/// assigned character, private use included.
+fn posix_classes(source: &str, utf8: bool) -> Option<String> {
+    macro_rules! space {
+        () => {
+            r"[\t\n\x0B\x0C\r\x20\p{Zl}\p{Zp}\p{Zs}--[\x{A0}\x{2007}\x{202F}]]"
+        };
+    }
+    const CLASSES: [(&str, &str); 12] = [
+        ("[:alpha:]", r"[\p{Alphabetic}\p{Nd}--[0-9]]"),
+        ("[:alnum:]", r"[\p{Alphabetic}\p{Nd}]"),
+        ("[:digit:]", "[0-9]"),
+        ("[:xdigit:]", "[0-9A-Fa-f]"),
+        ("[:upper:]", r"[\p{Uppercase}\p{Lt}]"),
+        ("[:lower:]", r"[\p{Lowercase}\x{1C5}\x{1C8}\x{1CB}\x{1F2}]"),
+        ("[:space:]", space!()),
+        ("[:blank:]", r"[\t\p{Zs}--[\x{A0}\x{2007}\x{202F}]]"),
+        ("[:cntrl:]", r"[\p{Cc}\p{Zl}\p{Zp}]"),
+        ("[:print:]", r"[\P{Cn}--[\p{Cc}\p{Zl}\p{Zp}]]"),
+        ("[:graph:]", concat!(r"[\P{Cn}--\p{Cc}--", space!(), "]")),
+        (
+            "[:punct:]",
+            concat!(r"[\P{Cn}--\p{Cc}--\p{Alphabetic}--\p{Nd}--", space!(), "]"),
+        ),
+    ];
+    let mut out = String::with_capacity(source.len());
+    let (mut rest, mut bracket) = (source, false);
+    while let Some(ch) = rest.chars().next() {
+        if bracket
+            && rest.starts_with("[:")
+            && let Some(end) = rest.find(":]")
+        {
+            let (class, with) = CLASSES
+                .iter()
+                .find(|(class, _)| *class == &rest[..end + 2])?;
+            out.push_str(if utf8 { with } else { class });
+            rest = &rest[class.len()..];
+            continue;
+        }
+        let mut take = ch.len_utf8();
+        match ch {
+            // An escape and what it escapes travel together.
+            '\\' => take += rest[1..].chars().next().map_or(0, char::len_utf8),
+            // A `]` or `^]` right after the opening bracket is a member, not its end.
+            '[' if !bracket => {
+                bracket = true;
+                let after = &rest[1..];
+                take += ["^]", "]", "^"]
+                    .into_iter()
+                    .find(|lead| after.starts_with(lead))
+                    .map_or(0, str::len);
+            }
+            ']' if bracket => bracket = false,
+            _ => {}
+        }
+        out.push_str(&rest[..take]);
+        rest = &rest[take..];
+    }
+    Some(out)
+}
+
+/// `source` for a regex over the subject's bytes.
+///
+/// In the C locale every byte is a character, so each byte past ASCII is written as `\xHH` for a
+/// byte-wise automaton. In a UTF-8 one only a carried byte is, as `(?-u:\xHH)` outside a bracket
+/// expression; `.` then matches a character and never a byte that is not UTF-8, as in bash.
+fn byte_pattern(source: &str, utf8: bool) -> String {
+    let mut out = String::with_capacity(source.len());
+    let (mut escaped, mut bracket) = (false, false);
+    for ch in source.chars() {
+        let raw = oslo_base::lossless::is_raw(ch);
+        if ch.is_ascii() || (utf8 && (!raw || bracket)) {
+            match ch {
+                '\\' if !escaped => escaped = true,
+                '[' if !escaped => bracket = true,
+                ']' if !escaped => bracket = false,
+                _ => escaped = false,
+            }
+            out.push(ch);
+            continue;
+        }
+        // An escaped byte is that byte, which `\xHH` already says.
+        if std::mem::take(&mut escaped) {
+            out.pop();
+        }
+        for byte in oslo_base::lossless::decode(ch.encode_utf8(&mut [0u8; 4])) {
+            match utf8 {
+                true => out.push_str(&format!("(?-u:\\x{byte:02X})")),
+                false => out.push_str(&format!("\\x{byte:02X}")),
+            }
+        }
+    }
+    out
 }
 
 /// Compile an ERE the way bash's `regcomp` does, or fail with bash's diagnostic.
@@ -127,14 +237,14 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-fn compile(source: &str) -> TestResult<Regex> {
-    // `nocasematch` is part of the key: the same source is a different automaton with it on.
+fn compile(source: &str, utf8: bool) -> TestResult<Regex> {
+    // `nocasematch` and the locale are part of the key: either makes a different automaton.
     let nocase = oslo_base::glob::walk::nocasematch();
-    let key = format!("{}{source}", u8::from(nocase));
+    let key = format!("{}{}{source}", u8::from(nocase), u8::from(utf8));
     if let Some(hit) = COMPILED.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(hit);
     }
-    let built = build(source, nocase)?;
+    let built = build(source, nocase, utf8)?;
     COMPILED.with(|c| {
         let mut cache = c.borrow_mut();
         if cache.len() >= CACHED_PATTERNS {
@@ -145,8 +255,9 @@ fn compile(source: &str) -> TestResult<Regex> {
     Ok(built)
 }
 
-fn build(source: &str, nocase: bool) -> TestResult<Regex> {
+fn build(source: &str, nocase: bool, utf8: bool) -> TestResult<Regex> {
     RegexBuilder::new(source)
+        .unicode(utf8)
         .case_insensitive(nocase)
         // POSIX `.` matches every character including newline; the regex crate's default excludes
         // it. `[[ $'a\nb' =~ a.b ]]` is true in bash, and now here too.

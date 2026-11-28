@@ -94,6 +94,21 @@ pub fn eval_arithmetic(env: &mut Environment, expr: &str) -> Result<i64> {
     eval_text(env, expr, 0)
 }
 
+/// [`eval_arithmetic`] for the text of an indexed array's subscript; see [`in_subscript`].
+pub(crate) fn eval_subscript(env: &mut Environment, expr: &str) -> Result<i64> {
+    eval_arithmetic(env, expr).map_err(|e| in_subscript(env, e))
+}
+
+/// [`eval_subscript`] for a subscript its word has already expanded, read as it stands: the `$1`
+/// that `a[\$1]` leaves is an operand error, as it is in bash.
+pub(crate) fn eval_expanded_subscript(env: &mut Environment, expr: &str) -> Result<i64> {
+    let evaluated = Evaluation::enter().and_then(|_evaluation| {
+        let ast = parser::parse(&tokenize(expr)?)?;
+        eval(env, &ast, 0)
+    });
+    evaluated.map_err(|e| in_subscript(env, e))
+}
+
 /// Expand, scan, parse and evaluate one piece of expression text.
 ///
 /// `depth` counts how many variable values deep this text was found; it is what stops a cycle of
@@ -130,12 +145,50 @@ fn read(
     let Some(index) = &reference.index else {
         return Ok((None, env.get_param(&reference.name)));
     };
-    let index = eval(env, index, depth)?;
-    let text = env
-        .get_array(&reference.name)
-        .and_then(|array| array.get(index))
-        .map(str::to_string);
+    if let Some(key) = assoc_key(env, reference, index) {
+        let text = env
+            .get_assoc(&reference.name)
+            .and_then(|map| map.get(&key))
+            .map(str::to_string);
+        return Ok((None, text));
+    }
+    let index = subscript(env, index, depth)?;
+    // A scalar is element 0 of itself, as `${x[0]}` already reads it.
+    let text = match env.get_array(&reference.name) {
+        Some(array) => array.get(index).map(str::to_string),
+        None if index == 0 => env.get_var(&reference.name).map(str::to_string),
+        None => None,
+    };
     Ok((Some(index), text))
+}
+
+/// An indexed subscript's value; an arithmetic error in it abandons the top-level command.
+fn subscript(env: &mut Environment, index: &Expr, depth: usize) -> Result<i64> {
+    eval(env, index, depth).map_err(|e| in_subscript(env, e))
+}
+
+/// An arithmetic error in a subscript or in an integer variable's value, as bash treats it: it
+/// abandons the top-level command through every `eval` and `source`, and ends a `-c` program.
+pub(crate) fn in_subscript(env: &Environment, err: ShellError) -> ShellError {
+    match err {
+        ShellError::MalformedExpansion(message) => {
+            crate::env::builtins::control::discard(env, message, 1)
+        }
+        other => other,
+    }
+}
+
+/// The key a subscript names when the reference is an associative array: the word written there,
+/// rather than its arithmetic value.
+fn assoc_key(env: &Environment, reference: &Ref, index: &Expr) -> Option<String> {
+    if !env.is_assoc(&reference.name) {
+        return None;
+    }
+    match index {
+        Expr::Var(Ref { name, index: None }) => Some(name.clone()),
+        Expr::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// Read a reference as a number.
@@ -146,6 +199,12 @@ fn read(
 fn resolve(env: &mut Environment, reference: &Ref, depth: usize) -> Result<i64> {
     let name = &reference.name;
     let Some(text) = read(env, reference, depth)?.1 else {
+        // `set -u` covers a plain name; an element that is not there is still 0.
+        if reference.index.is_none() && env.nounset() {
+            return Err(ShellError::UnsetParameter(format!(
+                "{name}: unbound variable"
+            )));
+        }
         return Ok(0);
     };
     if let Some(n) = lexer::literal_value(&text) {
@@ -175,10 +234,15 @@ fn store(env: &mut Environment, reference: &Ref, value: i64, depth: usize) -> Re
         None => {
             env.set_var(&reference.name, &text, false);
         }
-        Some(index) => {
-            let index = eval(env, index, depth)?;
-            env.set_array_element(&reference.name, index, &text);
-        }
+        Some(index) => match assoc_key(env, reference, index) {
+            Some(key) => {
+                env.set_assoc_element(&reference.name, &key, &text);
+            }
+            None => {
+                let index = subscript(env, index, depth)?;
+                env.set_array_element(&reference.name, index, &text);
+            }
+        },
     }
     Ok(value)
 }
@@ -297,7 +361,7 @@ fn apply(op: BinOp, l: i64, r: i64) -> Result<i64> {
 /// hanging the shell.
 fn power(base: i64, exp: i64) -> Result<i64> {
     if exp < 0 {
-        return Err(ShellError::ExpansionError(
+        return Err(ShellError::MalformedExpansion(
             "exponent less than 0".to_string(),
         ));
     }

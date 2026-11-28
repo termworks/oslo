@@ -25,6 +25,12 @@ pub enum WordPart {
         expansion_type: ParamExpansion,
     },
     CommandSubstitution(String),
+    /// bash 5.3's `${ cmd; }` and `${| cmd; }`: the body runs in the current shell, and the word
+    /// is what it printed or, with `reply`, the value it left in `REPLY`.
+    FunctionSubstitution {
+        body: String,
+        reply: bool,
+    },
     /// `<(cmd)` or `>(cmd)` — the command runs, and the word becomes a *filename* naming a pipe
     /// connected to it.
     ///
@@ -111,6 +117,13 @@ pub enum ParamExpansion {
         /// Doubled operator: convert every eligible character rather than just the first.
         all: bool,
     },
+    /// `${name~}` and `${name~~}`: swap the case of the first, or of every, eligible character.
+    CaseToggle {
+        pattern: Option<Word>,
+        all: bool,
+    },
+    /// `${name@op}`: one of bash's transformations, `Q E P A K a k U u L`.
+    Transform(char),
     /// `${!name}` — `name` holds the name of the parameter to expand.
     ///
     /// **The payload is what to do once the second name is known**, because the two compose:
@@ -146,6 +159,13 @@ impl Word {
             parts: vec![WordPart::Literal(s.to_string())],
         }
     }
+
+    /// Whether the word was written as nothing at all: no parts, or only empty literals.
+    pub fn is_unwritten(&self) -> bool {
+        self.parts
+            .iter()
+            .all(|part| matches!(part, WordPart::Literal(text) if text.is_empty()))
+    }
 }
 
 /// What an assignment writes to.
@@ -174,6 +194,8 @@ pub struct ArrayElement {
     /// An explicit `[index]=`, evaluated as arithmetic. `None` means "the next free index".
     pub index: Option<Word>,
     pub value: Word,
+    /// `[index]+=value`: append to the element rather than replace it.
+    pub append: bool,
 }
 
 /// The right-hand side of an assignment.
@@ -244,6 +266,12 @@ pub struct Redirection {
     /// the trailing newlines command substitution strips, and a literal part appended before
     /// expansion is not covered by that rule.
     pub here_string: bool,
+    /// `{name}>file`: the descriptor is chosen by the shell (10 or above) and stored in `name`,
+    /// or, for `{name}>&-`, read from it. `name` may carry a subscript, as in `{fd[1]}`.
+    pub fd_var: Option<String>,
+    /// True when brace expansion turned the target into several words, as in `> o{a,b}`, which
+    /// is an ambiguous redirect when the command runs; `target` is then the text as written.
+    pub ambiguous: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +279,9 @@ pub struct SimpleCommand {
     pub assignments: Vec<Assignment>,
     pub words: Vec<Word>,
     pub redirections: Vec<Redirection>,
+    /// The words before brace expansion, kept only when brace expansion changed them: what runs
+    /// under `set +B`.
+    pub unbraced: Option<Vec<Word>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,7 +294,22 @@ pub enum Command {
     FunctionDef {
         name: String,
         body: Box<Command>,
+        /// The definition as written, for reprinting it the way bash does.
+        source: FunctionSource,
     },
+}
+
+/// The source text of a function definition, from its name to the end of its last here-document.
+///
+/// Equality ignores it, as [`ListItem`] equality ignores the line: two definitions that run the
+/// same commands are the same definition however they were spelled.
+#[derive(Debug, Clone, Default, Eq)]
+pub struct FunctionSource(pub Option<std::sync::Arc<str>>);
+
+impl PartialEq for FunctionSource {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,7 +331,24 @@ pub enum CompoundCommand {
     For {
         var_name: String,
         items: Option<Vec<Word>>,
+        /// The items before brace expansion, when it changed them; see [`SimpleCommand::unbraced`].
+        unbraced: Option<Vec<Word>>,
         body: CommandList,
+    },
+    /// `select name [in words]; do … done`: a numbered menu on stderr, one line of stdin per turn.
+    ///
+    /// `items` is `None` for `select name; do`, which offers the positional parameters.
+    Select {
+        var_name: String,
+        items: Option<Vec<Word>>,
+        body: CommandList,
+    },
+    /// `coproc [NAME] command`: `body` runs asynchronously, joined to the shell by two pipes.
+    ///
+    /// `NAME` (`COPROC` when omitted) becomes an array of the shell's two ends, `NAME_PID` the pid.
+    Coproc {
+        name: String,
+        body: Box<Command>,
     },
     Case {
         word: Word,

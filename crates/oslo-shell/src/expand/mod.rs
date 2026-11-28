@@ -13,7 +13,10 @@
 pub mod arithmetic;
 pub mod fields;
 pub mod glob;
+pub mod join;
+pub mod locale;
 pub mod param;
+pub mod prompt;
 pub mod sugar;
 pub mod tilde;
 pub mod word;

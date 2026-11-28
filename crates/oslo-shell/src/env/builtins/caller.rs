@@ -1,68 +1,43 @@
-//! `caller` — where the currently executing shell function was called from.
+//! `caller` — where the currently executing shell function or sourced file was called from.
 //!
 //! The idiom it serves is a stack trace out of an `ERR` or `EXIT` trap:
-//! `i=0; while caller $i; do i=$((i+1)); done`. That loop terminates on the exit status, not on
-//! the output, which is why the status matters more here than the text: 1 as soon as the frame
-//! asked for does not exist, 0 while it does.
+//! `i=0; while caller $i; do i=$((i+1)); done`. That loop terminates on the exit status: 1 as soon
+//! as the frame asked for does not exist, 0 while it does.
 //!
-//! # What oslo can and cannot report
-//!
-//! Three fields: line, function, source. oslo tracks the function names
-//! ([`Environment::call_stack`]) but has no `LINENO` — no construct in the AST carries a source
-//! position — and no per-frame source file. The missing fields are reported as `0` and as
-//! bash's own placeholder for a frame it cannot name, `NULL` (`bash -c 'f() { caller; }; f'`
-//! prints `1 NULL`), rather than being invented. A fabricated line number would be worse than an
-//! obviously absent one: it would send a reader to the wrong line of the right file.
+//! It reads the same stack bash publishes as `FUNCNAME`, `BASH_SOURCE` and `BASH_LINENO`,
+//! innermost first: frame `n` prints `BASH_LINENO[n]`, `FUNCNAME[n+1]` and `BASH_SOURCE[n+1]`.
 
-use crate::env::scope::{Environment, UNNAMED_FUNCTION};
+use crate::env::scope::Environment;
 use oslo_base::error::Result;
-
-/// The line field, which oslo cannot fill in. Zero, not a plausible-looking number: a made-up
-/// line sends a reader to the wrong place with no hint that it did.
-const UNKNOWN_LINE: &str = "0";
-
-/// The source field. bash prints this same placeholder whenever the frame came from no file,
-/// which under `-c` is every frame.
-const UNKNOWN_SOURCE: &str = UNNAMED_FUNCTION;
 
 /// `caller [expr]`.
 pub fn builtin_caller(env: &mut Environment, args: &[String]) -> Result<i32> {
-    let frames = env.call_stack();
+    // Innermost first, as the three arrays are.
+    let frames: Vec<_> = env.frames().iter().rev().collect();
     if frames.is_empty() {
-        // Not an error worth a message: bash is silent here, and the `while caller $i` loop
-        // depends on it being silent.
         return Ok(1);
     }
 
     let Some(operand) = args.get(1) else {
-        // With no argument bash prints the *caller's* line and source, and nothing else.
-        println!("{} {}", UNKNOWN_LINE, UNKNOWN_SOURCE);
+        let source = frames.get(1).map_or("NULL", |frame| frame.file.as_str());
+        println!("{} {}", frames[0].line, source);
         return Ok(0);
     };
 
-    let Ok(index) = operand.parse::<usize>() else {
+    let Ok(index) = operand.trim().parse::<usize>() else {
         crate::env::complain(
             args,
             operand,
-            &format!("caller: {operand}: invalid frame specifier"),
+            &format!("caller: {operand}: invalid number"),
             "not a frame number",
-            Some("a frame is a non-negative number; 0 is the caller of the function you are in"),
+            Some("caller: usage: caller [expr]"),
         );
+        return Ok(2);
+    };
+    let (Some(frame), Some(outer)) = (frames.get(index), frames.get(index + 1)) else {
         return Ok(1);
     };
-    // `caller n` names the function that *made* the call `n` levels out, not the function the
-    // frame belongs to: `f() { g; }; g() { caller 0; }` reports `f`. So frame 0 is the second
-    // entry from the top, and the form fails as soon as that entry would be the top-level
-    // script — which is why `f() { caller 0; }; f` at the top level exits 1 in bash while a
-    // bare `caller` in the same place exits 0.
-    let Some(name) = index
-        .checked_add(2)
-        .and_then(|back| frames.len().checked_sub(back))
-        .map(|pos| frames[pos].clone())
-    else {
-        return Ok(1);
-    };
-    println!("{} {} {}", UNKNOWN_LINE, name, UNKNOWN_SOURCE);
+    println!("{} {} {}", frame.line, outer.name, outer.file);
     Ok(0)
 }
 
@@ -75,10 +50,9 @@ mod tests {
         words.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Outside a function there is nothing to report, and the status is what says so — the
-    /// `while caller $i` idiom would never terminate otherwise.
+    /// Outside every frame there is nothing to report, and the status is what says so.
     #[test]
-    fn outside_a_function_it_fails_quietly() {
+    fn outside_a_frame_it_fails_quietly() {
         let mut env = Environment::new();
         assert_eq!(builtin_caller(&mut env, &argv(&["caller"])).unwrap(), 1);
         assert_eq!(
@@ -87,14 +61,11 @@ mod tests {
         );
     }
 
-    /// A bare `caller` answers for any active call; the indexed form answers only while there is
-    /// a *calling function* to name, which is one frame fewer. Checked against bash both ways.
+    /// A bare `caller` answers for any frame; `caller n` needs a frame beyond the one it names.
     #[test]
     fn a_frame_is_reported_for_each_active_call() {
         let mut env = Environment::new();
         env.enter_function_named("outer").unwrap();
-
-        // One frame deep: something is executing, but nothing called it except the script.
         assert_eq!(builtin_caller(&mut env, &argv(&["caller"])).unwrap(), 0);
         assert_eq!(
             builtin_caller(&mut env, &argv(&["caller", "0"])).unwrap(),
@@ -117,12 +88,12 @@ mod tests {
     }
 
     #[test]
-    fn a_non_numeric_frame_is_refused() {
+    fn a_non_numeric_frame_is_a_usage_error() {
         let mut env = Environment::new();
         env.enter_function_named("f").unwrap();
         assert_eq!(
             builtin_caller(&mut env, &argv(&["caller", "x"])).unwrap(),
-            1
+            2
         );
         env.exit_function();
     }

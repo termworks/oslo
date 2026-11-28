@@ -86,9 +86,10 @@ fn any_compound(kind: &CompoundCommand) -> bool {
         CompoundCommand::While { condition, body } | CompoundCommand::Until { condition, body } => {
             any_list(condition) || any_list(body)
         }
-        CompoundCommand::For { items, body, .. } => {
+        CompoundCommand::For { items, body, .. } | CompoundCommand::Select { items, body, .. } => {
             items.as_ref().is_some_and(|items| any_word(items)) || any_list(body)
         }
+        CompoundCommand::Coproc { body, .. } => command_uses_coordinates(body),
         CompoundCommand::Case { word, items } => {
             is_one(word)
                 || items

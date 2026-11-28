@@ -15,7 +15,7 @@
 use crate::env::Environment;
 use crate::expand::word::{expand_word_part, field_text};
 use crate::lexer::parse_single_word;
-use oslo_base::ast::WordPart;
+use oslo_base::ast::{Word, WordPart};
 use oslo_base::error::Result;
 
 /// Run every expansion an arithmetic expression is subject to, yielding the text to tokenise.
@@ -26,7 +26,11 @@ pub fn expand_expression(env: &mut Environment, expr: &str) -> Result<String> {
         return Ok(expr.to_string());
     }
 
-    let word = parse_single_word(expr)?;
+    expand_expression_word(env, &parse_single_word(expr)?)
+}
+
+/// [`expand_expression`] for text already lexed as a word: an indexed array's subscript.
+pub(crate) fn expand_expression_word(env: &mut Environment, word: &Word) -> Result<String> {
     let mut out = String::new();
     for part in &word.parts {
         out.push_str(&render(env, part)?);
@@ -44,6 +48,16 @@ fn render(env: &mut Environment, part: &WordPart) -> Result<String> {
         // `$(( '2' * 3 ))` is a syntax error. Putting the quotes back is how that stays an error —
         // the arithmetic tokeniser has no token for `'`.
         WordPart::SingleQuoted(s) => return Ok(format!("'{s}'")),
+        // A backslash keeps only the escapes double quotes have, so `$(( \1 ))` is an error too.
+        WordPart::Escaped(s) => {
+            return Ok(s
+                .chars()
+                .map(|c| match c {
+                    '$' | '`' | '"' | '\\' => c.to_string(),
+                    _ => format!("\\{c}"),
+                })
+                .collect());
+        }
         _ => {}
     }
 

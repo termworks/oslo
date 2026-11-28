@@ -1,7 +1,8 @@
 //! Redirection conversion: files, fd duplication, here-documents and here-strings.
 
-use super::commands::{text_of, word_of};
-use crate::lexer::parse_heredoc_body;
+use super::commands::{holds_a_process_substitution, text_of, word_of};
+use crate::lexer::{TildeMode, parse_heredoc_body};
+use crate::syntax::lower::{convert_braced_words_from_str, single_word_with_tilde};
 use oslo_base::ast as oslo_ast;
 use oslo_base::error::Result;
 use rune::{Node, SyntaxKind, Tree};
@@ -24,6 +25,24 @@ pub(super) fn convert_redirects(
     Ok(out)
 }
 
+/// Append `2>&1` to a command, which is what `|&` after it means.
+pub(super) fn merge_stderr(command: &mut oslo_ast::Command) {
+    let redirection = oslo_ast::Redirection {
+        fd: Some(2),
+        kind: oslo_ast::RedirectKind::DupOutput,
+        target: oslo_ast::Word::from_literal("1"),
+        heredoc_content: None,
+        here_string: false,
+        fd_var: None,
+        ambiguous: false,
+    };
+    match command {
+        oslo_ast::Command::Simple(simple) => simple.redirections.push(redirection),
+        oslo_ast::Command::Compound { redirections, .. } => redirections.push(redirection),
+        oslo_ast::Command::FunctionDef { .. } => {}
+    }
+}
+
 /// Convert one redirection.
 ///
 /// Returns a `Vec` because `&>file` expands to two oslo redirections — there is no single node
@@ -38,13 +57,30 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         .tokens()
         .find(|token| token.kind() == SyntaxKind::Text)
         .and_then(|token| token.text(tree.source()).parse::<i32>().ok());
+    // `{name}>file`: the shell picks the descriptor and stores it in `name`.
+    let fd_var = rune::ast::Redirect::cast(node)
+        .and_then(|redirect| redirect.variable(tree.source()))
+        .map(str::to_string);
     let target_text = node
         .node(SyntaxKind::Word)
         .map(|word| text_of(tree, word))
         .unwrap_or_default();
     // Built through `word_of` rather than from the text: `cmd < <(gen)` redirects from a process
     // substitution, whose value is the name of a pipe and not anything the word lexer can read.
+    // A target is brace-expanded, and more than one word from it is an ambiguous redirect.
+    let mut ambiguous = false;
     let target = match node.node(SyntaxKind::Word) {
+        Some(word) if target_text.contains('{') && !holds_a_process_substitution(word) => {
+            let mut words = convert_braced_words_from_str(target_text)?;
+            match words.len() {
+                1 => words.remove(0),
+                0 => word_of(tree, word)?,
+                _ => {
+                    ambiguous = true;
+                    oslo_ast::Word::from_literal(target_text)
+                }
+            }
+        }
         Some(word) => word_of(tree, word)?,
         None => oslo_ast::Word::from_literal(""),
     };
@@ -62,13 +98,17 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         // Re-lexing it as a word is what keeps the quoting: expansion does the quote removal that
         // a textual strip used to do wrongly (`<<< a"b"c` lost nothing, `<<< "a"x"b"` lost the
         // wrong quotes).
+        // Only a leading tilde expands there: `<<< a=~` keeps its tilde.
         Some(SyntaxKind::LessLessLess) => {
+            let body = single_word_with_tilde(target_text, TildeMode::Leading)?;
             return Ok(vec![oslo_ast::Redirection {
                 fd,
                 kind: oslo_ast::RedirectKind::Heredoc,
                 target: oslo_ast::Word::from_literal(""),
-                heredoc_content: Some(target.clone()),
+                heredoc_content: Some(body),
                 here_string: true,
+                fd_var,
+                ambiguous: false,
             }]);
         }
 
@@ -89,6 +129,8 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     target: target.clone(),
                     heredoc_content: None,
                     here_string: false,
+                    fd_var,
+                    ambiguous,
                 },
                 oslo_ast::Redirection {
                     fd: Some(2),
@@ -96,6 +138,8 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
                     target: oslo_ast::Word::from_literal("1"),
                     heredoc_content: None,
                     here_string: false,
+                    fd_var: None,
+                    ambiguous: false,
                 },
             ]);
         }
@@ -108,6 +152,8 @@ pub(super) fn convert_redirect(tree: &Tree, node: &Node) -> Result<Vec<oslo_ast:
         target,
         heredoc_content: None,
         here_string: false,
+        fd_var,
+        ambiguous,
     }])
 }
 
@@ -120,24 +166,34 @@ fn convert_heredoc(
 ) -> Result<Vec<oslo_ast::Redirection>> {
     let strip_tabs = node.token(SyntaxKind::LessLessDash).is_some();
     let mut content = heredoc_body(tree, node);
-
-    // `<<-` strips leading tabs from every line, including the delimiter line. This runs on the
-    // raw text, before lexing: a tab is stripped because of where it sits in the line, which is a
-    // fact about the source and not about the parts it lexes into.
-    if strip_tabs {
-        content = content
-            .lines()
-            .map(|line| line.trim_start_matches('\t'))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
+    // A body the input ended inside still ends its last line, as bash reads it.
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
     }
 
     // A quoted delimiter (`<<'EOF'`) makes the whole body literal. The quotes are on the
     // delimiter, which is why the delimiter's *source text* is what decides.
     let expands = !delimiter.contains(['\'', '"', '\\']);
+
+    // `<<-` strips leading tabs from every line, including the delimiter line. This runs on the
+    // raw text, before lexing: a tab is stripped because of where it sits in the line, which is a
+    // fact about the source and not about the parts it lexes into. In an unquoted body a line
+    // ending in `\` runs on into the next, so that next one keeps its tabs.
+    if strip_tabs {
+        let mut stripped = String::with_capacity(content.len());
+        let mut continued = false;
+        for line in content.split_inclusive('\n') {
+            stripped.push_str(match continued {
+                true => line,
+                false => line.trim_start_matches('\t'),
+            });
+            let text = line.strip_suffix('\n').unwrap_or(line);
+            let backslashes = text.bytes().rev().take_while(|byte| *byte == b'\\').count();
+            continued = expands && line.ends_with('\n') && backslashes % 2 == 1;
+        }
+        content = stripped;
+    }
+
     let body = match expands {
         true => parse_heredoc_body(&content)?,
         false => oslo_ast::Word::from_literal(&content),
@@ -152,6 +208,8 @@ fn convert_heredoc(
         target: oslo_ast::Word::from_literal(delimiter.trim_matches(['\'', '"'])),
         heredoc_content: Some(body),
         here_string: false,
+        fd_var: None,
+        ambiguous: false,
     }])
 }
 
@@ -171,6 +229,35 @@ fn heredoc_body(tree: &Tree, node: &Node) -> String {
         Some(span) => tree.source().slice(*span).to_string(),
         None => String::new(),
     }
+}
+
+/// Where `node`'s text ends once the bodies of the here-documents it opens are counted: a body
+/// may follow the line the node ends on.
+pub(super) fn extent_with_heredocs(tree: &Tree, node: &Node) -> u32 {
+    let mut inside = Vec::new();
+    collect_openers(node, &mut inside);
+    if inside.is_empty() {
+        return node.span().end;
+    }
+    let mut bodies = Vec::new();
+    collect_bodies(tree.root(), &mut bodies);
+    let mut openers = Vec::new();
+    collect_openers(tree.root(), &mut openers);
+    let span = node.span();
+    let text = tree.source().text();
+    // A body is followed by its delimiter line, which belongs to it too.
+    let through_delimiter = |end: u32| {
+        let at = end as usize;
+        text.get(at..)
+            .and_then(|rest| rest.find('\n'))
+            .map_or(text.len() as u32, |newline| (at + newline + 1) as u32)
+    };
+    openers
+        .iter()
+        .zip(&bodies)
+        .filter(|(opener, _)| span.contains(opener.start))
+        .map(|(_, body)| through_delimiter(body.end))
+        .fold(span.end, u32::max)
 }
 
 fn collect_openers(node: &Node, out: &mut Vec<rune::Span>) {

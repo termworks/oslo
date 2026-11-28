@@ -12,6 +12,9 @@ mod operand;
 mod parser;
 
 pub use eval::eval_arithmetic;
+pub(crate) use eval::{eval_expanded_subscript, eval_subscript, in_subscript};
+pub use operand::expand_expression;
+pub(crate) use operand::expand_expression_word;
 
 #[cfg(test)]
 mod tests {
@@ -255,7 +258,9 @@ mod tests {
     fn assignment_to_a_non_variable_is_diagnosed() {
         assert!(err_of("1 = 2").contains("non-variable"));
         assert!(err_of("x = 2 = 3").contains("non-variable"));
-        assert!(err_of("++1").contains("non-variable"));
+        // A `++` with no variable to step is two signs, as in bash.
+        assert_eq!(eval("++1"), 1);
+        assert_eq!(eval("1 +++ 2"), 3);
     }
 
     // --- R3.3: literal bases. ---

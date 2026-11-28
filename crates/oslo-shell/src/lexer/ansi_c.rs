@@ -13,14 +13,30 @@
 /// Decoding stops at a NUL: a shell variable is a C string, so bash's `$'a\0b'` is one character
 /// long. Producing the byte and losing it later would be worse — it would reach `CString` and
 /// fail at exec time.
-pub(super) fn decode(raw: &str) -> String {
+///
+/// `\xHH` and `\NNN` are bytes, not code points: `$'\xe2\x94\x80'` is `─`, and a run that is not
+/// UTF-8 is carried as `oslo_base::lossless` carries any other byte.
+pub fn decode(raw: &str) -> String {
+    decode_in(raw, locale_is_utf8())
+}
+
+/// [`decode`] in a locale that is UTF-8 or not: outside one a `\u` past ASCII stays written out.
+fn decode_in(raw: &str, utf8: bool) -> String {
+    oslo_base::lossless::from_bytes(&decode_bytes(raw, utf8))
+}
+
+/// The bytes the body of `$'…'` stands for.
+fn decode_bytes(raw: &str, utf8: bool) -> Vec<u8> {
     let chars: Vec<char> = raw.chars().collect();
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut i = 0;
+    let push = |out: &mut Vec<u8>, c: char| {
+        out.extend(oslo_base::lossless::decode(c.encode_utf8(&mut [0; 4])))
+    };
 
     while i < chars.len() {
         if chars[i] != '\\' || i + 1 >= chars.len() {
-            out.push(chars[i]);
+            push(&mut out, chars[i]);
             i += 1;
             continue;
         }
@@ -43,10 +59,11 @@ pub(super) fn decode(raw: &str) -> String {
             _ => None,
         };
         if let Some(c) = simple {
-            out.push(c);
+            out.push(c as u8);
             continue;
         }
 
+        let byte = matches!(esc, '0'..='7' | 'x' | 'c');
         let decoded = match esc {
             // `\0nnn` spends its `0` as an introducer, so three digits still follow it; `\nnn`
             // has already spent one of its three. That is why `\0101` is `A` but `\1011` is `A1`.
@@ -55,12 +72,18 @@ pub(super) fn decode(raw: &str) -> String {
             'x' => radix_escape(&chars, &mut i, None, 0, 16, 2),
             'u' => radix_escape(&chars, &mut i, None, 0, 16, 4),
             'U' => radix_escape(&chars, &mut i, None, 0, 16, 8),
-            // `\cX` is the control character X masks down to; `\c\` is not special-cased because
-            // the byte it produces (NUL) would truncate the string anyway.
+            // `\cX` keeps the low five bits of X upper-cased (`\c?` is DEL), and `\c\\` spends
+            // both backslashes on one control-backslash.
             'c' => match chars.get(i) {
                 Some(&c) => {
                     i += 1;
-                    Some((c.to_ascii_uppercase() as u32) ^ 0x40)
+                    if c == '\\' && chars.get(i) == Some(&'\\') {
+                        i += 1;
+                    }
+                    Some(match c {
+                        '?' => 0x7f,
+                        _ => (c.to_ascii_uppercase() as u32) & 0x1f,
+                    })
                 }
                 None => None,
             },
@@ -70,23 +93,63 @@ pub(super) fn decode(raw: &str) -> String {
         match decoded {
             // A shell string cannot carry a NUL, so everything from here on is unreachable data.
             Some(0) => return out,
-            Some(v) => match char::from_u32(v) {
-                Some(c) => out.push(c),
-                // Lone surrogates and out-of-range code points: keep the source text rather than
-                // inventing a replacement character the user never wrote.
-                None => {
-                    out.push('\\');
-                    out.push(esc);
-                }
-            },
+            Some(v) if byte => out.push(v as u8),
+            // Outside a UTF-8 locale a character past ASCII has no encoding and stays written out.
+            Some(v) if v >= 0x80 && !utf8 => {
+                let text = match v <= 0xffff {
+                    true => format!("\\u{v:04X}"),
+                    false => format!("\\U{v:08X}"),
+                };
+                out.extend(text.bytes());
+            }
+            // A code point is written in UTF-8's original scheme, which is bash's for a surrogate
+            // or a value past U+10FFFF too.
+            Some(v) => out.extend(raw_code_point(v)),
             None => {
-                out.push('\\');
-                out.push(esc);
+                out.push(b'\\');
+                push(&mut out, esc);
             }
         }
     }
 
     out
+}
+
+/// Whether the locale the shell runs in is a UTF-8 one, read from its environment: `$'…'` is
+/// decoded as it is read, before any command of the program has run.
+fn locale_is_utf8() -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            name.contains("utf-8") || name.contains("utf8")
+        })
+}
+
+/// The bytes of `value` in UTF-8's original scheme, which reaches 31 bits in six bytes.
+fn raw_code_point(value: u32) -> Vec<u8> {
+    let len = match value {
+        0..=0x7f => 1,
+        0x80..=0x7ff => 2,
+        0x800..=0xffff => 3,
+        0x1_0000..=0x1f_ffff => 4,
+        0x20_0000..=0x3ff_ffff => 5,
+        _ => 6,
+    };
+    let lead: [u8; 7] = [0, 0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc];
+    let mut bytes = vec![0u8; len];
+    let mut rest = value;
+    for byte in bytes.iter_mut().skip(1).rev() {
+        *byte = 0x80 | (rest & 0x3f) as u8;
+        rest >>= 6;
+    }
+    bytes[0] = if len == 1 {
+        rest as u8
+    } else {
+        lead[len] | rest as u8
+    };
+    bytes
 }
 
 /// Consume up to `max - taken` further digits in `radix`, folding them onto `seed`.
@@ -120,7 +183,21 @@ fn radix_escape(
 
 #[cfg(test)]
 mod tests {
-    use super::decode;
+    use super::decode_in;
+
+    /// In a UTF-8 locale, which every case here but the last assumes.
+    fn decode(raw: &str) -> String {
+        decode_in(raw, true)
+    }
+
+    /// Outside a UTF-8 locale a character past ASCII has no encoding, so it stays written out.
+    #[test]
+    fn a_code_point_past_ascii_stays_escaped_outside_utf8() {
+        assert_eq!(
+            decode_in("\\u00e9 \\U1F600 \\u41", false),
+            "\\u00E9 \\U0001F600 A"
+        );
+    }
 
     #[test]
     fn control_escapes() {
@@ -142,6 +219,31 @@ mod tests {
         assert_eq!(decode("\\u00e9"), "é");
         assert_eq!(decode("\\U0001F600"), "\u{1F600}");
         assert_eq!(decode("\\cA"), "\x01");
+        assert_eq!(decode("\\c1"), "\u{11}");
+        assert_eq!(decode("\\c\\\\"), "\u{1c}");
+        assert_eq!(decode("\\c?"), "\u{7f}");
+    }
+
+    /// A surrogate and a value past U+10FFFF come out as the bytes bash writes for them.
+    #[test]
+    fn out_of_range_code_points_are_raw_bytes() {
+        let bytes = |s: &str| oslo_base::lossless::decode(&decode(s));
+        assert_eq!(bytes("\\uD800"), vec![0xed, 0xa0, 0x80]);
+        assert_eq!(bytes("\\U110000"), vec![0xf4, 0x90, 0x80, 0x80]);
+        assert_eq!(
+            bytes("\\U7fffffff"),
+            vec![0xfd, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf]
+        );
+    }
+
+    /// `\x` and octal escapes are bytes: a UTF-8 run is one character, anything else stays bytes.
+    #[test]
+    fn byte_escapes_are_bytes() {
+        let bytes = |s: &str| oslo_base::lossless::decode(&decode(s));
+        assert_eq!(decode("\\xe2\\x94\\x80"), "─");
+        assert_eq!(decode("\\303\\251"), "é");
+        assert_eq!(bytes("\\xff\\376"), vec![0xff, 0xfe]);
+        assert_eq!(bytes("\\777"), vec![0xff]);
     }
 
     /// An octal escape is at most three digits, so the fourth character is data again.

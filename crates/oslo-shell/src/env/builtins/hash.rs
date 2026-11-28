@@ -7,7 +7,8 @@
 //!
 //! The table lives in a thread-local rather than in [`Environment`], so it is per-process: a
 //! forked subshell inherits a copy and its own `hash -r` cannot reach back into the parent, which
-//! is what bash does too.
+//! is what bash does too. Listings walk it in bash's order: by FNV-1 bucket of the name, newest
+//! first within a bucket.
 
 use crate::env::builtins::spawn::resolve_program;
 use crate::env::origin_now;
@@ -15,13 +16,23 @@ use crate::env::scope::Environment;
 use oslo_base::error::Result;
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+const USAGE: &str = "hash: usage: hash [-lr] [-p pathname] [-dt] [name ...]";
+/// The bucket count of bash's command hash table, which decides its listing order.
+const BUCKETS: u32 = 256;
+
+struct Entry {
+    path: PathBuf,
+    hits: u32,
+    /// When the entry was made, so a listing can put the newest of a bucket first.
+    seq: u64,
+}
+
 thread_local! {
-    /// Command word to (resolved path, number of times the shell has looked it up).
-    static TABLE: RefCell<BTreeMap<String, (PathBuf, u32)>> =
-        const { RefCell::new(BTreeMap::new()) };
+    static TABLE: RefCell<HashMap<String, Entry>> = RefCell::new(HashMap::new());
+    static SEQ: Cell<u64> = const { Cell::new(0) };
 
     /// Whether `hashall` is on. Mirrored here rather than read from the `Environment`, because
     /// [`lookup`] is a free function — every caller that asks "what would this word run" reaches
@@ -32,13 +43,10 @@ thread_local! {
 
 /// Tell the table whether `hashall` is on, when `set` changes it.
 ///
-/// The same shape `set -m` uses for job control: an option that has to *do* something rather than
-/// only be remembered. Without it `set +o hashall` was accepted and the shell went on hashing,
-/// which is the one answer a script setting an option is entitled not to get.
+/// Turning it off empties the table, as bash does: what is left would otherwise be consulted by
+/// `hash name` and reported by `hash` in a shell that says it is not hashing.
 pub fn note_hashall(on: bool) {
     HASHING.with(|hashing| hashing.set(on));
-    // Turning it off empties the table, as bash does: what is left would otherwise be consulted by
-    // `hash name` and reported by `hash` in a shell that says it is not hashing.
     if !on {
         forget_all();
     }
@@ -49,9 +57,18 @@ fn hashing() -> bool {
     HASHING.with(Cell::get)
 }
 
-/// `hash [-r] [name…]`.
-pub fn builtin_hash(_env: &mut Environment, args: &[String]) -> Result<i32> {
-    let mut cleared = false;
+#[derive(Default)]
+struct Options {
+    reset: bool,
+    list: bool,
+    delete: bool,
+    terse: bool,
+    path: Option<String>,
+}
+
+/// The option run, and where the names start; `Err` is the status of a usage error.
+fn parse(args: &[String]) -> std::result::Result<(Options, usize), i32> {
+    let mut opts = Options::default();
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
@@ -62,42 +79,79 @@ pub fn builtin_hash(_env: &mut Environment, args: &[String]) -> Result<i32> {
         if arg.len() < 2 || !arg.starts_with('-') {
             break;
         }
-        for c in arg[1..].chars() {
+        for (at, c) in arg[1..].char_indices() {
             match c {
-                'r' => {
-                    // `forget_all` also drops the line editor's own set of runnable names, built
-                    // by walking `$PATH`: `hash -r` means "forget where commands live", so a
-                    // completion list that outlived the reset would be offering a path the shell
-                    // has just been told to stop trusting.
-                    forget_all();
-                    cleared = true;
+                'r' => opts.reset = true,
+                'l' => opts.list = true,
+                'd' => opts.delete = true,
+                't' => opts.terse = true,
+                'p' => {
+                    let rest = &arg[1 + at + 1..];
+                    let value = match rest.is_empty() {
+                        true => {
+                            i += 1;
+                            args.get(i).cloned()
+                        }
+                        false => Some(rest.to_string()),
+                    };
+                    let Some(value) = value else {
+                        let body = "hash: -p: option requires an argument";
+                        crate::env::complain_option(args, 'p', body, USAGE);
+                        return Err(2);
+                    };
+                    opts.path = Some(value);
+                    break;
                 }
                 other => {
                     crate::env::complain_option(
                         args,
                         other,
                         &format!("hash: -{other}: invalid option"),
-                        "hash: usage: hash [-r] [name ...]",
+                        USAGE,
                     );
-                    return Ok(2);
+                    return Err(2);
                 }
             }
         }
         i += 1;
     }
+    Ok((opts, i.min(args.len())))
+}
 
-    let names = &args[i.min(args.len())..];
+/// `hash [-lr] [-p pathname] [-dt] [name …]`.
+pub fn builtin_hash(env: &mut Environment, args: &[String]) -> Result<i32> {
+    let (opts, start) = match parse(args) {
+        Ok(parsed) => parsed,
+        Err(status) => return Ok(status),
+    };
+    let names = &args[start..];
+
+    if opts.reset {
+        // Also drops the line editor's own set of runnable names, built by walking `$PATH`.
+        forget_all();
+    }
+    if (opts.delete || opts.terse) && names.is_empty() {
+        let letter = if opts.delete { 'd' } else { 't' };
+        let body = format!("hash: -{letter}: option requires an argument");
+        crate::env::complain(args, &format!("-{letter}"), &body, "needs a name", None);
+        return Ok(1);
+    }
     if names.is_empty() {
-        // `hash -r` is a request to forget, not to report: printing the table it just emptied
-        // put "hash table empty" on the stdout of every script that clears the cache.
-        if !cleared {
-            print_table();
+        if opts.path.is_some() {
+            eprintln!("{USAGE}");
+            return Ok(2);
+        }
+        match opts.list {
+            true => print_portable(),
+            // `hash -r` is a request to forget, not to report.
+            false if !opts.reset => print_table(),
+            false => {}
         }
         return Ok(0);
     }
-
-    // Naming something to remember, in a shell that is not remembering, is a request that cannot be
-    // honoured — so it is refused rather than silently succeeding.
+    if opts.terse {
+        return Ok(print_terse(args, names, opts.list));
+    }
     if !hashing() {
         eprintln!("{}hash: hashing disabled", origin_now());
         return Ok(1);
@@ -105,23 +159,59 @@ pub fn builtin_hash(_env: &mut Environment, args: &[String]) -> Result<i32> {
 
     let mut status = 0;
     for name in names {
-        match resolve_program(name) {
-            Some(path) => TABLE.with(|t| {
-                t.borrow_mut().insert(name.clone(), (path, 0));
-            }),
-            None => {
-                crate::env::complain(
-                    args,
-                    name,
-                    &format!("hash: {name}: not found"),
-                    "not on the PATH",
-                    Some("`hash` on its own lists what has been found so far"),
-                );
+        // A word with a slash is a path, not something a `$PATH` search could answer.
+        if name.contains('/') {
+            continue;
+        }
+        if let Some(path) = &opts.path {
+            insert(name, PathBuf::from(path), 0);
+        } else if opts.delete {
+            if TABLE.with(|t| t.borrow_mut().remove(name)).is_none() {
+                not_found(args, name);
                 status = 1;
+            }
+        } else if env.get_function(name).is_some() || env.is_builtin(name) {
+            // A function or a builtin is found before `$PATH`, so there is nothing to remember.
+        } else {
+            TABLE.with(|t| t.borrow_mut().remove(name));
+            match resolve_program(name) {
+                Some(path) => insert(name, path, 0),
+                None => {
+                    not_found(args, name);
+                    status = 1;
+                }
             }
         }
     }
     Ok(status)
+}
+
+fn not_found(args: &[String], name: &str) {
+    crate::env::complain(
+        args,
+        name,
+        &format!("hash: {name}: not found"),
+        "not in the table or on the PATH",
+        Some("`hash` on its own lists what has been found so far"),
+    );
+}
+
+/// `hash -t`: the remembered path, prefixed with the name when several were asked for. `-l` asks
+/// for each as the `hash -p` command that remembers it.
+fn print_terse(args: &[String], names: &[String], reusable: bool) -> i32 {
+    let mut status = 0;
+    for name in names {
+        match recall(name) {
+            Some(path) if reusable => println!("builtin hash -p {} {name}", path.display()),
+            Some(path) if names.len() == 1 => println!("{}", path.display()),
+            Some(path) => println!("{name}\t{}", path.display()),
+            None => {
+                not_found(args, name);
+                status = 1;
+            }
+        }
+    }
+    status
 }
 
 /// Resolve a command word through the table, filling it in on a miss.
@@ -138,8 +228,6 @@ pub fn lookup(name: &str) -> Option<PathBuf> {
         return resolve_program(name);
     }
     // A name this directory hides is not on `$PATH` as far as anything asking here is concerned.
-    // Here rather than at the call sites because this *is* the question "what would `name` run",
-    // and execution, `oslo.run`, argc's completion and the nix probe all ask it through this.
     if oslo_base::command::hidden(name) {
         return None;
     }
@@ -149,10 +237,11 @@ pub fn lookup(name: &str) -> Option<PathBuf> {
         return resolve_program(name);
     }
     if let Some(path) = recall(name) {
-        // A remembered path that has since been removed is worse than no cache at all: the shell
-        // would report "cannot execute" for a command that a fresh `PATH` search would find in
-        // the next directory along. Re-search instead, which also drops the dead entry.
-        if path.is_file() {
+        // A script trusts the table as bash does, unless `checkhash` asks for the check. At a
+        // prompt a remembered path that has since been removed is searched for again, which also
+        // drops the dead entry.
+        let trusted = !super::shopt::on("checkhash") && !crate::exec::pipeline::is_interactive();
+        if trusted || path.is_file() {
             return Some(path);
         }
         TABLE.with(|t| t.borrow_mut().remove(name));
@@ -171,18 +260,46 @@ pub fn forget_all() {
     oslo_ui::invalidate_command_cache();
 }
 
+/// Every remembered command and its path, in the order bash walks its table: `BASH_CMDS`.
+pub fn entries() -> Vec<(String, PathBuf)> {
+    in_bash_order()
+        .into_iter()
+        .map(|(name, path, _)| (name, path))
+        .collect()
+}
+
+/// `BASH_CMDS[name]=path`: remember `path` for `name` as `hash -p` does.
+pub fn assign(name: &str, path: &str) {
+    if !name.contains('/') {
+        insert(name, PathBuf::from(oslo_base::lossless::to_os(path)), 0);
+    }
+}
+
+/// Record `path` for `name` with `hits`, keeping an existing entry's place in the listing.
+fn insert(name: &str, path: PathBuf, hits: u32) {
+    let seq = SEQ.with(|seq| {
+        seq.set(seq.get() + 1);
+        seq.get()
+    });
+    TABLE.with(|t| {
+        let mut table = t.borrow_mut();
+        let entry = table.entry(name.to_string()).or_insert(Entry {
+            path: path.clone(),
+            hits,
+            seq,
+        });
+        entry.path = path;
+        entry.hits = hits;
+    });
+}
+
 /// Record that `name` resolved to `path`, and count the lookup that found it.
 ///
 /// The path is *replaced*, not kept: a stale entry that survived a `PATH` change is the failure
-/// mode a command cache exists to be blamed for, and `hash -r` is not the only thing that should
-/// be able to correct one.
+/// mode a command cache exists to be blamed for.
 pub fn remember(name: &str, path: PathBuf) {
-    TABLE.with(|t| {
-        let mut table = t.borrow_mut();
-        let entry = table.entry(name.to_string()).or_insert((path.clone(), 0));
-        entry.0 = path;
-        entry.1 += 1;
-    });
+    let hits = TABLE.with(|t| t.borrow().get(name).map_or(0, |entry| entry.hits));
+    insert(name, path, hits + 1);
 }
 
 /// Look up a remembered location, counting the hit.
@@ -190,35 +307,63 @@ pub fn recall(name: &str) -> Option<PathBuf> {
     TABLE.with(|t| {
         let mut table = t.borrow_mut();
         let entry = table.get_mut(name)?;
-        entry.1 += 1;
-        Some(entry.0.clone())
+        entry.hits += 1;
+        Some(entry.path.clone())
+    })
+}
+
+/// bash's string hash, FNV-1 over the bytes, which orders the listings of its hash tables.
+pub(super) fn fnv(name: &str) -> u32 {
+    name.bytes().fold(2_166_136_261u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    })
+}
+
+fn bucket(name: &str) -> u32 {
+    fnv(name) & (BUCKETS - 1)
+}
+
+/// Every entry as `(name, path, hits)`, in the order bash walks its table.
+fn in_bash_order() -> Vec<(String, PathBuf, u32)> {
+    TABLE.with(|t| {
+        let table = t.borrow();
+        let mut entries: Vec<(&String, &Entry)> = table.iter().collect();
+        entries.sort_by_key(|(name, entry)| (bucket(name), std::cmp::Reverse(entry.seq)));
+        entries
+            .into_iter()
+            .map(|(name, entry)| (name.clone(), entry.path.clone(), entry.hits))
+            .collect()
     })
 }
 
 fn print_table() {
-    // Distinct from "empty", and bash draws the same distinction: a shell that is not hashing has
-    // no table to be empty, and saying it does invites `hash name` to be tried next.
+    // Distinct from "empty", and bash draws the same distinction.
     if !hashing() {
         eprintln!("{}hash: hashing disabled", origin_now());
         return;
     }
-    TABLE.with(|t| {
-        let table = t.borrow();
-        if table.is_empty() {
-            // Not an error: bash says so on stdout and exits 0.
-            println!("hash: hash table empty");
-            return;
-        }
-        println!("hits\tcommand");
-        for (path, hits) in table.values() {
-            println!("{:>4}\t{}", hits, path.display());
-        }
-    });
+    let entries = in_bash_order();
+    if entries.is_empty() {
+        // Not an error: bash says so on stdout and exits 0.
+        println!("hash: hash table empty");
+        return;
+    }
+    println!("hits\tcommand");
+    for (_, path, hits) in entries {
+        println!("{:>4}\t{}", hits, path.display());
+    }
+}
+
+/// `hash -l`: the table as commands that would rebuild it.
+fn print_portable() {
+    for (name, path, _) in in_bash_order() {
+        println!("builtin hash -p {} {name}", path.display());
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_hash, recall, remember};
+    use super::{bucket, builtin_hash, recall, remember};
     use crate::env::Environment;
     use std::path::PathBuf;
 
@@ -247,9 +392,7 @@ mod tests {
         assert!(recall("oslo-hash-test").is_none());
     }
 
-    /// The command-resolution entry point: a search fills the table, and the next lookup is
-    /// answered from it. Without this the table only ever held what an explicit `hash name` put
-    /// there, and `sh; hash` reported an empty cache where bash listed `sh`.
+    /// A search fills the table, and the next lookup is answered from it.
     #[test]
     fn a_lookup_populates_the_table_and_the_next_one_is_served_from_it() {
         assert_eq!(super::lookup("sh"), super::resolve_program("sh"));
@@ -258,8 +401,7 @@ mod tests {
         assert!(recall("no-such-command-xyz").is_none());
     }
 
-    /// A word with a slash is a path, not a `PATH` search, so it must not enter the table:
-    /// `./x` means something different in every directory.
+    /// A word with a slash is a path, not a `PATH` search, so it must not enter the table.
     #[test]
     fn a_path_is_not_hashed() {
         assert!(super::lookup("/bin/sh").is_some());
@@ -274,9 +416,7 @@ mod tests {
         assert_eq!(recall("oslo-moved"), Some(PathBuf::from("/new/oslo-moved")));
     }
 
-    /// `hash -r` has to reach the *other* cache too: the line editor completes from its own set
-    /// of `$PATH` executables, and a shell that kept offering a command it had just been told to
-    /// forget would be contradicting itself.
+    /// `hash -r` has to reach the line editor's own set of `$PATH` executables too.
     #[test]
     fn resetting_also_drops_the_completion_cache() {
         use oslo_ui::command_index::CommandIndex;
@@ -297,5 +437,14 @@ mod tests {
     fn an_unknown_option_is_a_usage_error() {
         let mut env = Environment::new();
         assert_eq!(builtin_hash(&mut env, &argv(&["hash", "-Z"])).unwrap(), 2);
+    }
+
+    /// The buckets bash's table puts these in, which is the order `hash` lists them.
+    #[test]
+    fn names_fall_in_bashs_buckets() {
+        assert_eq!(bucket("grep"), 33);
+        assert_eq!(bucket("ls"), 122);
+        assert_eq!(bucket("cat"), 187);
+        assert_eq!(bucket("sed"), 215);
     }
 }

@@ -56,8 +56,8 @@ struct OptionError {
 
 /// The option letters this `read` has, printed under a usage error. Unprefixed, as bash leaves
 /// its own — the line above it has already said where the error came from.
-const USAGE: &str = "read: usage: read [-ers] [-a array] [-d delim] [-n nchars] [-N nchars] [-p prompt] \
-     [-t timeout] [-u fd] [name ...]";
+const USAGE: &str = "read: usage: read [-ers] [-a array] [-d delim] [-i text] [-n nchars] [-N nchars] \
+     [-p prompt] [-t timeout] [-u fd] [name ...]";
 
 fn usage(word: impl Into<String>, message: String) -> OptionError {
     OptionError {
@@ -78,7 +78,7 @@ fn invalid(word: impl Into<String>, message: String) -> OptionError {
 /// Which option letters consume a value, either as the rest of their cluster or as the next
 /// argument. `read -n3`, `read -n 3` and `read -rn3` all mean the same thing.
 fn takes_argument(flag: char) -> bool {
-    matches!(flag, 'p' | 'n' | 'N' | 't' | 'd' | 'u' | 'a')
+    matches!(flag, 'p' | 'n' | 'N' | 't' | 'd' | 'u' | 'a' | 'i')
 }
 
 /// Pull the value of `flag` out of the cluster remainder, or out of the next argument.
@@ -161,7 +161,14 @@ fn apply_flag<'a>(
         't' => opts.timeout = Some(timeout_seconds(&value)?),
         'u' => opts.fd = parse_number('u', &value)?,
         // `-d ''` is bash's way of spelling a NUL delimiter, which is what `find -print0` needs.
-        'd' => opts.delim = value.bytes().next().unwrap_or(0),
+        'd' => {
+            opts.delim = oslo_base::lossless::decode(&value)
+                .first()
+                .copied()
+                .unwrap_or(0)
+        }
+        // `-i text` is readline's initial text, which a read from a descriptor ignores.
+        'i' => {}
         _ => unreachable!("takes_argument admits only the letters handled here"),
     }
     Ok("")
@@ -198,18 +205,77 @@ fn parse_options(args: &[String]) -> std::result::Result<ReadOptions, OptionErro
 ///
 /// `-N` reads a fixed number of characters, so there is no delimiter to have split on and no
 /// trailing whitespace that a delimiter would have removed — the text is assigned as it stands.
-fn assign_verbatim(env: &mut Environment, names: &[String], text: &str) {
+fn assign_verbatim(env: &mut Environment, names: &[String], text: &str) -> bool {
     match names.split_first() {
         Some((first, rest)) => {
-            env.set_var(first, text, false);
+            let mut assigned = assign_name(env, first, text);
             for name in rest {
-                env.set_var(name, "", false);
+                assigned &= assign_name(env, name, "");
             }
+            assigned
         }
-        None => {
-            env.set_var("REPLY", text, false);
+        None => env.set_var("REPLY", text, false),
+    }
+}
+
+/// Assign one field to a name operand, which may be `name[subscript]`. `false` if a read-only
+/// name or a bad subscript refused it.
+pub(super) fn assign_name(env: &mut Environment, name: &str, value: &str) -> bool {
+    match crate::env::builtins::arrays::assign_target(env, name, value) {
+        Ok(assigned) => {
+            let base = name.split_once('[').map_or(name, |(base, _)| base);
+            assigned || !env.is_readonly(base)
+        }
+        Err(e) => {
+            crate::env::complain(
+                &crate::env::line("read", std::slice::from_ref(&name.to_string())),
+                name,
+                &format!("read: {e}"),
+                "not an element",
+                None,
+            );
+            false
         }
     }
+}
+
+/// Refuse a name operand that is neither a name nor an element, before any input is read.
+fn names_are_valid(env: &Environment, args: &[String], opts: &ReadOptions) -> bool {
+    let not_a_name = |name: &str| {
+        crate::env::complain(
+            args,
+            name,
+            &format!(
+                "read: `{}': not a valid identifier",
+                oslo_base::shown::shown(name)
+            ),
+            "not a name",
+            None,
+        );
+    };
+    for name in &opts.names {
+        if crate::env::builtins::arrays::parse_target(name).is_none() {
+            not_a_name(name);
+            return false;
+        }
+    }
+    if let Some(array) = &opts.array {
+        if !crate::env::scope::is_valid_identifier(array) {
+            not_a_name(array);
+            return false;
+        }
+        if env.is_assoc(array) {
+            crate::env::complain(
+                args,
+                array,
+                &format!("read: {array}: not an indexed array"),
+                "an associative array",
+                Some("`read -a` fills an indexed array"),
+            );
+            return false;
+        }
+    }
+    true
 }
 
 /// `read [-rs] [-p prompt] [-n N] [-N N] [-t sec] [-d delim] [-u fd] [-a array] [name…]`
@@ -245,6 +311,10 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     };
 
+    if !names_are_valid(env, args, &opts) {
+        return Ok(1);
+    }
+
     // The prompt is a terminal courtesy: bash prints nothing when the input is a file or a pipe,
     // and a script that redirects `read` must not find the prompt in its output.
     if let Some(prompt) = &opts.prompt
@@ -252,7 +322,7 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
     {
         let _ = nix::unistd::write(
             unsafe { std::os::fd::BorrowedFd::borrow_raw(2) },
-            prompt.as_bytes(),
+            &oslo_base::lossless::decode(prompt),
         );
     }
 
@@ -270,6 +340,7 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
         limit: opts.limit,
         timeout: opts.timeout,
         silent: opts.silent,
+        utf8: crate::expand::locale::is_utf8(env),
     };
     let line = match read_logical_line(&spec) {
         Ok(line) => line,
@@ -299,9 +370,11 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
             return Ok(1);
         }
     } else if opts.exact || opts.names.is_empty() {
-        assign_verbatim(env, &opts.names, &line.text());
-    } else {
-        assign_fields(env, &opts.names, &line);
+        if !assign_verbatim(env, &opts.names, &line.text()) {
+            return Ok(1);
+        }
+    } else if !assign_fields(env, &opts.names, &line) {
+        return Ok(1);
     }
 
     Ok(status_of(line.stop))

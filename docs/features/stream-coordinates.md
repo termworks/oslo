@@ -11,6 +11,9 @@ This is the job `xargs` exists for, without `xargs`: no `-I{}`, no second quotin
 process reading a format string. The same grammar reaches back through the pipeline, back through
 the session, and at what each stage *was* as well as what it printed.
 
+Coordinates are prompt syntax: they expand in an interactive shell (`oslo -i -c` included). A script
+or a plain `oslo -c` reads `{0:0}`, `{1..}` and `x{..3}y` as bash does, as literal words.
+
 <!-- demo:begin -->
 [![stream-coordinates demo](https://asciinema.org/a/1263429.svg)](https://asciinema.org/a/1263429)
 <!-- demo:end -->

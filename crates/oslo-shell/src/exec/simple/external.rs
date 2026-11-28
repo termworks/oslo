@@ -48,12 +48,30 @@ pub(crate) enum Lookup {
 /// is dropped whenever `PATH` is assigned or `hash -r` runs.
 pub(crate) fn look_up_command(name: &str) -> Lookup {
     if name.contains('/') {
-        return classify_path(Path::new(name));
+        return classify_path(Path::new(&oslo_base::lossless::to_os(name)));
     }
     match crate::env::builtins::hash_lookup(name) {
         Some(path) => Lookup::Program(path),
+        // A file of that name on `$PATH` that cannot be run is reported as such, as bash does.
+        None if on_path_unrunnable(name) => Lookup::NotExecutable,
         None => Lookup::NotFound,
     }
+}
+
+/// Whether a `$PATH` directory holds a regular file called `name` that this process may not run.
+fn on_path_unrunnable(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = if dir.as_os_str().is_empty() {
+            Path::new(".").join(name)
+        } else {
+            dir.join(name)
+        };
+        candidate.is_file()
+            && nix::unistd::access(&candidate, nix::unistd::AccessFlags::X_OK).is_err()
+    })
 }
 
 /// Classify a path operand: does it exist, is it a directory, may this process execute it?
@@ -89,6 +107,17 @@ pub(crate) fn run_external(
         .map(|w| exec_cstring(&oslo_base::lossless::decode(w)))
         .collect();
 
+    // The command this process ends with replaces it rather than becoming its child, unless a
+    // process substitution is still open for it to clean up afterwards.
+    if super::oneshot::current() {
+        crate::exec::compound::flush_stdout();
+        // An implicit `exec`, which lowers the level as an explicit one does.
+        if super::oneshot::lowers_level() {
+            env.adjust_shell_level(-1);
+        }
+        exec_program(env, path, cmd_name, &c_path, &c_args, redirections);
+    }
+
     unsafe {
         match oslo_base::forksafe::quiesced(|| fork()) {
             Ok(ForkResult::Child) => {
@@ -97,22 +126,7 @@ pub(crate) fn run_external(
                 // until this call lands the child is a background process as far as the tty
                 // driver is concerned.
                 job::join_foreground_group(None);
-                // Before anything else, and in particular before `execv`: the program about to
-                // replace this process must not inherit the shell's own signal policy.
-                crate::exec::job::reset_signals_for_child();
-
-                // Nothing in this process will ever restore a descriptor — `execv` replaces the
-                // whole table — so the guard saves no copies for the new program to inherit.
-                let mut guard = RedirectGuard::for_exec();
-                if let Err(e) = guard.apply(env, redirections) {
-                    std::process::exit(report_redirect_failure(&env.origin(), &e));
-                }
-
-                // Including the shell-script fallback for a file with no `#!` line; see there.
-                crate::env::builtins::spawn::exec_or_interpret(&c_path, &c_args, None);
-
-                eprintln!("oslo: exec failed for {}", cmd_name);
-                std::process::exit(126);
+                exec_program(env, path, cmd_name, &c_path, &c_args, redirections);
             }
             Ok(ForkResult::Parent { child }) => {
                 // `None` when job control is off, which is when the child is still in the
@@ -137,7 +151,9 @@ pub(crate) fn run_external(
                         });
                     }
                 }
+                crate::exec::pipeline::forget_death();
                 let status = wait_for_child(child, cmd_name, words);
+                crate::exec::pipeline::announce_death(env, None, || words.join(" "));
                 if pgid.is_some() && watching {
                     job::stand_down();
                     // Whatever the watcher did, said in the shell's own voice — and a hook, so a
@@ -159,6 +175,42 @@ pub(crate) fn run_external(
     }
 }
 
+/// Apply `redirections` and exec `path` in this process, reporting a failure as bash does.
+fn exec_program(
+    env: &mut Environment,
+    path: &Path,
+    cmd_name: &str,
+    c_path: &CString,
+    c_args: &[CString],
+    redirections: &[Redirection],
+) -> ! {
+    // Before `execv`: the program about to replace this process must not inherit the shell's own
+    // signal policy.
+    crate::exec::job::reset_signals_for_child();
+    // Nothing in this process will ever restore a descriptor — `execv` replaces the whole table —
+    // so the guard saves no copies for the new program to inherit.
+    let mut guard = RedirectGuard::for_exec();
+    if let Err(e) = guard.apply(env, redirections) {
+        std::process::exit(report_redirect_failure(&env.origin(), &e));
+    }
+    // The program finds its own path in `$_`, as bash puts it in every command's environment.
+    env.set_var("_", &oslo_base::lossless::encode(path.as_os_str()), true);
+    // Including the shell-script fallback for a file with no `#!` line; see there.
+    let failure = crate::env::builtins::spawn::exec_or_interpret(c_path, c_args, None);
+    // A file that is there but answers ENOENT names an interpreter that is not.
+    let bad_interpreter = failure == nix::errno::Errno::ENOENT && path.exists();
+    let why = match failure {
+        nix::errno::Errno::ENOEXEC => "cannot execute binary file: Exec format error",
+        _ if bad_interpreter => "bad interpreter: No such file or directory",
+        other => other.desc(),
+    };
+    eprintln!("{}{}: {why}", env.origin(), cmd_name);
+    std::process::exit(match failure {
+        nix::errno::Errno::ENOENT if !bad_interpreter => 127,
+        _ => 126,
+    });
+}
+
 /// Wait for a foreground child and turn its wait status into an exit status.
 ///
 /// `WUNTRACED` is not optional now that children are started with SIGTSTP at `SIG_DFL`
@@ -175,18 +227,21 @@ pub(crate) fn run_external(
 /// where the oracle's behaviour is indistinguishable from a deadlock.
 fn wait_for_child(child: Pid, cmd_name: &str, words: &[String]) -> i32 {
     loop {
-        match waitpid(child, Some(WaitPidFlag::WUNTRACED)) {
+        let waited = waitpid(child, Some(WaitPidFlag::WUNTRACED));
+        job::note_wait_returned();
+        match waited {
             Ok(WaitStatus::Exited(_, code)) => {
                 crate::exec::argv::note_signal(None);
                 return code;
             }
             // A shell reports a signal death as 128 + the signal number, which is how `$?` tells
             // `kill -9` (137) apart from an exit status of 9.
-            Ok(WaitStatus::Signaled(_, sig, _)) => {
+            Ok(WaitStatus::Signaled(_, sig, core)) => {
                 // Recorded, not just folded into the status: `128 + n` cannot tell a program
                 // killed by signal `n` from one that called `exit(128 + n)`, and a caller that
                 // captured this command's output is about to be asked which it was.
                 crate::exec::argv::note_signal(Some(sig as i32));
+                crate::exec::pipeline::note_death(child, sig as i32, core);
                 // **R7.2: the Ctrl-C the shell never saw.** The terminal sends SIGINT to the
                 // foreground *child*, and a shell waiting on one is not in that group — so the
                 // interrupt machinery hears nothing, and the only evidence that a key was pressed

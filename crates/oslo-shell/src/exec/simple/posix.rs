@@ -81,9 +81,8 @@ pub(super) fn redirect_failure(env: &Environment, name: &str, status: i32) -> Re
 /// An assignment the environment refused: read-only, or a name it cannot represent.
 ///
 /// POSIX calls this a *variable assignment error* and ends a non-interactive shell over it, with
-/// no builtin involved at all — `r=2` on a read-only `r` is enough. Everywhere else the command
-/// simply failed, which is still a change: `apply_assignments_only` used to answer `Ok(0)` and
-/// report success for an assignment that never happened.
+/// no builtin involved at all — `r=2` on a read-only `r` is enough. Everywhere else the rest of
+/// the top-level command is abandoned with status 1, which is what bash does outside POSIX mode.
 ///
 /// The diagnostic came from `Environment::set_var`, which is where the reason is known.
 pub(super) fn assignment_failure(env: &Environment, name: &str) -> Result<i32> {
@@ -99,7 +98,8 @@ pub(super) fn assignment_failure(env: &Environment, name: &str) -> Result<i32> {
             },
         ));
     }
-    Ok(err.failure_status())
+    // Outside POSIX mode bash abandons the rest of the top-level command instead, with status 1.
+    Err(ShellError::Abandoned)
 }
 
 /// Whether command search puts a special builtin ahead of a shell function (POSIX 2.9.1.1).
@@ -178,7 +178,10 @@ mod tests {
             1
         );
         assert_eq!(redirect_failure(&env, ":", 1).expect("not fatal"), 1);
-        assert_eq!(assignment_failure(&env, "r").expect("not fatal"), 1);
+        assert!(matches!(
+            assignment_failure(&env, "r"),
+            Err(ShellError::Abandoned)
+        ));
     }
 
     #[test]
@@ -214,9 +217,10 @@ mod tests {
             Err(ShellError::Exit(status)) => assert_eq!(status, 1),
             other => panic!("expected Exit(1), got {:?}", other),
         }
-        assert_eq!(
-            assignment_failure(&Environment::new(), "r").expect("not fatal"),
-            1
-        );
+        // Outside POSIX mode the rest of the top-level command is abandoned instead.
+        assert!(matches!(
+            assignment_failure(&Environment::new(), "r"),
+            Err(ShellError::Abandoned)
+        ));
     }
 }

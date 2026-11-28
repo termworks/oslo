@@ -192,7 +192,7 @@ const PLAIN: &[Plain] = &[
         stderr: "oslo: export: `2FOO=x': not a valid identifier",
     },
     Plain {
-        script: "unset a-b",
+        script: "unset -v a-b",
         stderr: "oslo: unset: `a-b': not a valid identifier",
     },
     Plain {
@@ -300,8 +300,8 @@ const PLAIN: &[Plain] = &[
         stderr: "oslo: declare: NOPE: not found",
     },
     Plain {
-        script: "declare -A x",
-        stderr: "oslo: declare: -A: associative arrays are not supported",
+        script: "declare -a x; declare -A x",
+        stderr: "oslo: declare: x: cannot convert indexed to associative array",
     },
     // A name the shell was *given* rather than one written in the script. It reaches stderr, and
     // an escape sequence in it is not text a terminal shows but an instruction it obeys — so what
@@ -334,7 +334,7 @@ const PLAIN: &[Plain] = &[
         stderr: "oslo: rm: cannot remove $'\\E[2Jx': No such file or directory",
     },
     Plain {
-        script: "e=$(printf '\\033[2Jx'); unset \"$e\"",
+        script: "e=$(printf '\\033[2Jx'); unset -v \"$e\"",
         stderr: "oslo: unset: `$'\\E[2Jx'': not a valid identifier",
     },
     // An `OSC 8` payload, which is the half that survives being invisible: under a terminal that
@@ -388,11 +388,11 @@ const PLAIN: &[Plain] = &[
     },
     Plain {
         script: "readonly R=1; R=2",
-        stderr: "oslo: R: is read only",
+        stderr: "oslo: R: readonly variable",
     },
     Plain {
         script: "readonly R=1; export R=2",
-        stderr: "oslo: R: is read only",
+        stderr: "oslo: R: readonly variable",
     },
     Plain {
         script: "export -f nosuchfn",

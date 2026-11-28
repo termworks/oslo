@@ -28,64 +28,26 @@ fn oslo(script: &str) -> Ran {
     }
 }
 
-/// **Refused loudly, and named.** bash accepts `declare -A`; oslo has no second value shape, so it
-/// says so and exits 2.
-///
-/// The alternative — accepting it and building an *indexed* array — is the failure this shell is
-/// audited against: every key would land on element 0 (see `tests/corpus/array_element_assignment.sh`),
-/// the last write would win, and nothing on screen would look wrong. A diagnostic beats a plausible
-/// wrong answer with status 0.
+/// `declare -A` makes an associative array: the subscript is a key, so two keys are two entries,
+/// where an indexed array would evaluate both as arithmetic and land them on element 0.
 #[test]
-fn an_associative_array_is_refused_rather_than_faked() {
-    let ran = oslo("declare -A m");
-    assert_eq!(
-        ran.status, 2,
-        "stdout {:?} stderr {:?}",
-        ran.stdout, ran.stderr
-    );
-    assert!(
-        ran.stderr.contains("associative arrays are not supported"),
-        "the reason was not named: {:?}",
-        ran.stderr
-    );
-
-    // And nothing was created under that name, so a later write cannot look like it worked.
-    let ran = oslo("declare -A m 2>/dev/null; m[a]=1; m[b]=2; echo \"${m[a]}|${m[b]}|${#m[@]}\"");
-    assert_eq!(
-        ran.stdout.trim(),
-        "2|2|1",
-        "the subscript stopped being arithmetic, which is how a fake -A would look"
-    );
+fn an_associative_array_keeps_its_keys_apart() {
+    let ran = oslo("declare -A m; m[a]=1; m[b]=2; echo \"${m[a]}|${m[b]}|${#m[@]}\"");
+    assert_eq!(ran.status, 0, "{}", ran.stderr);
+    assert_eq!(ran.stdout.trim(), "1|2|2");
+    let ran = oslo("typeset -A t=([k]=v); echo \"${t[k]}\"");
+    assert_eq!(ran.stdout.trim(), "v", "typeset is the same builtin");
 }
 
-/// `typeset` is the same builtin under its other name, so it refuses identically — a script that
-/// reaches for the older spelling must not get a different answer.
+/// The case and nameref attributes are real attributes, and a letter with no meaning is refused.
 #[test]
-fn typeset_refuses_the_same_attribute() {
-    let ran = oslo("typeset -A m");
+fn the_case_and_nameref_attributes_work() {
+    assert_eq!(oslo("declare -l v=ABC; echo $v").stdout.trim(), "abc");
+    assert_eq!(oslo("declare -u v=abc; echo $v").stdout.trim(), "ABC");
+    assert_eq!(oslo("x=1; declare -n v=x; v=2; echo $x").stdout.trim(), "2");
+    let ran = oslo("declare -Q v");
     assert_eq!(ran.status, 2);
-    assert!(ran.stderr.contains("associative arrays are not supported"));
-}
-
-/// The attributes with no representation here — `-i` is no longer among them; see
-/// `tests/corpus/declare_integer.sh`. Grouped in one test because the rule is one
-/// rule: an attribute that cannot be honoured is refused, never downgraded to a plain scalar.
-#[test]
-fn every_unrepresentable_attribute_is_refused() {
-    for flag in ["-l", "-u", "-n"] {
-        let ran = oslo(&format!("declare {flag} v"));
-        assert_eq!(ran.status, 2, "{flag} was accepted");
-        assert!(
-            ran.stderr.contains("attribute not supported"),
-            "{flag}: {:?}",
-            ran.stderr
-        );
-        // Nothing is left behind under the name, in either shape.
-        let after = oslo(&format!(
-            "declare {flag} v 2>/dev/null; echo \"[${{v-unset}}][${{#v[@]}}]\""
-        ));
-        assert_eq!(after.stdout.trim(), "[unset][0]", "{flag} left something");
-    }
+    assert!(!ran.stderr.is_empty());
 }
 
 /// The ones oslo *does* have keep working, so the refusals above are a short list rather than a
@@ -125,8 +87,9 @@ fn a_scoped_readonly_leaves_with_its_scope() {
     let ran = oslo("f() { declare -r y=1; }; f; y=2; echo \"y=$y\"");
     assert_eq!(ran.stdout.trim_end(), "y=2", "{}", ran.stderr);
 
-    // But it is still read-only *while* the function runs.
-    let ran = oslo("f() { local -r a=1; a=9; echo \"a=$a\"; }; f");
+    // But it is still read-only *while* the function runs. `declare` reports the refusal as a
+    // status, where a bare `a=9` would abandon the whole call.
+    let ran = oslo("f() { local -r a=1; declare a=9; echo \"a=$a\"; }; f");
     assert_eq!(ran.stdout.trim_end(), "a=1", "frozen inside the function");
     assert!(!ran.stderr.is_empty(), "and said so");
 }
@@ -134,19 +97,18 @@ fn a_scoped_readonly_leaves_with_its_scope() {
 /// The `readonly` builtin is not a local declaration, wherever it is written.
 #[test]
 fn the_readonly_builtin_marks_globally_even_in_a_function() {
-    let ran = oslo("f() { readonly w=1; }; f; w=2; echo \"w=$w\"");
+    let ran = oslo("f() { readonly w=1; }; f\nw=2\necho \"w=$w\"");
     assert_eq!(ran.stdout.trim_end(), "w=1", "still frozen after the call");
     assert!(!ran.stderr.is_empty(), "and refused the assignment");
 
-    let ran = oslo("readonly z=1; z=2; echo \"z=$z\"");
+    let ran = oslo("readonly z=1\nz=2\necho \"z=$z\"");
     assert_eq!(ran.stdout.trim_end(), "z=1");
 }
 
-/// A name that was *already* read-only is not released by an inner scope declaring it: the scope
-/// did not make it read-only, so it is not the scope's to undo.
+/// A name that was *already* read-only cannot be declared local over, so it keeps its mark.
 #[test]
 fn an_outer_readonly_survives_an_inner_declaration() {
-    let ran = oslo("readonly g=1; f() { local -r g=2; }; f 2>/dev/null; g=3; echo \"g=$g\"");
+    let ran = oslo("readonly g=1; f() { local -r g=2; }; f 2>/dev/null\ng=3\necho \"g=$g\"");
     assert_eq!(ran.stdout.trim_end(), "g=1", "{}", ran.stderr);
 }
 

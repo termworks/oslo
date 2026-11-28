@@ -39,6 +39,8 @@ pub struct Options {
     pub collate: bool,
     /// Match names case-insensitively: `nocaseglob`.
     pub nocase: bool,
+    /// A pattern starting with `.` also matches `.` and `..`: `shopt -u globskipdots`.
+    pub dots: bool,
     /// The most directory entries one expansion may read, for callers on a keystroke. `None` —
     /// the shell's own — reads everything.
     pub budget: Option<usize>,
@@ -66,6 +68,12 @@ static NULLGLOB: AtomicBool = AtomicBool::new(false);
 static FAILGLOB: AtomicBool = AtomicBool::new(false);
 static NOCASEMATCH: AtomicBool = AtomicBool::new(false);
 static EXTGLOB: AtomicBool = AtomicBool::new(false);
+static DOTS: AtomicBool = AtomicBool::new(false);
+
+/// `shopt -s globskipdots` (the default) / `shopt -u globskipdots`.
+pub fn set_globskipdots(on: bool) {
+    DOTS.store(!on, Ordering::Relaxed);
+}
 
 /// `shopt -s extglob`: `@(a|b)` and the other groups are patterns, not text.
 pub fn set_extglob(on: bool) {
@@ -125,6 +133,7 @@ pub fn shell_options() -> Options {
         dotglob: DOTGLOB.load(Ordering::Relaxed),
         collate: super::collate::locale_collates(),
         nocase: NOCASEGLOB.load(Ordering::Relaxed),
+        dots: DOTS.load(Ordering::Relaxed),
         budget: None,
     }
 }
@@ -212,10 +221,26 @@ fn compile(chars: &[(char, bool)], options: &Options) -> Component {
 
 /// Whether a directory entry named `name` matches, with the pathname-only leading-dot rule.
 fn name_matches(items: &[Item], name: &str, options: &Options) -> bool {
-    if name.starts_with('.') && !options.dotglob && items.first() != Some(&Item::Ch('.')) {
+    if name.starts_with('.') && !options.dotglob && !opens_with_a_dot(items) {
         return false;
     }
     matches_items_with(items, name, options.nocase)
+}
+
+/// Whether the pattern can match a leading dot explicitly: a `.` of its own, one opening an
+/// `extglob` alternative, or one after a `*(…)` or `?(…)` that may match nothing, as
+/// `*(a|c).*` reaches `.hid` in bash.
+fn opens_with_a_dot(items: &[Item]) -> bool {
+    use super::ext::ExtKind;
+    match items.first() {
+        Some(Item::Ch('.')) => true,
+        Some(Item::Ext { kind, alts }) => match kind {
+            ExtKind::Not => false,
+            ExtKind::ZeroOrOne | ExtKind::ZeroOrMore if opens_with_a_dot(&items[1..]) => true,
+            _ => alts.iter().any(|alt| opens_with_a_dot(alt)),
+        },
+        _ => false,
+    }
 }
 
 /// What `readdir` said an entry is, before anything follows a link.
@@ -255,7 +280,7 @@ impl Dirs {
         }
         let dir = if prefix.is_empty() { "." } else { prefix };
         let allowed = self.left.unwrap_or(usize::MAX);
-        let entries: Rc<[Entry]> = match fs::read_dir(dir) {
+        let entries: Rc<[Entry]> = match fs::read_dir(crate::lossless::to_os(dir)) {
             Ok(entries) => entries
                 .flatten()
                 .take(allowed)
@@ -332,7 +357,14 @@ fn walk(
                     }
                 }
                 Component::Pattern(items) => {
-                    for entry in dirs.list(&base.path).iter() {
+                    let listed = dirs.list(&base.path);
+                    let dots = options.dots && items.first() == Some(&Item::Ch('.'));
+                    let extra = [".", ".."].map(|name| Entry {
+                        name: name.to_string(),
+                        kind: Kind::Dir,
+                    });
+                    let extra = if dots { &extra[..] } else { &[] };
+                    for entry in extra.iter().chain(listed.iter()) {
                         if !name_matches(items, &entry.name, options) {
                             continue;
                         }
@@ -461,11 +493,11 @@ fn finish(path: String, trailing_slash: bool) -> String {
 
 /// Whether the path names anything, a dangling symlink included.
 fn exists(path: &str) -> bool {
-    fs::symlink_metadata(path).is_ok()
+    fs::symlink_metadata(crate::lossless::to_os(path)).is_ok()
 }
 
 fn is_dir(path: &str) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_dir())
+    fs::metadata(crate::lossless::to_os(path)).is_ok_and(|m| m.is_dir())
 }
 
 #[cfg(test)]

@@ -10,10 +10,11 @@ pub mod expansion;
 mod param;
 pub mod quoting;
 pub mod scanner;
+mod tilde;
 pub mod token;
 
 pub use quoting::parse_heredoc_body;
-pub use scanner::Lexer;
+pub use scanner::{Lexer, TildeMode};
 pub use token::Token;
 
 use oslo_base::ast::Word;
@@ -27,4 +28,9 @@ use oslo_base::error::Result;
 /// any of it is arithmetic, and `$(( $(wc -l < f) * 2 ))` is one such expression, spaces and all.
 pub fn parse_single_word(source: &str) -> Result<Word> {
     quoting::parse_word_source(source)
+}
+
+/// The text the body of a `$'…'` string stands for.
+pub fn decode_ansi_c(body: &str) -> String {
+    ansi_c::decode(body)
 }
