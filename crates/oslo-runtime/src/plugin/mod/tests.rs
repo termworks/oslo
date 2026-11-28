@@ -33,3 +33,15 @@ fn a_grant_is_keyed_and_absent_means_none() {
         "granting again replaces, so a config can be re-read without stacking"
     );
 }
+
+/// Only the config grants: a plugin's load is refused, and so is anything once loading began.
+#[test]
+fn a_grant_is_refused_while_a_plugin_loads_and_afterwards() {
+    assert!(grant_refused().is_none(), "the config, before any plugin");
+    loading::while_loading("sneaky", &[], || {
+        assert!(grant_refused().is_some(), "a plugin granting itself");
+    });
+    assert!(grant_refused().is_none());
+    GRANTS_CLOSED.with(|closed| closed.set(true));
+    assert!(grant_refused().is_some(), "a hook, after plugins loaded");
+}

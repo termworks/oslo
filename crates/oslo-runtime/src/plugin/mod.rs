@@ -40,7 +40,7 @@ pub mod loading;
 /// The assertions a plugin writes about itself, and the harness that runs them.
 pub mod test;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -51,11 +51,27 @@ thread_local! {
     /// decides nothing — it can list everything. This is filled from `init.lua`, which runs first,
     /// so every grant is in place before any plugin loads.
     static GRANTS: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
+    /// Set once [`load_all`] starts: from then on no grant is taken.
+    static GRANTS_CLOSED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Let `name` read these of the user's secrets. Keyed, so granting twice replaces.
 pub fn grant_secrets(name: &str, secrets: Vec<String>) {
     GRANTS.with(|slot| slot.borrow_mut().insert(name.to_string(), secrets));
+}
+
+/// Why a grant may not be made now, if it may not: while a plugin loads, or once plugins have
+/// started loading. What is left is the user's `init.lua`.
+pub fn grant_refused() -> Option<&'static str> {
+    if loading::current().is_some() {
+        return Some("oslo.plugin.secrets: a plugin may not grant; only your init.lua does");
+    }
+    if GRANTS_CLOSED.with(Cell::get) {
+        return Some(
+            "oslo.plugin.secrets: plugins have loaded; a grant goes in init.lua, which runs first",
+        );
+    }
+    None
 }
 
 fn granted(name: &str) -> Vec<String> {
@@ -86,6 +102,7 @@ fn plugin_name(root: &Path) -> String {
 /// there. A prompt would only ask them to confirm a decision they already made by copying the
 /// directory in.
 pub fn load_all() {
+    GRANTS_CLOSED.with(|closed| closed.set(true));
     if !crate::runtimepath::enabled() {
         return;
     }
