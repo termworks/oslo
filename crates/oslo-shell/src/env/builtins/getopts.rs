@@ -28,7 +28,7 @@ use std::cell::RefCell;
 struct Cursor {
     /// The `OPTIND` value that call wrote. A different one now means the script moved it.
     optind: usize,
-    /// How far into the current word it got, counted in characters from the leading `-`;
+    /// How far into the current word it got, counted in bytes from the leading `-`;
     /// 0 means "this word has not been started yet".
     offset: usize,
     /// The word the offset indexes into. A different one now means the argument list changed
@@ -181,8 +181,12 @@ fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Env
 
     if let Some(text) = message {
         if print_errors {
-            let bad = env.get_var("OPTARG").unwrap_or_default().to_string();
-            eprintln!("{}getopts: {} -- {}", origin_now(), text, bad);
+            let mut line = format!("{}getopts: {} -- ", origin_now(), text).into_bytes();
+            line.extend(oslo_base::lossless::decode(
+                env.get_var("OPTARG").unwrap_or_default(),
+            ));
+            line.push(b'\n');
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), &line);
         }
         // Outside silent mode the offending character is *not* left in OPTARG: a script reading
         // it would mistake it for a real option argument. Silent mode is the opposite — reporting
@@ -200,17 +204,23 @@ fn report(opt: &str, name: &str, silent: bool, print_errors: bool, env: &mut Env
     bind(env, name, value)
 }
 
-/// Advance `optind`/`offset` over the argument list and classify the next option character.
+/// One option byte as the shell carries it, so `é` is two options as it is in bash.
+fn byte_text(bytes: &[u8]) -> String {
+    oslo_base::lossless::from_bytes(bytes)
+}
+
+/// Advance `optind`/`offset` over the argument list and classify the next option byte.
 fn scan(operands: &[String], spec: &str, optind: &mut usize, offset: &mut usize) -> Step {
+    let spec = oslo_base::lossless::decode(spec);
     loop {
         let Some(word) = operands.get(optind.saturating_sub(1)) else {
             return Step::Done;
         };
-        let chars: Vec<char> = word.chars().collect();
+        let chars = oslo_base::lossless::decode(word);
 
         if *offset == 0 {
             // A word that is not an option ends the option list, and so does `-` on its own.
-            if chars.first() != Some(&'-') || chars.len() < 2 {
+            if chars.first() != Some(&b'-') || chars.len() < 2 {
                 return Step::Done;
             }
             if word == "--" {
@@ -239,19 +249,19 @@ fn scan(operands: &[String], spec: &str, optind: &mut usize, offset: &mut usize)
 
         // `:` is never an option character itself — it is the marker that the *previous* one takes
         // an argument — so asking for it is always an unknown option.
-        let wants_argument = match takes_argument(spec, opt) {
-            Some(wants) if opt != ':' => wants,
+        let wants_argument = match takes_argument(&spec, opt) {
+            Some(wants) if opt != b':' => wants,
             _ => {
                 return Step::Found {
                     opt: "?".to_string(),
-                    optarg: Some(opt.to_string()),
+                    optarg: Some(byte_text(&[opt])),
                 };
             }
         };
 
         if !wants_argument {
             return Step::Found {
-                opt: opt.to_string(),
+                opt: byte_text(&[opt]),
                 optarg: None,
             };
         }
@@ -259,11 +269,11 @@ fn scan(operands: &[String], spec: &str, optind: &mut usize, offset: &mut usize)
         // The argument is the rest of this word if there is one (`-bvalue`), otherwise the whole
         // of the next word (`-b value`).
         if !at_word_end {
-            let value: String = chars[*offset..].iter().collect();
+            let value = byte_text(&chars[*offset..]);
             *optind += 1;
             *offset = 0;
             return Step::Found {
-                opt: opt.to_string(),
+                opt: byte_text(&[opt]),
                 optarg: Some(value),
             };
         }
@@ -272,14 +282,14 @@ fn scan(operands: &[String], spec: &str, optind: &mut usize, offset: &mut usize)
                 let value = value.clone();
                 *optind += 1;
                 return Step::Found {
-                    opt: opt.to_string(),
+                    opt: byte_text(&[opt]),
                     optarg: Some(value),
                 };
             }
             None => {
                 return Step::Found {
                     opt: ":".to_string(),
-                    optarg: Some(opt.to_string()),
+                    optarg: Some(byte_text(&[opt])),
                 };
             }
         }
@@ -288,18 +298,18 @@ fn scan(operands: &[String], spec: &str, optind: &mut usize, offset: &mut usize)
 
 /// `Some(true)` if `opt` is in `spec` and takes an argument, `Some(false)` if it takes none,
 /// `None` if `spec` does not mention it at all.
-fn takes_argument(spec: &str, opt: char) -> Option<bool> {
-    let chars: Vec<char> = spec.chars().collect();
+fn takes_argument(spec: &[u8], opt: u8) -> Option<bool> {
+    let chars = spec;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
         // `::` after an option is a GNU extension for an optional argument; POSIX only has one
         // level, so any run of colons is collapsed into "takes an argument".
         let mut colons = 0;
-        while chars.get(i + 1 + colons) == Some(&':') {
+        while chars.get(i + 1 + colons) == Some(&b':') {
             colons += 1;
         }
-        if c != ':' && c == opt {
+        if c != b':' && c == opt {
             return Some(colons > 0);
         }
         i += 1 + colons;
@@ -336,11 +346,12 @@ mod tests {
 
     #[test]
     fn option_spec_is_read_correctly() {
-        assert_eq!(takes_argument("ab:c", 'a'), Some(false));
-        assert_eq!(takes_argument("ab:c", 'b'), Some(true));
-        assert_eq!(takes_argument("ab:c", 'c'), Some(false));
-        assert_eq!(takes_argument("ab:c", 'z'), None);
-        assert_eq!(takes_argument("ab:c", ':'), None);
+        assert_eq!(takes_argument(b"ab:c", b'a'), Some(false));
+        assert_eq!(takes_argument(b"ab:c", b'b'), Some(true));
+        assert_eq!(takes_argument(b"ab:c", b'c'), Some(false));
+        assert_eq!(takes_argument(b"ab:c", b'z'), None);
+        assert_eq!(takes_argument(b"ab:c", b':'), None);
+        assert_eq!(takes_argument("é".as_bytes(), 0xc3), Some(false));
     }
 
     /// The corpus loop: a flag, an option with a separate argument, `--`, then the operands.
