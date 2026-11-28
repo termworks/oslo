@@ -65,7 +65,10 @@ pub fn has_raw(text: &str) -> bool {
 /// The number of bytes `text` stands for, counting each carried byte once.
 pub fn byte_len(text: &str) -> usize {
     match has_raw(text) {
-        true => text.chars().map(|ch| if is_raw(ch) { 1 } else { ch.len_utf8() }).sum(),
+        true => text
+            .chars()
+            .map(|ch| if is_raw(ch) { 1 } else { ch.len_utf8() })
+            .sum(),
         false => text.len(),
     }
 }

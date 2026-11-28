@@ -218,7 +218,12 @@ fn apply_valued_flag(
 
     match flag {
         // bash's `-d ''` is the NUL delimiter, which is what pairs with `find -print0`.
-        'd' => opts.delim = oslo_base::lossless::decode(value).first().copied().unwrap_or(0),
+        'd' => {
+            opts.delim = oslo_base::lossless::decode(value)
+                .first()
+                .copied()
+                .unwrap_or(0)
+        }
         'n' => opts.count = number('n', value)?,
         'O' => opts.origin = Some(number('O', value)?),
         's' => opts.skip = number('s', value)?,

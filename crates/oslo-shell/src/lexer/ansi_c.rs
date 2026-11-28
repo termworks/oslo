@@ -25,7 +25,9 @@ fn decode_bytes(raw: &str) -> Vec<u8> {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
-    let push = |out: &mut Vec<u8>, c: char| out.extend(oslo_base::lossless::decode(c.encode_utf8(&mut [0; 4])));
+    let push = |out: &mut Vec<u8>, c: char| {
+        out.extend(oslo_base::lossless::decode(c.encode_utf8(&mut [0; 4])))
+    };
 
     while i < chars.len() {
         if chars[i] != '\\' || i + 1 >= chars.len() {
