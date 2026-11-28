@@ -90,11 +90,16 @@ pub(super) fn eval_regex_match(
     };
 
     let utf8 = crate::expand::locale::is_utf8(env);
-    let source = match utf8 {
-        true => unicode_classes(&source),
-        false => source,
+    // Named as it was written, not as the classes were rewritten for the crate.
+    let invalid = |why: &str| {
+        TestError::new(format!(
+            "invalid regular expression `{}'{why}",
+            truncate_for_message(operand)
+        ))
     };
-    let re = compile(&byte_pattern(&source, utf8), utf8)?;
+    let source =
+        posix_classes(&source, utf8).ok_or_else(|| invalid(": Invalid character class name"))?;
+    let re = compile(&byte_pattern(&source, utf8), utf8).map_err(|_| invalid(""))?;
     let subject = oslo_base::lossless::decode(subject);
 
     // `find`, not `is_match`, because the captures are the point: the caller reads them back out
@@ -114,21 +119,45 @@ pub(super) fn eval_regex_match(
     Ok(true)
 }
 
-/// The POSIX classes of a bracket expression as a UTF-8 locale's `regcomp` reads them, for every
-/// character: the regex crate's own `[[:alpha:]]` is ASCII alone. Built from the Unicode classes
-/// the crate is compiled with, `\w`, `\d` and `\s`.
-fn unicode_classes(source: &str) -> String {
-    const CLASSES: [(&str, &str); 3] = [
-        ("[:alpha:]", r"[\w--[\d_]]"),
-        ("[:alnum:]", r"[\w--_]"),
-        ("[:space:]", r"\s"),
+/// The POSIX classes of a bracket expression as `regcomp` reads them, or `None` for a class name
+/// it does not know. The C locale's are the regex crate's own ASCII ones. A UTF-8 locale's take in
+/// every character: each is the set glibc's `gen-unicode-ctype` derives from the Unicode
+/// properties, where a space is not a no-break one and `print`, `graph` and `punct` hold every
+/// assigned character, private use included.
+fn posix_classes(source: &str, utf8: bool) -> Option<String> {
+    macro_rules! space {
+        () => {
+            r"[\t\n\x0B\x0C\r\x20\p{Zl}\p{Zp}\p{Zs}--[\x{A0}\x{2007}\x{202F}]]"
+        };
+    }
+    const CLASSES: [(&str, &str); 12] = [
+        ("[:alpha:]", r"[\p{Alphabetic}\p{Nd}--[0-9]]"),
+        ("[:alnum:]", r"[\p{Alphabetic}\p{Nd}]"),
+        ("[:digit:]", "[0-9]"),
+        ("[:xdigit:]", "[0-9A-Fa-f]"),
+        ("[:upper:]", r"[\p{Uppercase}\p{Lt}]"),
+        ("[:lower:]", r"[\p{Lowercase}\x{1C5}\x{1C8}\x{1CB}\x{1F2}]"),
+        ("[:space:]", space!()),
+        ("[:blank:]", r"[\t\p{Zs}--[\x{A0}\x{2007}\x{202F}]]"),
+        ("[:cntrl:]", r"[\p{Cc}\p{Zl}\p{Zp}]"),
+        ("[:print:]", r"[\P{Cn}--[\p{Cc}\p{Zl}\p{Zp}]]"),
+        ("[:graph:]", concat!(r"[\P{Cn}--\p{Cc}--", space!(), "]")),
+        (
+            "[:punct:]",
+            concat!(r"[\P{Cn}--\p{Cc}--\p{Alphabetic}--\p{Nd}--", space!(), "]"),
+        ),
     ];
     let mut out = String::with_capacity(source.len());
     let (mut rest, mut bracket) = (source, false);
     while let Some(ch) = rest.chars().next() {
-        let class = CLASSES.iter().find(|(class, _)| rest.starts_with(class));
-        if let (true, Some((class, with))) = (bracket, class) {
-            out.push_str(with);
+        if bracket
+            && rest.starts_with("[:")
+            && let Some(end) = rest.find(":]")
+        {
+            let (class, with) = CLASSES
+                .iter()
+                .find(|(class, _)| *class == &rest[..end + 2])?;
+            out.push_str(if utf8 { with } else { class });
             rest = &rest[class.len()..];
             continue;
         }
@@ -136,10 +165,6 @@ fn unicode_classes(source: &str) -> String {
         match ch {
             // An escape and what it escapes travel together.
             '\\' => take += rest[1..].chars().next().map_or(0, char::len_utf8),
-            // A class this does not widen is copied whole, so its `]` does not close anything.
-            '[' if bracket && rest.starts_with("[:") => {
-                take = rest.find(":]").map_or(take, |end| end + 2);
-            }
             // A `]` or `^]` right after the opening bracket is a member, not its end.
             '[' if !bracket => {
                 bracket = true;
@@ -155,7 +180,7 @@ fn unicode_classes(source: &str) -> String {
         out.push_str(&rest[..take]);
         rest = &rest[take..];
     }
-    out
+    Some(out)
 }
 
 /// `source` for a regex over the subject's bytes.
