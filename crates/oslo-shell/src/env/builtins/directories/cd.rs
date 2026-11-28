@@ -13,7 +13,7 @@ use crate::env::scope::Environment;
 use oslo_base::error::Result;
 use std::env;
 
-const CD_USAGE: &str = "cd: usage: cd [-L|-P] [dir]";
+const CD_USAGE: &str = "cd: usage: cd [-L|[-P [-e]]] [-@] [dir]";
 const PWD_USAGE: &str = "pwd: usage: pwd [-LP]";
 
 /// Consume a leading run of `-L`/`-P` flags and an optional `--`, returning the mode and the
@@ -79,9 +79,8 @@ pub fn builtin_cd(env: &mut Environment, args: &[String]) -> Result<i32> {
                 &flag,
                 &format!("cd: {flag}: invalid option"),
                 "not an option here",
-                "cd: usage: cd [-L|-P] [dir]",
+                CD_USAGE,
             );
-            eprintln!("{CD_USAGE}");
             return Ok(2);
         }
     };
