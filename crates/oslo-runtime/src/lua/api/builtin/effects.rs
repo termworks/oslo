@@ -120,10 +120,10 @@ impl Effects {
         for (name, value) in &self.set {
             // Shell-local, deliberately the opposite of the old `oslo.env.set` default: a builtin
             // that wants a child to see it says `export`.
-            all_applied &= env.set_var(name, value, false);
+            all_applied &= set(env, name, value, false);
         }
         for (name, value) in &self.export {
-            all_applied &= env.set_var(name, value, true);
+            all_applied &= set(env, name, value, true);
         }
         for (name, body) in &self.alias {
             match body {
@@ -152,6 +152,15 @@ impl Effects {
             None => 1,
         }
     }
+}
+
+/// One variable, marked sensitive when its value is one `oslo.secret.*` handed out.
+fn set(env: &mut Environment, name: &str, value: &str, export: bool) -> bool {
+    let applied = env.set_var(name, value, export);
+    if applied {
+        env.mark_if_handed_out(name, value);
+    }
+    applied
 }
 
 /// `{ NAME = "value" }` — a map of names to words.

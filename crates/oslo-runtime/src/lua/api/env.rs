@@ -31,7 +31,10 @@ pub fn install(oslo: &mut Table, env: &Arc<Mutex<Environment>>) {
     });
 
     let env_set = Arc::clone(env);
-    // oslo.env.set(name, value, { export = false }) -> true, or nil + why
+    // oslo.env.set(name, value, { export = false, secret = true }) -> true, or nil + why
+    //
+    // `secret = true` marks the variable sensitive and `secret = false` clears the mark; a value
+    // `oslo.secret.*` handed out is marked without being asked. See `env::scope::sensitive`.
     //
     // **`export` defaults to true, and `false` is the option that did not exist.** A directory
     // environment could only ever create *exported* variables, so a project name, a chosen profile
@@ -41,10 +44,21 @@ pub fn install(oslo: &mut Table, env: &Arc<Mutex<Environment>>) {
         let name = text(&args, 1, "oslo.env.set")?;
         let value = text(&args, 2, "oslo.env.set")?;
         // A table third argument, the shape `oslo.env.path_add{ last = true }` already uses.
-        let export = match args.get(2) {
-            Some(Value::Table(options)) => options.borrow().get_str("export").truthy(),
+        let (export, secret) = match args.get(2) {
+            Some(Value::Table(options)) => {
+                let options = options.borrow();
+                let export = match options.get_str("export") {
+                    Value::Nil => true,
+                    given => given.truthy(),
+                };
+                let secret = match options.get_str("secret") {
+                    Value::Nil => None,
+                    given => Some(given.truthy()),
+                };
+                (export, secret)
+            }
             // Absent means the old spelling, `oslo.env.set(n, v)`, which exported.
-            _ => true,
+            _ => (true, None),
         };
         let mut guard = borrow_env(&env_set)?;
         // **Demoting takes two steps, and skipping the first is a silent no-op.** `set_var` ORs the
@@ -66,6 +80,11 @@ pub fn install(oslo: &mut Table, env: &Arc<Mutex<Environment>>) {
         // that cannot be represented, having already said which on stderr; returning `true`
         // regardless is how a config comes to believe a write happened that did not.
         if guard.set_var(&name, &value, export) {
+            match secret {
+                Some(true) => guard.mark_sensitive(&name),
+                Some(false) => guard.clear_sensitive(&name),
+                None => guard.mark_if_handed_out(&name, &value),
+            }
             Ok(vec![Value::Bool(true)])
         } else {
             Ok(vec![
