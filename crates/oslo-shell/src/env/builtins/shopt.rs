@@ -268,6 +268,9 @@ mod tests {
 
     #[test]
     fn globstar_is_a_real_option() {
+        let _guard = crate::expand::glob::GLOBSTAR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut env = Environment::new();
         assert_eq!(run(&mut env, &["shopt", "-s", "globstar"]), 0);
         assert_eq!(run(&mut env, &["shopt", "-q", "globstar"]), 0);

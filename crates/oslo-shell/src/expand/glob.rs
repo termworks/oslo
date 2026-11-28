@@ -88,17 +88,18 @@ pub fn expand_field(field: &[Run], globignore: Option<&str>) -> Result<Vec<Strin
     Ok(vec![field_text(field)])
 }
 
+/// `globstar` is one process-wide flag, so every test that turns it on, here or through `shopt`,
+/// holds this while it is on.
+#[cfg(test)]
+pub(crate) static GLOBSTAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use super::{expand_glob, set_globstar};
+    use super::{GLOBSTAR_LOCK, expand_glob, set_globstar};
     use crate::expand::word::{Origin, Run};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// `globstar` is one process-wide flag, so a test that turns it on cannot run beside one that
-    /// depends on it being off.
-    static GLOBSTAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A scratch directory named after the caller, so the suite's threads cannot collide.
     fn scratch(tag: &str) -> PathBuf {
