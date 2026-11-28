@@ -8,7 +8,7 @@ oslo secret set stripe                 # asks for the value, masked; or reads st
 oslo secret get stripe                 # writes it to standard output, and nowhere else
 oslo secret run TOKEN=stripe -- curl … # one value, one child, no shell in between
 oslo secret list
-oslo secret where                      # the two directories, and which of them may be committed
+oslo secret where                      # the store, the keys it reads, and which may be committed
 oslo secret rm stripe
 ```
 
@@ -43,11 +43,18 @@ A **directory**, an ordered list of **keys**, and the **mechanism** that seals a
 
 ```
 $XDG_DATA_HOME/oslo/secrets/NAME.sealed       the `user` store
+$XDG_DATA_HOME/oslo/secrets/.lock             held while a write reads and replaces a file
 $XDG_DATA_HOME/oslo/stores/work/              a named store
 $XDG_DATA_HOME/oslo/plugins/notes.secrets/    a plugin's own, beside the .kv oslo.db makes for it
-$XDG_STATE_HOME/oslo/key                      the key
+$XDG_STATE_HOME/oslo/profiles/default.key     the profile's key, which every store derives from
 $XDG_STATE_HOME/oslo/secrets.conf             which stores exist, and what each is made of
 ```
+
+**Private from the first write.** A store directory oslo chose, `$XDG_STATE_HOME/oslo` and its
+`profiles/` are made at `0700`, and an existing one that is looser is tightened to `0700` the next
+time oslo writes into it. A `directory` you named in `secrets.conf` is made `0700` when it is
+missing and otherwise left alone: oslo does not change the mode of your directory, and warns on
+every write while other users can list it. Every file is `0600` from the moment it exists.
 
 The mechanism is the one that decides **where a store can be used**, so it is worth its own table:
 
@@ -130,7 +137,10 @@ oslo secret --store team cipher decrypt -- age -d -i ~/.config/age/identity
 ```
 
 That is the door to real age files, to `gpg`, to `systemd-creds --with-key=tpm2`, and to a YubiKey
-through `age-plugin-yubikey`. A store that names one never reaches the code above.
+through `age-plugin-yubikey`. A store that names one never reaches the code above. **A store that
+names only one half cannot do the other**: with no `decrypt command` a `get` is an error, and with no
+`encrypt command` so is a `set`. Neither falls back to the built-in mechanism, which would seal to a
+key the store was never meant to use.
 
 ## Configuration is a file, not Lua
 
@@ -147,9 +157,10 @@ So it is a flat file that the process doing the decrypting reads for itself:
 default work
 
 [work]
-directory /home/you/src/dotfiles/secrets     # a store meant to be committed
+directory ~/src/dotfiles/secrets              # a store meant to be committed
 key file /home/you/.ssh/oslo-work
 key command pass show oslo/key
+key timeout 30s                               # how long a command here may take
 recipient OSLO-PUB-1:jmtSV18HQJ/Ph1RXFGFTX8vbjNYpveSlwm1n9AwJySY=   # you
 recipient OSLO-PUB-1:zyzEW4hwVZdjajit/OwLB+o2647dl8YfoWY+mdCS+QM=   # the build server
 
@@ -166,7 +177,13 @@ where this machine looks for a key is not a thing to ship.
 **A malformed line is an error, never a skipped line.** In a build without `crypt` a `key` line is
 refused outright rather than parsed and ignored — the key belongs to whatever program that store
 names, and a line that quietly did nothing is how somebody comes to believe a store is protected by
-something it is not.
+something it is not. `key timeout` is the exception: it bounds the store's `encrypt`/`decrypt
+command` too, so every build accepts it.
+
+**A path is absolute, or starts with `~/`.** `key file` and `directory` take either, and `~/` means
+`$HOME`. A relative path is refused: it would name a different file in every directory the shell is
+run from, which is how a key once ended up at `project/~/.ssh/…`. `$OSLO_SECRET_IDENTITY` must be
+absolute for the same reason.
 
 Nothing needs to be edited by hand:
 
@@ -223,13 +240,38 @@ What fences the command:
 * **`$OSLO_SECRET_NO_EXEC`**, set to anything non-empty, skips every command source and names it in
   the failure. Exported once by a cron job or a container and inherited by every child, it makes
   *this will not fork* something to assert rather than infer.
+* **Standard error is yours.** It is inherited, so a *touch your key* or a PIN prompt reaches the
+  terminal instead of being captured.
+* **A deadline and a cap.** A command gets the store's `key timeout` (30 seconds unless it says) and
+  is killed if it is still running then; one that prints more than 64 KiB is killed too. The same
+  deadline bounds the store's `encrypt`/`decrypt command`, and every child is waited for on every
+  path out, so none is left a zombie.
+
+### A key is made only when nothing is there
+
+The first `set` on a fresh machine makes a key. It does so **only when every key source answered
+"not there"**:
+
+* A source that *failed* — a key file that cannot be read, a link to something that is not a regular
+  file, a command that exited non-zero or timed out — stops the write, and the error names that
+  source. Writing with the next source instead would seal the file to a key its owner may not have
+  to hand; making a new key would be worse.
+* **A store with a `key command` never has a key made for it.** That key lives somewhere oslo cannot
+  see, and a fresh one would silently fork the store in two.
+* A key file is created without replacing anything: it is linked into place, so whatever is already
+  at that path — readable or not — is refused rather than destroyed. The profile key is made the same
+  way, so two first `set`s racing each other agree on one key.
+
+Reading is more forgiving: a source that fails is passed over while another may open the file, and
+named in the error only if none does.
 
 A key file under a `.git` is one `git add -A` from being published, and the person that happens to
-did not choose it — they moved a directory a year later. Every `oslo secret` says so:
+did not choose it — they moved a directory a year later. Every `oslo secret` checks each key file
+the store reads — every `key file`, `$OSLO_SECRET_IDENTITY`, and the profile's key — and says so:
 
 ```
-oslo secret: the key is inside the git repository at /home/you
-oslo secret: move it with $OSLO_SECRET_IDENTITY, or the next commit publishes it
+oslo secret: the key /home/you/.local/state/oslo/profiles/default.key is inside the git repository at /home/you
+oslo secret: move it (`key file` in secrets.conf, or $OSLO_SECRET_IDENTITY), or the next commit publishes it
 ```
 
 **That check was measured, because the first version cried wolf.** `~/.git` on the machine it was
@@ -243,19 +285,40 @@ is, which is what a worktree and a submodule have.
 oslo secret get stripe
    │
    ├─ read secrets.conf                which store, which keys, which mechanism
-   ├─ path("stripe")                   a name is a filename: no `/`, no `..`, no leading `.`
-   │                                   — refused, not sanitised
-   ├─ read secrets/stripe.sealed      one header line, then the sealed body
-   ├─ a buried stamp? ─► no such secret        a tombstone reads as gone
+   ├─ path("stripe")                   a name is a filename: no `/`, no `..`, no leading `.`,
+   │                                   no control character — refused, not sanitised
+   ├─ read secrets/stripe.sealed      never through a link, only a regular file, at most 16 MiB
+   ├─ not there, or a buried stamp? ─► no such secret
    ├─ file keys, in the order written
    │     └─ none opened it? ─► program keys    only then is anything run
    ▼
 XChaCha20-Poly1305 ─► the value on stdout, with nothing added
 ```
 
-Writing goes the other way, and every file — the key, the ciphertext, `secrets.conf` — is written to
-a scratch file that is already mode `0600` and then renamed. There is no instant at which any of
-them exists and is readable by somebody else, and no half-written file if the machine stops.
+**A store is a directory other people's commits reach**, so nothing in it is trusted to be what its
+name says. A secret's file is opened with `O_NOFOLLOW|O_NONBLOCK` and accepted only if it is a
+regular file, so a committed `deploy.sealed -> ~/.ssh/authorized_keys` is refused by name, and a
+FIFO or a link to `/dev/zero` cannot hang a `get` or a `list`. `list` and a sync look at each entry
+without following it and pass over anything that is not a regular file. Key files and `secrets.conf`
+are yours to place, so a link to one is followed, and its target must still be a regular file.
+
+**Names.** Besides the rules above, a name may not hold a C0 or C1 control character (newline and
+escape among them), `DEL`, or a bidirectional override, and is at most 200 bytes. `list` prints names
+escaped, so a file somebody committed under a hostile name cannot write to your terminal. **Names
+are bytes**: no Unicode normalisation is applied, so `é` precomposed and `e` with a combining accent
+are two different names.
+
+Writing goes the other way. Every file — a secret, a key, the profile key, `secrets.conf` — is
+written to a scratch file beside it, `.NAME.<random>.new`, created with `O_CREAT|O_EXCL|O_NOFOLLOW` at
+mode `0600`. Its bytes are `fsync`ed, it is renamed over the target (or, for a key, linked into place
+without replacing), and the directory is `fsync`ed after. So there is no instant at which a file
+exists readable by somebody else, a link planted at any name a write uses is never written through,
+and a machine that stops leaves the old file or the new one, whole.
+
+**Two writers at once.** Every read-modify-write — `set`, `rm`, `rotate` and a sync's merge — holds
+an exclusive `flock` on the store's `.lock`. Sealing happens before the lock is taken, so a
+`crypto hook` that calls back into the same store cannot wait on itself; `rotate` re-checks each
+file's stamp under the lock and leaves one that somebody else wrote in the meantime.
 
 **A trailing newline is dropped on `set`.** The value came from a line somebody typed or from a
 `printf` in a script, and a token with `\n` on the end fails authentication in a way that takes an
@@ -398,7 +461,8 @@ end)
 ```
 
 **Standard error is inherited**, so the plugin's *touch your key* prompt reaches your terminal —
-captured, it would not, and the shell would appear to hang for reasons nobody could see.
+captured, it would not, and the shell would appear to hang for reasons nobody could see. It has 30
+seconds and 16 MiB of output, and is waited for on every path out.
 
 **A hook is the right route when you want logic** — different keys per secret, a notification before
 the touch, a fallback. **When you only want a program run, use `cipher command`**: it is a
@@ -448,7 +512,7 @@ secrets; the second is reached only through `oslo.secret.mine()`.
 |---|---|
 | `$XDG_DATA_HOME` | where stores live, under `oslo/`. Falls back to `~/.local/share` |
 | `$XDG_STATE_HOME` | where the key and `secrets.conf` live. Falls back to `~/.local/state` |
-| `$OSLO_SECRET_IDENTITY` | a key file for every store, absolutely — checked first, and beats the profile |
+| `$OSLO_SECRET_IDENTITY` | an absolute path to a key file for every store with no `key` line — beats the profile |
 | `$OSLO_SECRET_CONF` | the configuration file, absolutely |
 | `$OSLO_SECRET_STORE` | which store this shell and its children mean |
 | `$OSLO_SECRET_NO_EXEC` | skip every mechanism that would run a program |
@@ -525,6 +589,16 @@ deleted.
   machine that has no key for a store still has to be able to carry it. Somebody who can write to
   your store can therefore roll a revision back or flip a tombstone. They cannot read anything, and
   write access already meant they could delete the file.
+- **A timeout kills the program, not what it started.** A `key command` that is a script running
+  something else in the background leaves that something running. `exec` the last program in the
+  script.
+- **A committed store carries its `.lock`.** It is empty and harmless; put `.lock` in that
+  repository's `.gitignore`.
+- **On a filesystem without hard links** — vfat on a USB stick — a new key file is created in place
+  with `O_EXCL` rather than linked. Two racing writers still agree on one key, but a machine that
+  stops mid-write can leave a short file there, which then reads as an error rather than a key.
+- **A secret's file that is a symbolic link is refused, not repaired.** Remove the link by hand; the
+  write that follows makes an ordinary file.
 
 ## Between machines
 
@@ -550,8 +624,16 @@ flip a tombstone. They cannot read anything, and somebody with write access coul
 file outright.
 
 `oslo secret rm` is a tombstone: the sealed body is dropped and the name stays with its stamp buried,
-so the removal travels rather than being undone by the other machine on the next sync. A file written
-before there were headers still opens, and counts as never having been synced.
+so the removal travels rather than being undone by the other machine on the next sync. `rm` succeeds
+only once that tombstone is on disk. A file written before there were headers still opens, and
+counts as never having been synced.
+
+**A damaged header is refused, not guessed at.** It must have its three fields, a state of `live` or
+`dead`, 32 hex characters, and a revision no higher than 2^53. A revision near `u64::MAX` would
+otherwise pin a name for good — nothing could ever be written over it, and `rm` used to report
+success while changing nothing. So `get`, `set` and `rm` on such a file fail and name it, and a sync
+reads every file on both sides before writing any, so one damaged header stops the merge with
+nothing changed. A write that would take a revision past the bound is refused the same way.
 
 [Syncing between machines](syncing.md) has the rest, including the bundle format and why it is not
 tar.
@@ -560,7 +642,11 @@ tar.
 
 | | |
 |---|---|
-| `crates/oslo-base/src/secrets.rs` | `Store`: seal, unseal, rotate, and what a tombstone is |
+| `crates/oslo-base/src/secrets.rs` | `Store`: seal, unseal, the key sources, and what a tombstone is |
+| `crates/oslo-base/src/secrets/write.rs` | a write under the store's lock, and `rotate` |
+| `crates/oslo-base/src/private.rs` | every private file: scratch, fsync, rename or link; reads that take only a regular file; the lock |
+| `crates/oslo-base/src/secrets/name.rs` | what a secret may be called, and how a name is printed |
+| `crates/oslo-base/src/secrets/child.rs` | running a key or cipher command: stderr inherited, a deadline, a cap |
 | `crates/oslo-base/src/secrets/place.rs` | where the store is, where the key is, and why those differ |
 | `crates/oslo-base/src/secrets/sync.rs` | the file header, and merging two stores without a key |
 | `crates/oslo-base/src/secrets/native.rs` | the sealed box: the wrap, the key file, the format |
