@@ -14,12 +14,13 @@
 //!
 //! A read opens with `O_NONBLOCK`, so a FIFO cannot hang it, and accepts only a regular file, checked
 //! before the open and again on the open descriptor. It reads at most a stated number of bytes.
-//! Under [`Links::Refuse`] a symbolic link at the last component is refused too.
+//! Under [`Links::Refuse`](crate::private::Links::Refuse) a symbolic link at the last component is
+//! refused too.
 //!
 //! # Locking
 //!
-//! [`lock`] takes `flock` on a `.lock` file in a directory, for a read-modify-write that two
-//! processes must not interleave.
+//! [`lock`](crate::private::lock) takes `flock` on a `.lock` file in a directory, for a
+//! read-modify-write that two processes must not interleave.
 
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
