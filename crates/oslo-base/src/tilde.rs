@@ -63,7 +63,7 @@ fn home_directory(var: Lookup<'_>) -> String {
 fn current_directory() -> Option<String> {
     std::env::current_dir()
         .ok()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| crate::lossless::encode(p.as_os_str()))
 }
 
 /// The home directory recorded for `name`, or `None` if there is no such user.
@@ -96,14 +96,14 @@ pub fn user_names() -> Vec<String> {
 
 fn passwd_home(name: &str) -> Option<String> {
     let user = nix::unistd::User::from_name(name).ok().flatten()?;
-    Some(user.dir.to_string_lossy().into_owned())
+    Some(crate::lossless::encode(user.dir.as_os_str()))
 }
 
 fn passwd_home_of_uid() -> Option<String> {
     let user = nix::unistd::User::from_uid(nix::unistd::getuid())
         .ok()
         .flatten()?;
-    Some(user.dir.to_string_lossy().into_owned())
+    Some(crate::lossless::encode(user.dir.as_os_str()))
 }
 
 #[cfg(test)]
