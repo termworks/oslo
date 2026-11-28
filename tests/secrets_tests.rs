@@ -330,6 +330,7 @@ fn where_names_the_key_in_use() {
 }
 
 /// Run `oslo secret …` with a `secrets.conf` of the test's own and `$HOME` at the store.
+#[cfg(feature = "crypt")]
 fn configured(home: &std::path::Path, conf: &str, args: &[&str]) -> (String, String, i32) {
     let state = home.join("state/oslo");
     std::fs::create_dir_all(&state).expect("mkdir");
