@@ -17,6 +17,48 @@ pub fn is_utf8(env: &Environment) -> bool {
     name.contains("utf-8") || name.contains("utf8")
 }
 
+/// `value` with every byte a character of its own, as the C locale reads it: a substring, a `?`
+/// and a bracket expression then count bytes.
+pub fn bytewise(value: &str) -> String {
+    oslo_base::lossless::decode(value)
+        .into_iter()
+        .map(|byte| match byte.is_ascii() {
+            true => char::from(byte),
+            false => oslo_base::lossless::raw_char(byte),
+        })
+        .collect()
+}
+
+/// The text a [`bytewise`] string stands for.
+pub fn from_bytewise(value: &str) -> String {
+    oslo_base::lossless::from_bytes(&oslo_base::lossless::decode(value))
+}
+
+/// `value` as a pattern operator reads it: [`bytewise`] when `bytes`, as it is otherwise.
+pub fn in_locale(value: &str, bytes: bool) -> String {
+    match bytes {
+        true => bytewise(value),
+        false => value.to_string(),
+    }
+}
+
+/// The text an [`in_locale`] result stands for.
+pub fn out_of_locale(value: String, bytes: bool) -> String {
+    match bytes {
+        true => from_bytewise(&value),
+        false => value,
+    }
+}
+
+/// [`in_locale`] for each run of a pattern, keeping its quoting.
+pub fn runs_in_locale(runs: &mut [crate::expand::word::Run], bytes: bool) {
+    if bytes {
+        for run in runs {
+            run.text = bytewise(&run.text);
+        }
+    }
+}
+
 /// The length `${#x}` reports: characters in a UTF-8 locale, bytes otherwise.
 pub fn length(env: &Environment, value: &str) -> usize {
     match is_utf8(env) {

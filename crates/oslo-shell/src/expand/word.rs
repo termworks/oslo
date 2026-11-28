@@ -17,7 +17,7 @@
 
 use crate::env::Environment;
 use crate::expand::arithmetic::eval_arithmetic;
-use crate::expand::fields::{ifs_of, split_field};
+use crate::expand::fields::{ifs_of, split_field_in};
 use crate::expand::glob::{NoMatch, expand_field};
 use crate::expand::param::{expand_array_ref, expand_param};
 use crate::expand::tilde::expand_tilde;
@@ -388,6 +388,7 @@ fn expand_word_at(env: &mut Environment, word: &Word, place: Place) -> Result<Ve
     let glob = !env.noglob();
     let fields = expand_word_fields(env, word)?;
     let ifs = ifs_of(env);
+    let bytes = !crate::expand::locale::is_utf8(env);
     let globignore = env.get_var("GLOBIGNORE").map(str::to_string);
     for field in fields {
         // **`@name` is substituted here, where a tilde is, and for the same reason.** It names a
@@ -406,7 +407,7 @@ fn expand_word_at(env: &mut Environment, word: &Word, place: Place) -> Result<Ve
         // the path is still not split or globbed afterwards.
         let field =
             crate::expand::sugar::equals_field(env, field).map_err(ShellError::ExpansionError)?;
-        for split in split_field(ifs, field) {
+        for split in split_field_in(ifs, field, bytes) {
             if glob {
                 // `failglob` is bash's `no match: zz*`: the command does not run, status 1.
                 let words = expand_field(&split, globignore.as_deref())

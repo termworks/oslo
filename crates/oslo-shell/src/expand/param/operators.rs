@@ -15,6 +15,7 @@ use super::{Target, pattern};
 use crate::env::Environment;
 use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::glob::ShellPattern;
+use crate::expand::locale::{in_locale, out_of_locale};
 use crate::expand::word::{expand_word_to_pattern, expand_word_to_string};
 use oslo_base::ast::{ParamExpansion, ReplaceScope, Word};
 use oslo_base::error::{Result, ShellError};
@@ -84,54 +85,25 @@ pub(super) fn apply(
             }
         }
 
-        ParamExpansion::RemovePrefix {
-            pattern: word,
-            longest,
-        } => {
-            let pat = compile_pattern(env, word)?;
-            let value = val.unwrap_or_default();
-            pattern::remove_prefix(&value, &pat, *longest)
-        }
-
-        ParamExpansion::RemoveSuffix {
-            pattern: word,
-            longest,
-        } => {
-            let pat = compile_pattern(env, word)?;
-            let value = val.unwrap_or_default();
-            pattern::remove_suffix(&value, &pat, *longest)
-        }
-
         ParamExpansion::Substring { offset, length } => {
             let start = eval_operand(env, offset)?;
             let count = match length {
                 Some(word) => Some(eval_operand(env, word)?),
                 None => None,
             };
-            let value = val.unwrap_or_default();
-            pattern::substring(&value, start, count)
-                .map_err(|n| ShellError::ExpansionError(format!("{n}: substring expression < 0")))?
+            let bytes = !crate::expand::locale::is_utf8(env);
+            let value = in_locale(&val.unwrap_or_default(), bytes);
+            let cut = pattern::substring(&value, start, count).map_err(|n| {
+                ShellError::ExpansionError(format!("{n}: substring expression < 0"))
+            })?;
+            out_of_locale(cut, bytes)
         }
 
-        ParamExpansion::Replace {
-            pattern: pat_word,
-            replacement,
-            scope,
-        } => {
-            let pat = compile_pattern(env, pat_word)?;
-            // Runs rather than a string: an unquoted `&` stands for the matched text and a quoted
-            // one does not, and nothing on the finished string can tell them apart.
-            let rep = pattern::Replacement::from_runs(&expand_word_to_pattern(env, replacement)?);
-            let value = val.unwrap_or_default();
-            match scope {
-                ReplaceScope::First => pattern::replace(&value, &pat, &rep, false),
-                ReplaceScope::All => pattern::replace(&value, &pat, &rep, true),
-                ReplaceScope::Prefix => pattern::replace_prefix(&value, &pat, &rep),
-                ReplaceScope::Suffix => pattern::replace_suffix(&value, &pat, &rep),
-            }
-        }
-
-        ParamExpansion::CaseConvert { .. } | ParamExpansion::CaseToggle { .. } => {
+        ParamExpansion::RemovePrefix { .. }
+        | ParamExpansion::RemoveSuffix { .. }
+        | ParamExpansion::Replace { .. }
+        | ParamExpansion::CaseConvert { .. }
+        | ParamExpansion::CaseToggle { .. } => {
             let prepared = Prepared::compile(env, expansion_type)?;
             prepared.apply(&val.unwrap_or_default())
         }
@@ -200,10 +172,12 @@ pub(super) fn apply(
 /// The quoting has to survive: `${v#"$prefix"}` is how a script strips a *literal* prefix, and
 /// flattening the operand to a string first turned every `*` a variable happened to contain into
 /// a metacharacter.
-fn compile_pattern(env: &mut Environment, word: &Word) -> Result<ShellPattern> {
-    Ok(crate::expand::glob::pattern_from_runs(
-        &expand_word_to_pattern(env, word)?,
-    ))
+///
+/// `bytes` reads it as the C locale does, a byte to a character.
+fn compile_pattern(env: &mut Environment, word: &Word, bytes: bool) -> Result<ShellPattern> {
+    let mut runs = expand_word_to_pattern(env, word)?;
+    crate::expand::locale::runs_in_locale(&mut runs, bytes);
+    Ok(crate::expand::glob::pattern_from_runs(&runs))
 }
 
 /// Whether the operator says what an unset parameter means, which exempts it from `set -u`.
@@ -287,9 +261,10 @@ pub(super) fn map_elements(
 ///
 /// Built once per list by [`map_elements`]; see the note there for what that is worth.
 enum Prepared {
-    RemovePrefix(ShellPattern, bool),
-    RemoveSuffix(ShellPattern, bool),
-    Replace(ShellPattern, pattern::Replacement, ReplaceScope),
+    /// The pattern, whether longest, whether the C locale makes each byte a character.
+    RemovePrefix(ShellPattern, bool, bool),
+    RemoveSuffix(ShellPattern, bool, bool),
+    Replace(ShellPattern, pattern::Replacement, ReplaceScope, bool),
     /// The selector, the mapping, whether every character, whether the locale is UTF-8.
     CaseConvert(Option<ShellPattern>, CaseMap, bool, bool),
     Unchanged,
@@ -297,23 +272,25 @@ enum Prepared {
 
 impl Prepared {
     fn compile(env: &mut Environment, expansion_type: &ParamExpansion) -> Result<Prepared> {
+        let bytes = !crate::expand::locale::is_utf8(env);
         Ok(match expansion_type {
             ParamExpansion::RemovePrefix { pattern, longest } => {
-                Prepared::RemovePrefix(compile_pattern(env, pattern)?, *longest)
+                Prepared::RemovePrefix(compile_pattern(env, pattern, bytes)?, *longest, bytes)
             }
             ParamExpansion::RemoveSuffix { pattern, longest } => {
-                Prepared::RemoveSuffix(compile_pattern(env, pattern)?, *longest)
+                Prepared::RemoveSuffix(compile_pattern(env, pattern, bytes)?, *longest, bytes)
             }
             ParamExpansion::Replace {
                 pattern,
                 replacement,
                 scope,
             } => Prepared::Replace(
-                compile_pattern(env, pattern)?,
-                // See the note at the other Replace site: quoting decides whether `&` is the
-                // matched text, and only the runs still carry it.
+                compile_pattern(env, pattern, bytes)?,
+                // Runs rather than a string: an unquoted `&` stands for the matched text and a
+                // quoted one does not, and nothing on the finished string can tell them apart.
                 pattern::Replacement::from_runs(&expand_word_to_pattern(env, replacement)?),
                 *scope,
+                bytes,
             ),
             ParamExpansion::CaseConvert {
                 pattern,
@@ -344,7 +321,7 @@ impl Prepared {
         all: bool,
     ) -> Result<Prepared> {
         let selector = match selector {
-            Some(word) => Some(compile_pattern(env, word)?),
+            Some(word) => Some(compile_pattern(env, word, false)?),
             None => None,
         };
         let utf8 = crate::expand::locale::is_utf8(env);
@@ -353,18 +330,24 @@ impl Prepared {
 
     fn apply(&self, value: &str) -> String {
         match self {
-            Prepared::RemovePrefix(pattern, longest) => {
-                pattern::remove_prefix(value, pattern, *longest)
+            Prepared::RemovePrefix(pattern, longest, bytes) => {
+                let value = in_locale(value, *bytes);
+                out_of_locale(pattern::remove_prefix(&value, pattern, *longest), *bytes)
             }
-            Prepared::RemoveSuffix(pattern, longest) => {
-                pattern::remove_suffix(value, pattern, *longest)
+            Prepared::RemoveSuffix(pattern, longest, bytes) => {
+                let value = in_locale(value, *bytes);
+                out_of_locale(pattern::remove_suffix(&value, pattern, *longest), *bytes)
             }
-            Prepared::Replace(pattern, replacement, scope) => match scope {
-                ReplaceScope::First => pattern::replace(value, pattern, replacement, false),
-                ReplaceScope::All => pattern::replace(value, pattern, replacement, true),
-                ReplaceScope::Prefix => pattern::replace_prefix(value, pattern, replacement),
-                ReplaceScope::Suffix => pattern::replace_suffix(value, pattern, replacement),
-            },
+            Prepared::Replace(pattern, replacement, scope, bytes) => {
+                let value = &in_locale(value, *bytes);
+                let replaced = match scope {
+                    ReplaceScope::First => pattern::replace(value, pattern, replacement, false),
+                    ReplaceScope::All => pattern::replace(value, pattern, replacement, true),
+                    ReplaceScope::Prefix => pattern::replace_prefix(value, pattern, replacement),
+                    ReplaceScope::Suffix => pattern::replace_suffix(value, pattern, replacement),
+                };
+                out_of_locale(replaced, *bytes)
+            }
             Prepared::CaseConvert(selector, map, all, utf8) => {
                 super::case::convert_case(value, selector.as_ref(), *map, *all, *utf8)
             }

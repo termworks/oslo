@@ -168,8 +168,12 @@ fn eval_conditional_loop(
 /// `case $x in "$expected")` — an ordinary way to compare two strings — a pattern match, so a
 /// `$expected` of `*` answered yes for every subject.
 fn any_pattern_matches(env: &mut Environment, patterns: &[Word], subject: &str) -> Result<bool> {
+    // The C locale matches a byte to a character.
+    let bytes = !crate::expand::locale::is_utf8(env);
+    let subject = &crate::expand::locale::in_locale(subject, bytes);
     for pat_word in patterns {
-        let runs = expand_word_to_pattern(env, pat_word)?;
+        let mut runs = expand_word_to_pattern(env, pat_word)?;
+        crate::expand::locale::runs_in_locale(&mut runs, bytes);
         let nocase = oslo_base::glob::walk::nocasematch();
         if crate::expand::glob::pattern_from_runs(&runs).matches_case(subject, nocase) {
             return Ok(true);

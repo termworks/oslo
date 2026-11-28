@@ -44,6 +44,21 @@ pub fn split_field(ifs: &str, field: Field) -> Vec<Field> {
     splitter.finish()
 }
 
+/// [`split_field`] with every byte a character of its own when `bytes`, as the C locale splits: a
+/// multibyte IFS character is then several delimiters.
+pub fn split_field_in(ifs: &str, mut field: Field, bytes: bool) -> Vec<Field> {
+    if !bytes || ifs.is_ascii() {
+        return split_field(ifs, field);
+    }
+    let ifs = crate::expand::locale::bytewise(ifs);
+    crate::expand::locale::runs_in_locale(&mut field, true);
+    let mut fields = split_field(&ifs, field);
+    for run in fields.iter_mut().flatten() {
+        run.text = crate::expand::locale::from_bytewise(&run.text);
+    }
+    fields
+}
+
 /// The running state of a split: the fields already delimited, and the one still growing.
 ///
 /// `open: None` means no field is being built, which is what distinguishes a delimiter that

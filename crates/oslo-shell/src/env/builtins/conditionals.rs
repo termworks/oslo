@@ -94,6 +94,18 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
         3 if arith::is_arithmetic_op(&expr[1]) => {
             return arith::compare(env, &expr[0], &expr[1], &expr[2]);
         }
+        // The C locale matches a pattern a byte to a character.
+        3 if matches!(expr[1].as_str(), "==" | "=" | "!=")
+            && !crate::expand::locale::is_utf8(env) =>
+        {
+            let bytewise = crate::expand::locale::bytewise;
+            operators::eval_binary(
+                Mode::Extended,
+                &bytewise(&expr[0]),
+                &expr[1],
+                &bytewise(&expr[2]),
+            )
+        }
         3 => operators::eval_binary(Mode::Extended, &expr[0], &expr[1], &expr[2]),
         _ => Err(TestError::new("too many arguments")),
     };
