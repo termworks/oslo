@@ -6,6 +6,7 @@ use crate::env::Environment;
 use crate::env::options::ShellOption;
 use oslo_base::error::{Result, ShellError};
 use oslo_ui::syntax::{InputStatus, classify};
+use std::borrow::Cow;
 
 /// One complete command's lines, or the lines the reading stopped at.
 pub struct Chunk<'a> {
@@ -52,6 +53,24 @@ impl<'a> Iterator for Chunks<'a> {
     type Item = Chunk<'a>;
 
     fn next(&mut self) -> Option<Chunk<'a>> {
+        self.advance(&Cow::Borrowed)
+    }
+}
+
+impl<'a> Chunks<'a> {
+    /// The next complete command, judged after the aliases `env` holds are substituted, since
+    /// bash expands an alias as it reads: `alias if=echo` makes `if x` a whole command.
+    pub fn next_for(&mut self, env: &Environment) -> Option<Chunk<'a>> {
+        let expanding = crate::env::builtins::shopt::on("expand_aliases");
+        let any_defined = !env.get_aliases().is_empty();
+        self.advance(&|text| {
+            crate::syntax::alias::substitute_while(text, expanding, any_defined, &|name| {
+                env.get_alias(name).map(str::to_string)
+            })
+        })
+    }
+
+    fn advance(&mut self, rewrite: &dyn Fn(&'a str) -> Cow<'a, str>) -> Option<Chunk<'a>> {
         if self.done || self.pos >= self.text.len() {
             return None;
         }
@@ -59,7 +78,7 @@ impl<'a> Iterator for Chunks<'a> {
         for line in self.text[start..].split_inclusive('\n') {
             self.pos += line.len();
             self.line += 1;
-            match classify(&self.text[start..self.pos]) {
+            match classify(&rewrite(&self.text[start..self.pos])) {
                 InputStatus::Incomplete => continue,
                 InputStatus::Invalid => {
                     self.done = true;
@@ -115,7 +134,8 @@ pub fn run_unit_chunks(
     let base = env.line_offset();
     let mut status = 0;
     let mut ran = false;
-    for chunk in chunks(text) {
+    let mut reading = chunks(text);
+    while let Some(chunk) = reading.next_for(env) {
         if env.option(ShellOption::Verbose) {
             chunk.echo();
         }

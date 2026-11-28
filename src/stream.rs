@@ -12,7 +12,8 @@ use oslo::exec::chunks::chunks;
 /// `$LINENO` and every diagnostic talking about the whole program rather than the piece.
 pub(super) fn run_line_at_a_time(env: &mut Environment, script: &str) -> i32 {
     let mut status = 0;
-    for chunk in chunks(script) {
+    let mut reading = chunks(script);
+    while let Some(chunk) = reading.next_for(env) {
         env.set_line_offset(chunk.offset);
         if env.option(ShellOption::Verbose) {
             chunk.echo();

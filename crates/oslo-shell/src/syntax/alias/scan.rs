@@ -101,11 +101,12 @@ pub(super) fn is_function_definition(chars: &[char], from: usize) -> bool {
 ///
 /// POSIX allows more than this, but a name containing a quote, an expansion or a metacharacter
 /// cannot be looked up without expanding it first — and expanding it is not this pass's job.
+/// A reserved word such as `if` can be one: bash expands aliases before it looks for those.
 pub(super) fn is_plain_name(word: &str) -> bool {
     !word.is_empty()
         && !word.contains(['\'', '"', '$', '`', '\\', '=', '/'])
         && word != "!"
-        && !super::INTRODUCERS.contains(&word)
+        && (word.chars().all(|c| c.is_ascii_alphabetic()) || !super::INTRODUCERS.contains(&word))
 }
 
 /// `name=value`, the shape of a command prefix.

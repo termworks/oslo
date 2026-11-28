@@ -511,15 +511,17 @@ impl Scanner<'_> {
 
     /// What a word leaves behind: whether the next one still begins a command.
     fn after_word(&mut self, word: &str) {
+        // A reserved word is one only where a command can start: `echo if ll` runs no `ll`.
+        let was_command = self.cmd_pos;
         self.check_next_word = false;
         match word {
-            "case" => self.cases.push(Case::AwaitingIn),
-            "esac" => {
+            "case" if was_command => self.cases.push(Case::AwaitingIn),
+            "esac" if was_command || self.in_case_patterns() => {
                 self.cases.pop();
             }
             // `for x in a b c` and `select x in …` introduce a *word list*, not commands, and it
             // runs until `do`.
-            "for" | "select" => self.word_list = true,
+            "for" | "select" if was_command => self.word_list = true,
             "in" if self.cases.last() == Some(&Case::AwaitingIn) => {
                 *self.cases.last_mut().expect("checked") = Case::Patterns;
             }
@@ -528,9 +530,9 @@ impl Scanner<'_> {
         }
         // A command prefix is not the command: in `LC_ALL=C sort`, `sort` is still the command
         // word, and an alias for it must still be found.
-        self.after_assignment = is_assignment(word);
-        self.cmd_pos =
-            !self.in_word_context() && (INTRODUCERS.contains(&word) || self.after_assignment);
+        self.after_assignment = was_command && is_assignment(word);
+        self.cmd_pos = !self.in_word_context()
+            && ((was_command && INTRODUCERS.contains(&word)) || self.after_assignment);
         // A prefix is not a new stage, so it leaves the pipeline position alone; any other
         // introducer decides it, and only `|` opens a stage with an upstream.
         if self.cmd_pos && !self.after_assignment {
