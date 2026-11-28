@@ -33,9 +33,11 @@
 //! granted names. A handle made then keeps the filter for as long as it lives.
 //!
 //! **`seal` and `unseal` are refused to a plugin's load and to a handle made during one**, because
-//! `unseal` opens any file sealed to the store's key whatever its name. `mine():seal` and
-//! `mine():unseal` stay, on the plugin's own store. The config, the prompt and every hook keep
-//! both: a hook a plugin registered is indistinguishable from one the config did.
+//! `unseal` opens an `OSLO2` file sealed to the store's key whatever its name. An `OSLO3` file is
+//! bound to its store and name, and a seal to the fixed label `oslo.secret.seal`, so neither opens
+//! as the other. `mine():seal` and `mine():unseal` stay, on the plugin's own store. The config, the
+//! prompt and every hook keep both: a hook a plugin registered is indistinguishable from one the
+//! config did.
 //!
 //! None of this is a sandbox: a plugin can run `oslo secret get` as a subprocess. See
 //! `docs/features/secrets.md`.

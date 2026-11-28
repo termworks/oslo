@@ -237,6 +237,77 @@ fn seal_and_unseal_are_refused_while_a_plugin_loads() {
     assert!(said.contains("own:\town-blob"), "{said:?}");
 }
 
+/// **One key for every store does not open your files in a plugin.** With `$OSLO_SECRET_IDENTITY`
+/// set, a plugin's own store has your key; it reads your sealed file with `oslo.fs.read`, and
+/// `mine():unseal` still refuses it, because an `OSLO3` file is bound to its store and its name.
+#[test]
+#[cfg(feature = "crypt")]
+fn a_sealed_user_file_does_not_open_through_mine() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let identity = home.path().join("one.key");
+    let mut child = Command::new(oslo_bin())
+        .args(["secret", "set", "token"])
+        .env("XDG_DATA_HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("OSLO_SECRET_IDENTITY", &identity)
+        .env_remove("OSLO_SECRET_STORE")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn oslo");
+    std::io::Write::write_all(child.stdin.as_mut().expect("stdin"), b"users-own-value")
+        .expect("write");
+    assert!(child.wait().expect("wait").success(), "set token");
+
+    let file = std::fs::read(home.path().join("oslo/secrets/token.sealed")).expect("read");
+    let body = oslo::secrets::sync::unwrap(&file).expect("a header").sealed;
+    let plugin = format!(
+        r#"
+        local mine = oslo.secret.mine()
+        print("own:", mine:unseal(mine:seal("own-blob")))
+        print("user file:", mine:unseal("{}"))
+        "#,
+        base64(&body)
+    );
+    let said = with_plugins_as(
+        home.path(),
+        "",
+        &[("reader", "init.lua", &plugin)],
+        Some(&identity),
+    );
+    assert!(
+        said.contains("own:\town-blob"),
+        "the plugin store is not working: {said:?}"
+    );
+    assert!(
+        !said.contains("users-own-value"),
+        "a user file opened in a plugin: {said:?}"
+    );
+    assert!(
+        said.contains("user file:\tnil\t") && said.contains("under another name or store"),
+        "{said:?}"
+    );
+}
+
+/// Standard base64, which a plugin's `unseal` takes.
+#[cfg(feature = "crypt")]
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |w, (at, b)| w | (*b as u32) << (16 - 8 * at));
+        for at in 0..4 {
+            match at <= chunk.len() {
+                true => out.push(ALPHABET[(word >> (18 - 6 * at) & 63) as usize] as char),
+                false => out.push('='),
+            }
+        }
+    }
+    out
+}
+
 /// **Only the config grants.** A plugin granting itself is refused, so its second file reads
 /// nothing either.
 #[test]
@@ -334,6 +405,17 @@ fn keep(home: &std::path::Path, secrets: &[(&str, &str)]) {
 /// installed, and answer everything it printed.
 #[cfg(feature = "crypt")]
 fn with_plugins(home: &std::path::Path, config: &str, plugins: &[(&str, &str, &str)]) -> String {
+    with_plugins_as(home, config, plugins, None)
+}
+
+/// [`with_plugins`], with `$OSLO_SECRET_IDENTITY` set to `identity` when there is one.
+#[cfg(feature = "crypt")]
+fn with_plugins_as(
+    home: &std::path::Path,
+    config: &str,
+    plugins: &[(&str, &str, &str)],
+    identity: Option<&std::path::Path>,
+) -> String {
     for (plugin, file, body) in plugins {
         let root = home.join("oslo/site/pack/tests/start").join(plugin);
         std::fs::create_dir_all(root.join("plugin")).expect("mkdir");
@@ -342,7 +424,8 @@ fn with_plugins(home: &std::path::Path, config: &str, plugins: &[(&str, &str, &s
     std::fs::create_dir_all(home.join(".config/oslo")).expect("config dir");
     std::fs::write(home.join(".config/oslo/init.lua"), config).expect("write config");
 
-    let mut child = Command::new(oslo_bin())
+    let mut shell = Command::new(oslo_bin());
+    shell
         .arg("-i")
         .env("XDG_DATA_HOME", home)
         .env("XDG_STATE_HOME", home.join("state"))
@@ -350,7 +433,11 @@ fn with_plugins(home: &std::path::Path, config: &str, plugins: &[(&str, &str, &s
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("OSLO_SECRET_IDENTITY")
         .env_remove("OSLO_SECRET_STORE")
-        .env_remove("TERM")
+        .env_remove("TERM");
+    if let Some(identity) = identity {
+        shell.env("OSLO_SECRET_IDENTITY", identity);
+    }
+    let mut child = shell
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
