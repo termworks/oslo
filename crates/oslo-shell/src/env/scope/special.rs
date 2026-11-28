@@ -88,7 +88,7 @@ impl Environment {
         let here = match self.vars.get("PWD").and_then(Var::text) {
             Some(pwd) if !pwd.is_empty() => pwd.to_string(),
             _ => std::env::current_dir()
-                .map(|d| d.to_string_lossy().into_owned())
+                .map(|d| oslo_base::lossless::encode(d.as_os_str()))
                 .unwrap_or_default(),
         };
         let mut entries = vec![here];

@@ -205,7 +205,7 @@ pub fn builtin_pwd(env: &mut Environment, args: &[String]) -> Result<i32> {
     match mode {
         PathMode::Logical => println!("{}", logical_pwd(env)),
         PathMode::Physical => match env::current_dir() {
-            Ok(path) => println!("{}", path.display()),
+            Ok(path) => println!("{}", oslo_base::lossless::encode(path.as_os_str())),
             Err(e) => {
                 eprintln!(
                     "{}pwd: error retrieving current directory: {e}",

@@ -46,11 +46,11 @@ pub fn logical_pwd(env: &Environment) -> String {
     let physical = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     if let Some(pwd) = env.get_var("PWD")
         && Path::new(pwd).is_absolute()
-        && fs::canonicalize(pwd).is_ok_and(|resolved| resolved == physical)
+        && fs::canonicalize(oslo_base::lossless::to_os(pwd)).is_ok_and(|real| real == physical)
     {
         return pwd.to_string();
     }
-    physical.to_string_lossy().into_owned()
+    oslo_base::lossless::encode(physical.as_os_str())
 }
 
 /// Where an operand landed the shell.
@@ -103,11 +103,10 @@ fn attempt(base: &str, operand: &str, mode: PathMode) -> io::Result<Landing> {
 
     match mode {
         PathMode::Physical => {
-            let resolved = fs::canonicalize(&absolute)?;
-            // Built from the shell's own text, so its carried bytes are still stand-ins.
-            env::set_current_dir(oslo_base::lossless::to_os(&resolved.to_string_lossy()))?;
+            let resolved = fs::canonicalize(oslo_base::lossless::to_os(&absolute))?;
+            env::set_current_dir(&resolved)?;
             Ok(Landing {
-                pwd: resolved.to_string_lossy().into_owned(),
+                pwd: oslo_base::lossless::encode(resolved.as_os_str()),
                 display: logical,
             })
         }
@@ -128,9 +127,8 @@ fn attempt(base: &str, operand: &str, mode: PathMode) -> io::Result<Landing> {
                 // A path that stat() refused but chdir() accepted is too strange to describe
                 // logically; fall back to what the kernel says.
                 let pwd = env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from(&logical))
-                    .to_string_lossy()
-                    .into_owned();
+                    .map(|here| oslo_base::lossless::encode(here.as_os_str()))
+                    .unwrap_or_else(|_| logical.clone());
                 Ok(Landing {
                     pwd,
                     display: logical,

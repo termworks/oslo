@@ -152,7 +152,8 @@ impl Environment {
         let Ok(here) = std::env::current_dir() else {
             return;
         };
-        let here = here.to_string_lossy().to_string();
+        let real_here = std::fs::canonicalize(&here);
+        let here = oslo_base::lossless::encode(here.as_os_str());
         // Compared by what they resolve to, not as text: an inherited `$PWD` may reach this same
         // directory through a symlink, and POSIX prefers that spelling because it is the one the
         // user typed to get here.
@@ -161,8 +162,8 @@ impl Environment {
             .get("PWD")
             .and_then(Var::text)
             .filter(|value| !value.is_empty())
-            .and_then(|value| std::fs::canonicalize(value).ok())
-            .is_some_and(|resolved| std::fs::canonicalize(&here).is_ok_and(|now| resolved == now));
+            .and_then(|value| std::fs::canonicalize(oslo_base::lossless::to_os(value)).ok())
+            .is_some_and(|resolved| real_here.is_ok_and(|now| resolved == now));
         // Written through to the real environment as well as the table, for the reason `SHLVL`
         // above is: a child's environment comes from `execve` reading `environ`, so a value that
         // lives only in oslo's map is invisible to exactly the programs this exists to serve.
