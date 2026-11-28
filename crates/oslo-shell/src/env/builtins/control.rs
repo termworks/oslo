@@ -118,8 +118,18 @@ pub(crate) fn take_break_status() -> i32 {
 
 /// What bash does with a second operand to `exit`, `return`, `shift`, `break` or `continue`:
 /// it abandons the whole top-level command, which the catching list reports.
-pub(crate) fn too_many_arguments(builtin: &str) -> ShellError {
-    ShellError::Discard(format!("{builtin}: too many arguments"))
+pub(crate) fn too_many_arguments(env: &Environment, builtin: &str) -> ShellError {
+    discard(env, format!("{builtin}: too many arguments"), 2)
+}
+
+/// A [`ShellError::Discard`] leaving `status`, or 1 in a `-c` program, which is what bash leaves
+/// there whatever the error.
+pub(crate) fn discard(env: &Environment, message: String, status: i32) -> ShellError {
+    let status = match env.option(crate::env::options::ShellOption::CommandString) {
+        true => 1,
+        false => status,
+    };
+    ShellError::Discard(message, status)
 }
 
 /// `break [n]` — leave the innermost `n` enclosing loops.
@@ -128,7 +138,7 @@ pub(crate) fn too_many_arguments(builtin: &str) -> ShellError {
 /// [`crate::exec::pipeline`] catch it, decrement the depth, and either stop or re-raise.
 pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
     if args.len() > 2 && env.in_loop() {
-        return Err(too_many_arguments("break"));
+        return Err(too_many_arguments(env, "break"));
     }
     let asked = loop_depth("break", args);
     // Outside a loop this is a no-op, because signalling would unwind out of the enclosing command
@@ -158,7 +168,7 @@ pub fn builtin_break(env: &mut Environment, args: &[String]) -> Result<i32> {
 /// `continue [n]` — start the next iteration of the `n`th enclosing loop.
 pub fn builtin_continue(env: &mut Environment, args: &[String]) -> Result<i32> {
     if args.len() > 2 && env.in_loop() {
-        return Err(too_many_arguments("continue"));
+        return Err(too_many_arguments(env, "continue"));
     }
     let asked = loop_depth("continue", args);
     // The same no-op, and the same diagnostic — see `builtin_break`.
@@ -193,7 +203,7 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
         return Ok(2);
     }
     if args.len() > 2 {
-        return Err(too_many_arguments("return"));
+        return Err(too_many_arguments(env, "return"));
     }
     let code = match args.get(1) {
         // Bare `return` yields the status of the last command, as in bash.
@@ -216,7 +226,7 @@ pub fn builtin_return(env: &mut Environment, args: &[String]) -> Result<i32> {
 /// meant to reveal. It is a usage error, and bash leaves with 2.
 pub fn builtin_exit(env: &mut Environment, args: &[String]) -> Result<i32> {
     if args.len() > 2 {
-        return Err(too_many_arguments("exit"));
+        return Err(too_many_arguments(env, "exit"));
     }
     if refuse_over_stopped_jobs(env) {
         return Ok(1);
@@ -324,30 +334,24 @@ pub fn builtin_eval(env: &mut Environment, args: &[String]) -> Result<i32> {
     // call to bound it, so `eval` carries the same nesting counter `source` does.
     env.enter_nested_script()?;
     let command = env.get_var("BASH_COMMAND").unwrap_or_default().to_string();
-    let result =
-        match crate::syntax::parse_with_aliases(&code, !env.get_aliases().is_empty(), &|n| {
-            env.get_alias(n).map(str::to_string)
-        }) {
-            Ok(ast) => {
-                let outer = env.number_lines_from_here();
-                let _traced = crate::exec::simple::trace::Nested::enter();
-                let status = crate::exec::eval_command_unit(env, &ast);
-                env.set_line_offset(outer);
-                status
-            }
-            // A syntax error in evaluated text is the *builtin's* failure, not the script's:
-            // bash reports it, gives `eval` status 2, and carries on with the next command.
-            //
-            // **Under `--posix` it is fatal instead**, because `eval` is a special builtin and
-            // POSIX 2.8.1 ends a non-interactive shell on a utility error in one. Raised rather
-            // than decided here: `posix::resolve_builtin_result` folds it back to this same status
-            // for a shell that is not in POSIX mode, so the ordinary case is unchanged. Measured —
-            // `bash --posix -c 'eval "if"; echo ALIVE'` prints nothing and exits 2.
-            Err(e) => {
-                eprintln!("{}eval: {}", origin_now(), e);
-                Err(oslo_base::error::ShellError::utility_error("eval", 2))
-            }
-        };
+    let parsed = crate::syntax::parse_with_aliases(&code, !env.get_aliases().is_empty(), &|n| {
+        env.get_alias(n).map(str::to_string)
+    });
+    let outer = env.number_lines_from_here();
+    let traced = crate::exec::simple::trace::Nested::enter();
+    let result = match parsed {
+        Ok(ast) if !crate::exec::chunks::needs_chunks(env, &code) => {
+            crate::exec::eval_command_unit(env, &ast)
+        }
+        // A syntax error in evaluated text is the *builtin's* failure, not the script's: the
+        // commands before it run, `eval` reports it with status 2, and the caller carries on.
+        // Under `--posix` it is a fatal utility error when nothing before it ran.
+        _ => crate::exec::chunks::run_unit_chunks(env, "eval", &code, &mut |_, e| {
+            eprintln!("{}eval: {}", origin_now(), e)
+        }),
+    };
+    drop(traced);
+    env.set_line_offset(outer);
     env.exit_nested_script();
     if !super::process::in_trap() {
         env.set_bash_command(command);
@@ -458,7 +462,7 @@ mod tests {
         let mut env = Environment::new();
         assert!(matches!(
             builtin_exit(&mut env, &argv(&["exit", "1", "2"])),
-            Err(ShellError::Discard(_))
+            Err(ShellError::Discard(_, 2))
         ));
     }
 }

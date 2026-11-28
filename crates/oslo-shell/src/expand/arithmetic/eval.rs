@@ -94,6 +94,11 @@ pub fn eval_arithmetic(env: &mut Environment, expr: &str) -> Result<i64> {
     eval_text(env, expr, 0)
 }
 
+/// [`eval_arithmetic`] for the text of an indexed array's subscript; see [`in_subscript`].
+pub(crate) fn eval_subscript(env: &mut Environment, expr: &str) -> Result<i64> {
+    eval_arithmetic(env, expr).map_err(|e| in_subscript(env, e))
+}
+
 /// Expand, scan, parse and evaluate one piece of expression text.
 ///
 /// `depth` counts how many variable values deep this text was found; it is what stops a cycle of
@@ -137,7 +142,7 @@ fn read(
             .map(str::to_string);
         return Ok((None, text));
     }
-    let index = eval(env, index, depth)?;
+    let index = subscript(env, index, depth)?;
     // A scalar is element 0 of itself, as `${x[0]}` already reads it.
     let text = match env.get_array(&reference.name) {
         Some(array) => array.get(index).map(str::to_string),
@@ -145,6 +150,22 @@ fn read(
         None => None,
     };
     Ok((Some(index), text))
+}
+
+/// An indexed subscript's value; an arithmetic error in it abandons the top-level command.
+fn subscript(env: &mut Environment, index: &Expr, depth: usize) -> Result<i64> {
+    eval(env, index, depth).map_err(|e| in_subscript(env, e))
+}
+
+/// An arithmetic error in a subscript or in an integer variable's value, as bash treats it: it
+/// abandons the top-level command through every `eval` and `source`, and ends a `-c` program.
+pub(crate) fn in_subscript(env: &Environment, err: ShellError) -> ShellError {
+    match err {
+        ShellError::MalformedExpansion(message) => {
+            crate::env::builtins::control::discard(env, message, 1)
+        }
+        other => other,
+    }
 }
 
 /// The key a subscript names when the reference is an associative array: the word written there,
@@ -208,7 +229,7 @@ fn store(env: &mut Environment, reference: &Ref, value: i64, depth: usize) -> Re
                 env.set_assoc_element(&reference.name, &key, &text);
             }
             None => {
-                let index = eval(env, index, depth)?;
+                let index = subscript(env, index, depth)?;
                 env.set_array_element(&reference.name, index, &text);
             }
         },
@@ -330,7 +351,7 @@ fn apply(op: BinOp, l: i64, r: i64) -> Result<i64> {
 /// hanging the shell.
 fn power(base: i64, exp: i64) -> Result<i64> {
     if exp < 0 {
-        return Err(ShellError::ExpansionError(
+        return Err(ShellError::MalformedExpansion(
             "exponent less than 0".to_string(),
         ));
     }

@@ -398,6 +398,7 @@ fn assign_element(
     let text = subscript.to_string();
     let key = match arrays::key_for(env, name, &text) {
         Ok(key) => key,
+        Err(e @ oslo_base::error::ShellError::Discard(..)) => return Err(e),
         Err(e) => {
             eprintln!("{}{e}", crate::env::origin_now());
             return Ok(false);

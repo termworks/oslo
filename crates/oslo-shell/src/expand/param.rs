@@ -73,12 +73,12 @@ impl Target<'_> {
             Self::Param(name) | Self::Element { name, .. } => *name,
         };
         if !crate::env::scope::is_valid_identifier(name) {
-            return Err(ShellError::ExpansionError(format!(
+            return Err(ShellError::MalformedExpansion(format!(
                 "${name}: cannot assign in this way"
             )));
         }
         if env.is_readonly(name) {
-            return Err(ShellError::ExpansionError(format!(
+            return Err(ShellError::MalformedExpansion(format!(
                 "{name}: readonly variable"
             )));
         }

@@ -70,11 +70,34 @@ pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Resul
         ));
     }
     let frame = ListFrame::enter();
-    let outermost = frame.catches_abandoned();
-    frame.absorb(run_list_items(env, cmd_list, outermost))
+    let catches = Catches {
+        line: frame.catches_abandoned(),
+        discard: frame.is_outermost(),
+    };
+    frame.absorb(run_list_items(env, cmd_list, catches))
 }
 
-fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool) -> Result<i32> {
+/// Which abandoned commands a list stops: a line abandoned below stops at the nearest `eval`,
+/// `source` or top level; a [`ShellError::Discard`] only at the top level.
+#[derive(Clone, Copy)]
+struct Catches {
+    line: bool,
+    discard: bool,
+}
+
+/// Whether `err` abandons only the top-level command it happened in, rather than the shell: a
+/// refused assignment, a `failglob` miss, and an expansion error other than the ones a
+/// non-interactive POSIX-mode shell treats as fatal.
+fn abandons_line(env: &Environment, err: &ShellError) -> bool {
+    match err {
+        ShellError::NoMatch(_) | ShellError::Abandoned | ShellError::ExpansionError(_) => true,
+        ShellError::MalformedExpansion(_) => !env.posix() || env.interactive(),
+        _ => false,
+    }
+}
+
+fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catches) -> Result<i32> {
+    let outermost = catches.line;
     let mut last_status = 0;
     // The line a `failglob` miss abandoned, so the rest of it is skipped — see below.
     let mut abandoned: Option<u32> = None;
@@ -129,24 +152,23 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, outermost: bool
             env.last_status = 0;
         } else {
             last_status = match eval_and_or_list(env, &item.and_or) {
-                // **`failglob` abandons the top-level command, not the script.** bash drops the
-                // rest of that line — the whole `if` around the miss, the function it was in —
-                // reports it with status 1, and carries on with the next line. Only the outermost
-                // list catches it; everywhere below, it unwinds like any other error.
-                // `exit 1 2` abandons the rest of a `-c` program, or the rest of a script's line.
-                Err(e @ ShellError::Discard(_)) if outermost => {
+                // `exit 1 2` ends a `-c` program, and abandons the rest of a script's line.
+                Err(e @ ShellError::Discard(..)) if catches.discard => {
                     eprintln!("{}{e}", env.origin());
+                    let status = e.failure_status();
                     if env.option(crate::env::options::ShellOption::CommandString) {
-                        env.last_status = 1;
-                        return Ok(1);
+                        return Err(ShellError::Exit(status));
                     }
                     abandoned = Some(item.line);
-                    env.last_status = 2;
-                    2
+                    env.last_status = status;
+                    status
                 }
-                // A refused assignment abandons the line too, its reason already printed.
-                Err(e @ (ShellError::NoMatch(_) | ShellError::Abandoned)) if outermost => {
-                    if let ShellError::NoMatch(_) = e {
+                // **A `failglob` miss, a refused assignment or an expansion error abandons the
+                // top-level command, not the script.** bash drops the rest of that line — the
+                // whole `if` around it, the function it was in — with status 1, and carries on
+                // with the next line. A refused assignment's reason is already printed.
+                Err(e) if outermost && abandons_line(env, &e) => {
+                    if !matches!(e, ShellError::Abandoned) {
                         eprintln!("{}{e}", env.origin());
                     }
                     abandoned = Some(item.line);

@@ -48,7 +48,10 @@ fn operand(env: &mut Environment, text: &str) -> Result<i64> {
 
 /// Report an evaluation error as a false test, or unwind if it is fatal.
 fn failed(error: ShellError) -> Result<i32> {
-    if matches!(error, ShellError::UnsetParameter(_)) {
+    if matches!(
+        error,
+        ShellError::UnsetParameter(_) | ShellError::Discard(..)
+    ) {
         return Err(error);
     }
     eprintln!("{}[[: {error}", origin_now());

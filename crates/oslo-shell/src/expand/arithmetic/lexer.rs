@@ -103,7 +103,7 @@ pub enum CompoundOp {
 }
 
 fn err(msg: String) -> ShellError {
-    ShellError::ExpansionError(msg)
+    ShellError::MalformedExpansion(msg)
 }
 
 /// Scan `expr` into tokens. Anything the arithmetic grammar has no token for — `$`, `"`, a stray

@@ -33,7 +33,10 @@ pub fn builtin_let(env: &mut Environment, args: &[String]) -> Result<i32> {
             // An unparseable expression is the builtin's failure, not the shell's: bash reports
             // it, gives `let` status 1, and carries on with the next command. An unset name
             // under `set -u` is fatal, as it is everywhere.
-            Err(e @ oslo_base::error::ShellError::UnsetParameter(_)) => return Err(e),
+            Err(
+                e @ (oslo_base::error::ShellError::UnsetParameter(_)
+                | oslo_base::error::ShellError::Discard(..)),
+            ) => return Err(e),
             Err(e) => {
                 eprintln!("{}let: {}", origin_now(), e);
                 return Ok(1);

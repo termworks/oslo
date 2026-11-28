@@ -17,7 +17,6 @@ use super::{Target, operators, origin_of};
 use crate::env::Environment;
 use crate::env::builtins::arrays::Key;
 use crate::env::scope::is_valid_identifier;
-use crate::expand::arithmetic::eval_arithmetic;
 use crate::expand::word::{Field, Origin, Run, expand_word_to_string};
 use oslo_base::ast::{ParamExpansion, Subscript, Word};
 use oslo_base::error::{Result, ShellError};
@@ -195,7 +194,7 @@ fn eval_index(name: &str, text: &str, env: &mut Environment) -> Result<i64> {
             "{name}: bad array subscript"
         )));
     }
-    eval_arithmetic(env, text)
+    crate::expand::arithmetic::eval_subscript(env, text)
 }
 
 /// `set -u` applies to an element that was never assigned, exactly as it does to a plain variable.

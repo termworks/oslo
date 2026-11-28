@@ -26,7 +26,7 @@ fn too_deep() -> ShellError {
 }
 
 fn syntax(msg: &str) -> ShellError {
-    ShellError::ExpansionError(msg.to_string())
+    ShellError::MalformedExpansion(msg.to_string())
 }
 
 /// A binary operator with no evaluation-order subtlety: both sides always run.
@@ -140,7 +140,7 @@ pub fn parse(tokens: &[Token]) -> Result<Expr> {
     if p.pos < tokens.len() {
         // The whole point of R3.1: a trailing `)` or a stray operator is a diagnosed error, never
         // a partial answer.
-        return Err(ShellError::ExpansionError(format!(
+        return Err(ShellError::MalformedExpansion(format!(
             "arithmetic syntax error near token {:?}",
             tokens[p.pos]
         )));

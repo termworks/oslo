@@ -227,7 +227,7 @@ fn eval_arith(env: &mut Environment, expr: &str) -> Result<Option<i64>> {
                 trace::trace_arithmetic(env, &expanded);
                 expanded
             }
-            Err(e @ ShellError::UnsetParameter(_)) => return Err(e),
+            Err(e @ (ShellError::UnsetParameter(_) | ShellError::Discard(..))) => return Err(e),
             Err(e) => {
                 eprintln!("oslo: ((: {}", e);
                 return Ok(None);
@@ -237,7 +237,7 @@ fn eval_arith(env: &mut Environment, expr: &str) -> Result<Option<i64>> {
     };
     match crate::expand::arithmetic::eval_arithmetic(env, &expr) {
         Ok(value) => Ok(Some(value)),
-        Err(e @ ShellError::UnsetParameter(_)) => Err(e),
+        Err(e @ (ShellError::UnsetParameter(_) | ShellError::Discard(..))) => Err(e),
         Err(e) => {
             eprintln!("oslo: ((: {}", e);
             Ok(None)

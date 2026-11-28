@@ -12,7 +12,6 @@ pub use literal::{assign_literal, literal_items, literal_items_from_ast};
 use crate::env::Environment;
 use crate::env::scope::is_valid_identifier;
 use crate::env::scope::nameref::split_subscript;
-use crate::expand::arithmetic::eval_arithmetic;
 use oslo_base::error::{Result, ShellError};
 
 /// Where an element write lands once its subscript is evaluated.
@@ -67,7 +66,7 @@ pub fn key_for(env: &mut Environment, name: &str, text: &str) -> Result<Key> {
 pub(super) fn index_of(env: &mut Environment, text: &str) -> Result<i64> {
     match text.trim() {
         "" => Ok(0),
-        trimmed => eval_arithmetic(env, trimmed),
+        trimmed => crate::expand::arithmetic::eval_subscript(env, trimmed),
     }
 }
 

@@ -36,10 +36,15 @@ pub(crate) fn eval_simple_command(env: &mut Environment, simple: &SimpleCommand)
     // wrapper is what guarantees the second half on the error paths too.
     let opened_before = env.procsubs.len();
     oneshot::begin();
+    crate::env::scope::take_integer_failure();
     let result = eval_simple_command_inner(env, simple);
     oneshot::end();
     crate::exec::procsub::finish_from(env, opened_before);
-    result
+    // An integer variable's value that did not evaluate abandons the command it was assigned in.
+    match crate::env::scope::take_integer_failure() {
+        Some(failure) => Err(failure),
+        None => result,
+    }
 }
 
 fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> Result<i32> {

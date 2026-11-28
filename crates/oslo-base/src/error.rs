@@ -43,9 +43,11 @@ pub enum ShellError {
     /// command list catches it; see `exec::pipeline`.
     NoMatch(String),
 
-    /// A usage error that abandons the whole top-level command it occurred in — `exit 1 2`,
-    /// `return 1 2` — carrying its diagnostic, which the place that catches it prints.
-    Discard(String),
+    /// An error that abandons the whole top-level command it occurred in, through every `eval` and
+    /// `source` around it — `exit 1 2`, an arithmetic error in a subscript or in an integer
+    /// variable's value — carrying its diagnostic and the status it leaves. A `-c` program ends
+    /// there with that status.
+    Discard(String, i32),
 
     /// An assignment that could not be made — a read-only name, a subscript before the start of
     /// an array — with its diagnostic already printed.
@@ -153,7 +155,7 @@ impl std::fmt::Display for ShellError {
             | ShellError::MalformedExpansion(m) => write!(f, "{m}"),
             ShellError::NoMatch(pattern) => write!(f, "no match: {pattern}"),
             ShellError::Abandoned => write!(f, "assignment failed"),
-            ShellError::Discard(m) | ShellError::ExecutionError(m) => write!(f, "{m}"),
+            ShellError::Discard(m, _) | ShellError::ExecutionError(m) => write!(f, "{m}"),
             ShellError::Io(e) => write!(f, "{}", reason(e)),
             ShellError::Lua(e) => write!(f, "Lua error: {e}"),
             ShellError::Nix(e) => write!(f, "POSIX error: {e}"),
@@ -248,6 +250,7 @@ impl ShellError {
     pub fn failure_status(&self) -> i32 {
         match self {
             ShellError::SyntaxError(_) => 2,
+            ShellError::Discard(_, status) => *status,
             ShellError::UtilityError { status, .. } => *status,
             _ => 1,
         }

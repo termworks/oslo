@@ -39,6 +39,7 @@ pub use assoc::AssocArray;
 pub use calls::{CallFrame, FrameKind};
 pub use registry::{BuiltinFn, is_special_builtin};
 pub use traps::TrapFrame;
+pub(crate) use vars::take_integer_failure;
 
 /// One running process substitution: the descriptor the caller was given, and the child feeding it.
 ///

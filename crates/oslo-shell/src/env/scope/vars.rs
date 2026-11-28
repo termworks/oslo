@@ -11,6 +11,17 @@ use std::collections::HashMap;
 pub(crate) const READONLY: &str =
     "declared with `readonly`; the name keeps its value for the life of the shell";
 
+thread_local! {
+    /// The error an integer variable's value raised, until the command it happened in ends.
+    static INTEGER_FAILURE: std::cell::RefCell<Option<oslo_base::error::ShellError>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The error an integer variable's value raised since this was last asked.
+pub(crate) fn take_integer_failure() -> Option<oslo_base::error::ShellError> {
+    INTEGER_FAILURE.with(|f| f.borrow_mut().take())
+}
+
 impl Environment {
     /// A variable's value as a single string.
     ///
@@ -110,6 +121,9 @@ impl Environment {
             return true;
         }
         let value = self.transform(name, value);
+        if INTEGER_FAILURE.with(|f| f.borrow().is_some()) {
+            return false;
+        }
         self.store(name, value, export)
     }
 
@@ -122,11 +136,19 @@ impl Environment {
     }
 
     /// [`Self::transform`] for attributes already in hand.
+    ///
+    /// An integer value that does not evaluate is reported here and left pending for
+    /// [`take_integer_failure`], since bash abandons the top-level command over it.
     pub(crate) fn transform_with(&mut self, attrs: Attrs, value: &str) -> String {
         let value = match attrs.has(Attrs::INTEGER) {
-            true => crate::expand::arithmetic::eval_arithmetic(self, value)
-                .unwrap_or(0)
-                .to_string(),
+            true => match crate::expand::arithmetic::eval_arithmetic(self, value) {
+                Ok(n) => n.to_string(),
+                Err(e) => {
+                    let e = crate::expand::arithmetic::in_subscript(self, e);
+                    INTEGER_FAILURE.with(|f| *f.borrow_mut() = Some(e));
+                    "0".to_string()
+                }
+            },
             false => value.to_string(),
         };
         match attrs.has(Attrs::CASE) {

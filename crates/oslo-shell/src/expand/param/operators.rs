@@ -463,7 +463,11 @@ fn eval_operand(env: &mut Environment, word: &Word) -> Result<i64> {
     if text.is_empty() {
         return Ok(0);
     }
-    eval_arithmetic(env, text)
+    // An error here abandons the line even in POSIX mode, as bash's does.
+    eval_arithmetic(env, text).map_err(|e| match e {
+        ShellError::MalformedExpansion(m) => ShellError::ExpansionError(m),
+        other => other,
+    })
 }
 
 /// Whether an indirection's target names an array element or slice rather than a plain parameter.

@@ -83,6 +83,12 @@ impl ListFrame {
         self.outermost || self.unit
     }
 
+    /// Whether this is the outermost command list in the process, where a
+    /// [`ShellError::Discard`] stops.
+    pub(crate) fn is_outermost(&self) -> bool {
+        self.outermost
+    }
+
     /// Let `result` through, unless it is an interrupt that has now run out of shell to unwind.
     ///
     /// Consumes the frame so the depth is restored before the caller sees the value, and so a

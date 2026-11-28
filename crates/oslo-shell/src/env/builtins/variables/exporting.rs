@@ -133,9 +133,13 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
         if !opts.has('f')
             && let Some(result) = crate::env::builtins::arrays::unset_element(env, name)
         {
-            if let Err(e) = result {
-                eprintln!("{}unset: {}", origin_now(), e);
-                status = 1;
+            // A subscript whose arithmetic fails unsets nothing, silently, as in bash.
+            match result {
+                Err(oslo_base::error::ShellError::Discard(..)) | Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{}unset: {}", origin_now(), e);
+                    status = 1;
+                }
             }
             continue;
         }

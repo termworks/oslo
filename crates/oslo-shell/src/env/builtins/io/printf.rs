@@ -110,6 +110,7 @@ pub fn builtin_printf(env: &mut Environment, args: &[String]) -> Result<i32> {
         return match crate::env::builtins::arrays::assign_target(env, name, &value) {
             Ok(true) => Ok(status),
             Ok(false) => Ok(1),
+            Err(e @ oslo_base::error::ShellError::Discard(..)) => Err(e),
             Err(e) => {
                 let body = format!("printf: {e}");
                 crate::env::complain(args, name, &body, "not an element", None);

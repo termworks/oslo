@@ -12,6 +12,7 @@ mod operand;
 mod parser;
 
 pub use eval::eval_arithmetic;
+pub(crate) use eval::{eval_subscript, in_subscript};
 pub use operand::expand_expression;
 
 #[cfg(test)]
