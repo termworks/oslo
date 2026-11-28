@@ -195,6 +195,9 @@ pub fn expand_param(
 ///
 /// A failure is the command's own to report — it printed whatever it printed on its way to failing
 /// — and leaves the variable unset, which is what an empty `$(…)` would have left anyway.
+///
+/// **A recipe that reads the secrets store marks the name sensitive before it runs**, so `set -x`
+/// traces the materialisation itself as `export NAME=<secret>`. See `env::scope::sensitive`.
 fn materialise(env: &mut Environment, name: &str) {
     // Already a value, or never a recipe: the common case, and one hash lookup.
     if env.get_var(name).is_some() || env.lazy_var_names().is_empty() {
@@ -203,11 +206,18 @@ fn materialise(env: &mut Environment, name: &str) {
     let Some(body) = env.take_lazy_var(name) else {
         return;
     };
+    let secret = crate::env::scope::sensitive::recipe_reads_a_secret(&body);
+    if secret {
+        env.mark_sensitive(name);
+    }
     // Parsed without alias substitution: the body is a value, and a stored alias called `git`
     // rewriting somebody's `$(git rev-parse)` would be a surprise nobody could see coming.
     let line = format!("export {name}={body}");
     if let Ok(ast) = crate::syntax::parse_with_aliases(&line, false, &|_| None) {
         let _ = crate::exec::eval_command_list(env, &ast);
+    }
+    if secret {
+        env.drop_empty_mark(name);
     }
 }
 

@@ -78,13 +78,13 @@ fn assign_all(
             }
             continue;
         };
-        traced.push(trace::assignment_text(name, false, &value));
+        traced.push(trace::assignment_for(env, name, false, &value));
         if !env.set_local_exported_var(name, &value) && special {
             super::posix::assignment_failure(env, name)?;
         }
     }
     for (name, value) in keyword {
-        traced.push(trace::assignment_text(&name, false, &value));
+        traced.push(trace::assignment_for(env, &name, false, &value));
         env.set_local_exported_var(&name, &value);
     }
     Ok(traced)

@@ -11,7 +11,7 @@
 //! * a subscript is arithmetic for an indexed array and a string for an associative one,
 //!   evaluated when the assignment runs.
 
-use super::trace::{assignment_text, list_assignment_text, trace_assignment};
+use super::trace::{assignment_for, list_assignment_text, trace_assignment};
 use crate::env::Environment;
 use crate::env::announce::{Change, Scope, Source};
 use crate::env::builtins::arrays;
@@ -76,7 +76,8 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
         (AssignmentTarget::Name(name), AssignmentValue::Scalar(word)) => {
             let value = expand_word_to_string(env, word)?;
             // Traced once expanded and before it is made, as bash traces it.
-            trace_assignment(env, &assignment_text(name, assign.append, &value));
+            let traced = assignment_for(env, name, assign.append, &value);
+            trace_assignment(env, &traced);
             // `x+=b` extends `$x`, which on an array is element 0; on an integer name it adds.
             let ok = match assign.append {
                 true => arrays::append_scalar(env, name, &value),
@@ -90,7 +91,8 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
             let key = arrays::assigned_key(env, name, index);
             let key = abandoning(env, key)?;
             let value = expand_word_to_string(env, word)?;
-            trace_assignment(env, &assignment_text(&lhs, assign.append, &value));
+            let traced = assignment_for(env, &lhs, assign.append, &value);
+            trace_assignment(env, &traced);
             let written = arrays::write_element(env, name, key, &value, assign.append);
             Ok(Outcome::new(abandoning(env, written)?))
         }

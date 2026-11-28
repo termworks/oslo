@@ -6,7 +6,8 @@
 
 use super::quote;
 use crate::env::Environment;
-use crate::env::scope::value::{Value, Var};
+use crate::env::scope::sensitive::HIDDEN;
+use crate::env::scope::value::{Attrs, Value, Var};
 
 /// Whether the locale `env` is in shows UTF-8 text as itself.
 pub fn utf8(env: &Environment) -> bool {
@@ -51,9 +52,14 @@ pub fn special_declaration(env: &Environment, name: &str) -> String {
 }
 
 /// The right-hand side `declare -p` writes, or `None` for a binding with no value.
+///
+/// A sensitive binding writes `<secret>`, unquoted.
 pub fn assignment(var: &Var, utf8: bool) -> Option<String> {
     if !var.is_set() {
         return None;
+    }
+    if var.attrs.has(Attrs::SENSITIVE) {
+        return Some(HIDDEN.to_string());
     }
     Some(match &var.value {
         Value::Scalar(text) => quote::value(text, utf8),
@@ -82,6 +88,7 @@ pub fn set_line(name: &str, var: &Var, utf8: bool) -> Option<String> {
         return None;
     }
     match &var.value {
+        Value::Scalar(_) if var.attrs.has(Attrs::SENSITIVE) => Some(format!("{name}={HIDDEN}")),
         Value::Scalar(text) => Some(format!("{name}={}", quote::set_style(text, utf8))),
         _ => assignment(var, utf8).map(|value| format!("{name}={value}")),
     }
@@ -159,6 +166,23 @@ mod tests {
         assert_eq!(
             declaration("m", &assoc, true),
             r#"declare -A m=([b]="2" [a]="1" )"#
+        );
+    }
+
+    #[test]
+    fn a_sensitive_value_is_never_printed() {
+        let secret = Var::scalar("ghp_value", Attrs::EXPORT.union(Attrs::SENSITIVE));
+        assert_eq!(
+            declaration("GITHUB_TOKEN", &secret, true),
+            "declare -x GITHUB_TOKEN=<secret>"
+        );
+        assert_eq!(
+            super::posix_declaration("export", "GITHUB_TOKEN", &secret, true),
+            "export GITHUB_TOKEN=<secret>"
+        );
+        assert_eq!(
+            super::set_line("GITHUB_TOKEN", &secret, true).as_deref(),
+            Some("GITHUB_TOKEN=<secret>")
         );
     }
 }

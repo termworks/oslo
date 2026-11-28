@@ -7,6 +7,7 @@
 
 use crate::env::Environment;
 use crate::env::options::ShellOption;
+use crate::env::scope::sensitive::{HIDDEN, redact};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -71,14 +72,25 @@ pub fn trace_command(env: &mut Environment, assignments: &[String], words: &[Str
     let shapes = crate::env::builtins::declare::written_shapes();
     let reduced = shapes.and_then(|shapes| declared::reduced(words, &shapes));
     let words = reduced.as_deref().unwrap_or(words);
-    let body: Vec<String> = words.iter().map(|word| quote_word(word)).collect();
+    let declaring = matches!(
+        name.as_str(),
+        "export" | "readonly" | "declare" | "typeset" | "local"
+    );
+    let body: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(at, word)| match at > 0 && declaring {
+            true => hidden_operand(env, word).unwrap_or_else(|| quote_word(word)),
+            false => quote_word(word),
+        })
+        .collect();
     let mut lines = vec![body.join(" ")];
     if matches!(name.as_str(), "export" | "readonly") {
         for operand in &words[1..] {
             if let Some((lhs, value)) = operand.split_once('=')
                 && crate::env::scope::is_valid_identifier(lhs)
             {
-                lines.push(assignment_text(lhs, false, value));
+                lines.push(assignment_for(env, lhs, false, value));
             }
         }
     }
@@ -88,6 +100,23 @@ pub fn trace_command(env: &mut Environment, assignments: &[String], words: &[Str
     for line in lines {
         trace_line(env, &line);
     }
+}
+
+/// `name=value` as a trace line shows it: [`assignment_text`], or `name=<secret>` when the name
+/// holds a secret.
+pub fn assignment_for(env: &Environment, lhs: &str, append: bool, value: &str) -> String {
+    match env.is_sensitive(lhs) {
+        true => format!("{lhs}{}{HIDDEN}", if append { "+=" } else { "=" }),
+        false => assignment_text(lhs, append, value),
+    }
+}
+
+/// A declaration builtin's `name=value` operand for a sensitive name, as `name=<secret>`.
+fn hidden_operand(env: &Environment, word: &str) -> Option<String> {
+    let (lhs, _) = word.split_once('=')?;
+    let name = lhs.strip_suffix('+').unwrap_or(lhs);
+    let named = crate::env::scope::is_valid_identifier(name.split('[').next().unwrap_or(name));
+    (named && env.is_sensitive(name)).then(|| format!("{lhs}={HIDDEN}"))
 }
 
 /// Trace one assignment that has just been made.
@@ -112,10 +141,11 @@ pub fn trace_header(env: &mut Environment, text: &str) {
     }
 }
 
-/// Write `$PS4` and `body` as one line.
+/// Write `$PS4` and `body` as one line, with every sensitive variable's value hidden.
 fn trace_line(env: &mut Environment, body: &str) {
+    let hidden = env.sensitive_values();
     let mut line = prefix(env);
-    line.push_str(body);
+    line.push_str(&redact(body, &hidden));
     line.push('\n');
     let _ = std::io::stderr().write_all(&oslo_base::lossless::restore_bytes(line.as_bytes()));
 }
