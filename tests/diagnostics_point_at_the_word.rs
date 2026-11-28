@@ -123,14 +123,22 @@ const KEPT: &[(&str, &str)] = &[
         "bash's job report for a command a signal killed, not a diagnostic about a word",
     ),
     (
+        "{} {name:<width$}{core}{}",
+        "bash's report for a background job a signal killed, printed when it is collected",
+    ),
+    (
+        "warning: shell level ({level}) too high, resetting to 1",
+        "an inherited SHLVL read at startup, before there is a line to point into",
+    ),
+    (
+        "{name}: {word}: must use subscript when assigning associative array",
+        "raised while a literal's elements are expanded, after the command line is gone",
+    ),
+    (
         "{}: {why}",
         "an errno from `execve`, printed in the child that tried it",
     ),
     // ── A value already consumed, or a function with neither the word nor a line to put it in.
-    (
-        "getopts: {} -- {}",
-        "the message is `getopts`'s own OPTERR text, not a word of the command",
-    ),
     (
         "{}: current: no such job",
         "`current` is not a word anybody typed",
