@@ -37,14 +37,16 @@ use oslo_base::error::Result;
 /// `alias lines=tokei` shadows the verb reaches for `\lines` — and got `lines: command not found`,
 /// because the escape that recovered the name from the alias then hid it from the planner. The one
 /// escape hatch for a vocabulary collision did not work.
-fn simple_command_name(simple: &SimpleCommand) -> Option<String> {
+///
+/// A shell function of that name answers `None`: the function runs, as bash runs it.
+fn simple_command_name(env: &Environment, simple: &SimpleCommand) -> Option<String> {
     let word = simple.words.first()?;
     let name: String = word
         .parts
         .iter()
         .map(refusal::constant)
         .collect::<Option<_>>()?;
-    (!name.is_empty()).then_some(name)
+    (!name.is_empty() && env.get_function(&name).is_none()).then_some(name)
 }
 
 /// Whether a redirection points **this stage's stdout** somewhere else.
@@ -64,7 +66,7 @@ fn redirects_stdout(redirection: &oslo_base::ast::types::Redirection) -> bool {
 
 /// Every stage that is not a simple command naming a registered tool is reported as plain bytes,
 /// which is what keeps compound commands, functions and externals on the path they always took.
-fn plan_pipeline(pipeline: &Pipeline) -> Vec<Sink> {
+fn plan_pipeline(env: &Environment, pipeline: &Pipeline) -> Vec<Sink> {
     let stages: Vec<Stage> = pipeline
         .commands
         .iter()
@@ -74,7 +76,7 @@ fn plan_pipeline(pipeline: &Pipeline) -> Vec<Sink> {
                 // because its own stages are pipelines of their own.
                 return Stage::bytes();
             };
-            let Some(name) = simple_command_name(simple) else {
+            let Some(name) = simple_command_name(env, simple) else {
                 return Stage::bytes();
             };
             match crate::data::tool::lookup(&name) {
@@ -115,7 +117,7 @@ fn plan_pipeline(pipeline: &Pipeline) -> Vec<Sink> {
 /// One call, not two: [`plan`](crate::data::plan) counts the structured edges it hands out, and
 /// planning the same pipeline twice would report twice as many as were actually taken — which
 /// matters because that count is what the POSIX assertion reads.
-pub(super) fn structured_sinks(pipeline: &Pipeline) -> Option<Vec<Sink>> {
+pub(super) fn structured_sinks(env: &Environment, pipeline: &Pipeline) -> Option<Vec<Sink>> {
     // **Asked before anything is built.** Planning allocates a `Vec` of stages, clones every
     // command word, locks the registry once per stage, and issues an `ioctl` to ask whether stdout
     // is a terminal. With nothing registered the answer is `None` for every pipeline, so all of
@@ -124,7 +126,7 @@ pub(super) fn structured_sinks(pipeline: &Pipeline) -> Option<Vec<Sink>> {
     if !crate::data::tool::any_registered() {
         return None;
     }
-    let sinks = plan_pipeline(pipeline);
+    let sinks = plan_pipeline(env, pipeline);
     if sinks.contains(&Sink::Rows) {
         return Some(sinks);
     }
@@ -137,7 +139,7 @@ pub(super) fn structured_sinks(pipeline: &Pipeline) -> Option<Vec<Sink>> {
     // name a config invented has no such counterpart — `oslo.register_tool{name = "stale", …}` then
     // answered `stale: command not found`, and only `stale | length` ran it, which is not a
     // discoverable interface for a feature whose whole point is adding a command.
-    (lone_custom_tool(pipeline) || bridge_at_the_tail(pipeline)).then_some(sinks)
+    (lone_custom_tool(env, pipeline) || bridge_at_the_tail(env, pipeline)).then_some(sinks)
 }
 
 /// The last stage is a **bridge**: a tool that takes bytes and gives rows.
@@ -160,11 +162,11 @@ pub(super) fn structured_sinks(pipeline: &Pipeline) -> Option<Vec<Sink>> {
 /// one whose redirection `run` applies around its own output, which is also why the planner lets
 /// rows reach a redirected consumer when it is last, so `cat data.json | from json > rows.txt`
 /// writes the transport to the file and nothing to the terminal.
-fn bridge_at_the_tail(pipeline: &Pipeline) -> bool {
+fn bridge_at_the_tail(env: &Environment, pipeline: &Pipeline) -> bool {
     let Some(Command::Simple(simple)) = pipeline.commands.last() else {
         return false;
     };
-    simple_command_name(simple)
+    simple_command_name(env, simple)
         .and_then(|name| crate::data::tool::lookup(&name))
         .is_some_and(|tool| {
             tool.accepts.takes_bytes() && tool.produces == crate::data::plan::Shape::Rows
@@ -176,12 +178,13 @@ fn bridge_at_the_tail(pipeline: &Pipeline) -> bool {
 /// Redirections are excluded because [`run`] writes with `println!` — the structured stages do not
 /// fork, so nothing has applied `> file` to this process's stdout, and routing `stale > out` here
 /// would print to the terminal and leave the file empty. The byte path keeps those.
-fn lone_custom_tool(pipeline: &Pipeline) -> bool {
+fn lone_custom_tool(env: &Environment, pipeline: &Pipeline) -> bool {
     let [Command::Simple(simple)] = pipeline.commands.as_slice() else {
         return false;
     };
     simple.redirections.is_empty()
-        && simple_command_name(simple).is_some_and(|name| crate::data::custom::registered(&name))
+        && simple_command_name(env, simple)
+            .is_some_and(|name| crate::data::custom::registered(&name))
 }
 
 /// Run a pipeline whose edges carry rows.
@@ -201,7 +204,7 @@ pub(super) fn run(
     // here, where nothing has run and nothing has had a side effect. Status 2 is what
     // `tools::unknown_column` answers for the same mistake, so the two do not disagree about what
     // it costs — only about how early it is noticed.
-    if let Some(problem) = refuse_unknown_column(pipeline) {
+    if let Some(problem) = refuse_unknown_column(env, pipeline) {
         crate::env::complain_from(
             &env.origin(),
             &problem.words,
@@ -218,7 +221,7 @@ pub(super) fn run(
     // `tail -f app.log | lines | where …` printed nothing at all, for ever. When every part of a
     // pipeline can be streamed, it is; when any part cannot, this answers `None` and the general
     // path runs exactly as it always did. See `stream::plan` for what "can be" means.
-    if let Some(streamed) = stream::plan(pipeline, sinks) {
+    if let Some(streamed) = stream::plan(env, pipeline, sinks) {
         return stream::run(env, pipeline, sinks, &streamed, fallback);
     }
 
@@ -243,10 +246,10 @@ pub(super) fn run(
     // followed by structured stages: the external cannot hand over rows, so its *output* is what
     // the first structured stage is given. Everything up to the first tool runs exactly as it
     // always did, forked and on descriptors, and only its bytes cross into this half.
-    let first_tool = pipeline.commands.iter().position(|c| {
-        matches!(c, Command::Simple(s)
-            if simple_command_name(s).is_some_and(|n| crate::data::tool::lookup(&n).is_some()))
-    });
+    let first_tool = pipeline
+        .commands
+        .iter()
+        .position(|c| runnable_here(env, c));
     let mut bytes: Option<String> = None;
     let start = match first_tool {
         Some(0) | None => {
@@ -265,7 +268,7 @@ pub(super) fn run(
             // oslo does not have. It does now what `cat` would do in its place: read standard
             // input to the end. At a terminal that waits for Ctrl-D, exactly as `wc -l` does.
             if let Some(Command::Simple(first)) = pipeline.commands.first()
-                && let Some(name) = simple_command_name(first)
+                && let Some(name) = simple_command_name(env, first)
                 && crate::data::tool::lookup(&name).is_some_and(|tool| {
                     matches!(
                         tool.accepts,
@@ -311,7 +314,7 @@ pub(super) fn run(
     // **Decided before any stage runs**, because a tool that *prints* — `to json` writes with
     // `println!` and hands back no rows — would otherwise have written past the seam already. With
     // a byte suffix coming, the tool half's stdout goes to a scratch file for its duration.
-    let mut printed = match byte_suffix_at(pipeline, start) {
+    let mut printed = match byte_suffix_at(env, pipeline, start) {
         Some(_) => Some(Printed::start()?),
         None => None,
     };
@@ -319,7 +322,7 @@ pub(super) fn run(
     for (i, command) in pipeline.commands.iter().enumerate().skip(start) {
         // **Where this half stops.** A stage that is not a tool cannot run here, and what happens
         // next depends entirely on whether anything has run yet.
-        if !runnable_here(command) {
+        if !runnable_here(env, command) {
             return match i > start {
                 // Nothing structured has happened, so the byte path can have the whole pipeline
                 // exactly as it always did.
@@ -344,7 +347,7 @@ pub(super) fn run(
         let Command::Simple(simple) = command else {
             return fallback(env, pipeline);
         };
-        let Some(name) = simple_command_name(simple) else {
+        let Some(name) = simple_command_name(env, simple) else {
             return fallback(env, pipeline);
         };
         let words = expand_words(env, simple)?;
@@ -363,7 +366,10 @@ pub(super) fn run(
         // function, a compound — is the byte suffix, and `hand_over` renders the rows for it and
         // runs the rest of the pipeline on that. Turning them into bytes here would leave that
         // path with nothing to hand over: `ls | first 2 | cat` printed nothing at all.
-        let crosses_as_text = pipeline.commands.get(i + 1).is_some_and(runnable_here)
+        let crosses_as_text = pipeline
+            .commands
+            .get(i + 1)
+            .is_some_and(|next| runnable_here(env, next))
             && !matches!(sinks.get(i), Some(crate::data::plan::Sink::Rows));
         let mut caught = match crosses_as_text && printed.is_none() {
             true => Printed::start().ok(),

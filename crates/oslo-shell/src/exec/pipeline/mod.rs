@@ -396,12 +396,12 @@ fn run_stages(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
     // stage, not to a descriptor — and letting it fall through answered `first: command not found`
     // while creating the empty file the redirection named. A name only oslo invented can reach
     // this, so no script written against another shell can.
-    if let Some(problem) = structured::refuse_redirected_middle(pipeline) {
+    if let Some(problem) = structured::refuse_redirected_middle(env, pipeline) {
         eprintln!("{}{problem}", crate::env::origin_now());
         env.set_pipeline_status(vec![2]);
         return Ok(2);
     }
-    if let Some(sinks) = structured::structured_sinks(pipeline) {
+    if let Some(sinks) = structured::structured_sinks(env, pipeline) {
         // Nothing takes this path yet — the tools that would are the next stage of the work. It is
         // wired now, with the corpus proving it is never reached, so that the commit which adds
         // the first structured tool is small and its blast radius is already measured.

@@ -81,7 +81,6 @@ pub const EXPECTED_FAIL: &[(&str, &str, &str)] = &[
     // Debian system under both oslo and dash, and all three are fixed: a comment inside a `$( … )`
     // inside a heredoc body, `printf`'s missing `%*` width, and the errexit exemption being lost
     // when a short-circuited AND-OR list was the last command of a compound.
-    ("loop_break_in_condition.sh", "UNFILED", "a function named parse is dispatched to the structured parse tool when it receives several arguments"),
 ];
 
 /// Corpus file and why bash cannot arbitrate it. Empty is the healthy state.

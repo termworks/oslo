@@ -92,7 +92,7 @@ pub(super) struct Refusal {
 /// [`Columns::Unknown`](crate::data::columns::Columns::Unknown) and refuses nothing; an operand that
 /// is not a plain literal is not read, by the same rule [`simple_command_name`] follows. Everything
 /// this cannot see is still caught by `unknown_column` when the rows exist.
-pub(super) fn refuse_unknown_column(pipeline: &Pipeline) -> Option<Refusal> {
+pub(super) fn refuse_unknown_column(env: &Environment, pipeline: &Pipeline) -> Option<Refusal> {
     use crate::data::columns::{Columns, through};
     let mut columns = Columns::Unknown;
     for command in &pipeline.commands {
@@ -100,7 +100,7 @@ pub(super) fn refuse_unknown_column(pipeline: &Pipeline) -> Option<Refusal> {
             columns = Columns::Unknown;
             continue;
         };
-        let Some(name) = simple_command_name(simple) else {
+        let Some(name) = simple_command_name(env, simple) else {
             columns = Columns::Unknown;
             continue;
         };
@@ -201,13 +201,13 @@ pub(super) fn literal_words(simple: &SimpleCommand) -> Option<Vec<String>> {
 /// Rows cross in memory rather than on a descriptor, so a verb whose output went to a file would
 /// leave the next stage with nothing to read. Saying so is better than either half-doing it or
 /// pretending the name does not exist.
-pub(crate) fn refuse_redirected_middle(pipeline: &Pipeline) -> Option<String> {
+pub(crate) fn refuse_redirected_middle(env: &Environment, pipeline: &Pipeline) -> Option<String> {
     let last = pipeline.commands.len().checked_sub(1)?;
     for command in &pipeline.commands[..last] {
         let Command::Simple(simple) = command else {
             continue;
         };
-        let Some(name) = super::simple_command_name(simple) else {
+        let Some(name) = super::simple_command_name(env, simple) else {
             continue;
         };
         if crate::data::tool::lookup(&name).is_none() {

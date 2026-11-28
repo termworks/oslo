@@ -62,7 +62,7 @@ enum Case {
     Body,
 }
 
-/// Substitute aliases throughout `source`.
+/// Substitute aliases throughout `source`, as an interactive prompt reads it.
 ///
 /// `lookup` answers what the *environment* knows; definitions the text makes for itself are found
 /// by this scanner and take effect from the line after they appear. `any_defined` says whether the
@@ -72,14 +72,26 @@ pub fn substitute<'a>(
     any_defined: bool,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Cow<'a, str> {
-    substitute_while(source, true, any_defined, lookup)
+    scan(source, true, true, any_defined, lookup)
 }
 
 /// [`substitute`], starting with `expand_aliases` in the state `expanding` says and following the
 /// literal `shopt -s expand_aliases` / `shopt -u expand_aliases` the text runs, from the next line.
+/// A verb outranks an alias only when the shell is interactive.
 pub fn substitute_while<'a>(
     source: &'a str,
     expanding: bool,
+    any_defined: bool,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Cow<'a, str> {
+    let verbs_first = crate::exec::pipeline::is_interactive();
+    scan(source, expanding, verbs_first, any_defined, lookup)
+}
+
+fn scan<'a>(
+    source: &'a str,
+    expanding: bool,
+    verbs_first: bool,
     any_defined: bool,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Cow<'a, str> {
@@ -95,6 +107,7 @@ pub fn substitute_while<'a>(
     }
     let mut scanner = Scanner {
         expanding,
+        verbs_first,
         partial: None,
         lookup,
         defined: HashMap::new(),
@@ -118,6 +131,8 @@ pub fn substitute_while<'a>(
 struct Scanner<'a> {
     /// Whether `expand_aliases` is on for the line being scanned.
     expanding: bool,
+    /// Whether a structured verb in a pipeline outranks an alias of the same name.
+    verbs_first: bool,
     /// The lines of a command whose quoted text has not closed yet, for its definitions.
     partial: Option<String>,
     lookup: &'a dyn Fn(&str) -> Option<String>,
@@ -455,8 +470,10 @@ impl Scanner<'_> {
         // the rule the rest of the shell already follows: a bare `df` is the external command, and
         // structure is what you get by piping it somewhere.
         //
-        // So the two readings never overlap, and only a name oslo invented is affected.
-        if oslo_base::vocab::kind_of(word) == Some("verb")
+        // So the two readings never overlap, and only a name oslo invented is affected. Only at an
+        // interactive prompt: a script that turns on `expand_aliases` gets bash's expansion.
+        if self.verbs_first
+            && oslo_base::vocab::kind_of(word) == Some("verb")
             && (self.after_pipe || a_verb_follows(chars, after))
         {
             return false;
