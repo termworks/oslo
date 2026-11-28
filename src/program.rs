@@ -31,6 +31,10 @@ pub(super) fn run_program(invocation: &Invocation, script: &str, frame: Option<&
     env.set_positional(invocation.positional.clone());
     env.publish_startup_args();
     apply_invocation_options(&mut env, invocation);
+    // A signal ignored when the shell started stays ignored, and `trap` lists it so.
+    if !invocation.force_interactive {
+        oslo::exec::job::adopt_ignored_at_entry(&mut env);
+    }
     startup::history::register(&mut env);
     // Universal variables reach a script too, before the startup files so `$ENV` can read one.
     #[cfg(feature = "universal")]

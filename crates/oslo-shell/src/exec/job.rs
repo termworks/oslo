@@ -38,6 +38,7 @@ pub use report::{
     announce_background_deaths, describe, forget_background_deaths, note_background_death,
 };
 pub use resume::{continue_in_background, foreground_job};
+pub use signals::{adopt_ignored_at_entry, ignored_at_entry, note_ignored_at_entry};
 pub use signals::{
     catch_fatal_for_exit_trap, die_of, drain_interrupt_fd, fatal_arrived_in_wait,
     fatal_signal_pending, fatal_signal_waiting, forget_interrupt, install_shell_signals,

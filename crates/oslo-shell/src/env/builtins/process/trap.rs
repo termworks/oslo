@@ -192,6 +192,13 @@ fn apply(args: &[String], env: &mut Environment, spec: &str, action: &str) -> bo
         );
         return false;
     };
+    // A signal ignored when a non-interactive shell started can be neither trapped nor reset.
+    if let Condition::Signal { number, .. } = condition
+        && !env.interactive()
+        && crate::exec::job::ignored_at_entry(number)
+    {
+        return true;
+    }
 
     env.set_trap(condition.key(), action);
 

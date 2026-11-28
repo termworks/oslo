@@ -74,6 +74,8 @@ fn main() {
     oslo::version::install(env!("CARGO_PKG_VERSION"));
     // Before any thread exists, as the safety note on the function requires.
     restore_default_sigpipe();
+    // Before the shell changes any disposition of its own.
+    oslo::exec::job::note_ignored_at_entry();
     #[cfg(all(feature = "watch", feature = "scratch"))]
     {
         let args: Vec<String> = arguments();

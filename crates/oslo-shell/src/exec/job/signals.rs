@@ -46,6 +46,42 @@ const RESET_IN_CHILD: [Signal; 10] = [
 /// uses for pending signals.
 static IGNORED_ON_PURPOSE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The signals ignored when the shell started, one bit per signal number.
+static IGNORED_AT_ENTRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Note which signals the shell was started with ignored. Called first thing in `main`.
+pub fn note_ignored_at_entry() {
+    let mut bits = 0u64;
+    for signum in 1..=31 {
+        if currently_ignored(signum) {
+            bits |= 1u64 << (signum - 1);
+        }
+    }
+    IGNORED_AT_ENTRY.store(bits, Ordering::SeqCst);
+}
+
+/// Whether `signum` was ignored when the shell started: a non-interactive shell can neither trap
+/// nor reset it, as in bash.
+pub fn ignored_at_entry(signum: i32) -> bool {
+    (1..=64).contains(&signum)
+        && IGNORED_AT_ENTRY.load(Ordering::SeqCst) & (1u64 << (signum - 1)) != 0
+}
+
+/// List the signals ignored at entry as `trap ''` dispositions, and keep them ignored in children.
+pub fn adopt_ignored_at_entry(env: &mut crate::env::Environment) {
+    for signum in 1..=31 {
+        let Ok(signal) = Signal::try_from(signum) else {
+            continue;
+        };
+        if ignored_at_entry(signum)
+            && let Some(name) = signal.as_str().strip_prefix("SIG")
+        {
+            env.set_trap(name, "");
+            note_deliberate_ignore(signum, true);
+        }
+    }
+}
+
 /// Record whether `signum` is ignored because a trap said so. Called by the `trap` builtin.
 pub fn note_deliberate_ignore(signum: i32, deliberate: bool) {
     if !(1..=64).contains(&signum) {
