@@ -94,8 +94,33 @@ pub(super) fn holds_a_process_substitution(node: &Node) -> bool {
 }
 
 pub(super) fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
+    process_substitution_word_from(tree, node, node.span().start as usize)
+}
+
+/// [`process_substitution_word`] for the part of `node` from byte `from` of the source on: the
+/// value of an `[index]=value` array element.
+pub(super) fn process_substitution_word_from(
+    tree: &Tree,
+    node: &Node,
+    from: usize,
+) -> Result<oslo_ast::Word> {
     let mut parts = Vec::new();
     for child in node.children() {
+        let span = match child {
+            rune::Element::Node(inner) => inner.span(),
+            rune::Element::Token(token) => token.span(),
+        };
+        let (start, end) = (span.start as usize, span.end as usize);
+        if end <= from {
+            continue;
+        }
+        if start < from {
+            let text = &tree.source().text()[from..end];
+            for word in convert_words_from_str(text)? {
+                parts.extend(word.parts);
+            }
+            continue;
+        }
         match child {
             rune::Element::Node(inner)
                 if inner.kind() == SyntaxKind::Word && holds_a_process_substitution(inner) =>

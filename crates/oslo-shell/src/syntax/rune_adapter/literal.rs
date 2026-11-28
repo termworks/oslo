@@ -47,6 +47,20 @@ pub(super) fn array_elements(tree: &Tree, array: &Node) -> Result<Vec<oslo_ast::
             false => at,
         };
         let text = &source[start..spans[last].1];
+        // `([k]=<(cmd))`: the value after the `=` is the substitution's `/dev/fd/N`.
+        if super::commands::holds_a_process_substitution(words[last])
+            && let Some((index, value, append)) = keyed(text)
+            && spans[last].1 - value.len() >= spans[last].0
+        {
+            let from = spans[last].1 - value.len();
+            elements.push(oslo_ast::ArrayElement {
+                index: Some(crate::lexer::parse_single_word(index)?),
+                value: super::commands::process_substitution_word_from(tree, words[last], from)?,
+                append,
+            });
+            at = last + 1;
+            continue;
+        }
         match last > at && keyed(text).is_none() {
             true => elements.push(oslo_ast::ArrayElement {
                 index: None,
