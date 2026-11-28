@@ -126,6 +126,12 @@ impl Store {
             // USB stick, an encrypted volume — and a variable that quietly stopped meaning anything
             // would be worse than one that never existed.
             keys.push(match named_identity() {
+                Some(path) if path.is_relative() => {
+                    return Err(format!(
+                        "$OSLO_SECRET_IDENTITY is {}, a relative path; give it an absolute one",
+                        path.display()
+                    ));
+                }
                 Some(path) => KeySource::File(path),
                 None => KeySource::Profile,
             });

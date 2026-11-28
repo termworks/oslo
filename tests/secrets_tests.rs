@@ -374,6 +374,25 @@ fn a_conf_path_is_absolute_or_from_home() {
     assert!(!out.contains('~'), "{out}");
 }
 
+/// `$OSLO_SECRET_IDENTITY` is held to the same rule: a relative one is refused, not read from
+/// whatever directory the command happens to run in.
+#[test]
+fn a_relative_identity_is_refused() {
+    let store = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(oslo_bin())
+        .args(["secret", "set", "token"])
+        .env("XDG_DATA_HOME", store.path())
+        .env("XDG_STATE_HOME", store.path().join("state"))
+        .env("OSLO_SECRET_IDENTITY", "keys/identity")
+        .current_dir(store.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn oslo");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("relative"));
+    assert!(!store.path().join("keys/identity").exists());
+}
+
 /// A key file inside a repository is called out, whichever source names it.
 #[test]
 #[cfg(feature = "crypt")]
