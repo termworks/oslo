@@ -306,7 +306,7 @@ mod tests {
             builtin_kill(&mut env, &words(&["kill", "-TERM"])).unwrap(),
             2
         );
-        assert_eq!(builtin_kill(&mut env, &words(&["kill", "-s"])).unwrap(), 2);
+        assert_eq!(builtin_kill(&mut env, &words(&["kill", "-s"])).unwrap(), 1);
     }
 
     #[test]

@@ -91,6 +91,10 @@ const KEPT: &[(&str, &str)] = &[
     ("mapfile: read error: {}", "an errno"),
     ("{name}: write error: {}", "an errno on a descriptor"),
     (
+        "{name}: filename argument required",
+        "the name is the builtin's own, and the missing operand has no word to point at",
+    ),
+    (
         "from {format}: {e}",
         "the parser's message; the format is already named in it",
     ),
