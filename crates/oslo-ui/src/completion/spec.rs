@@ -124,6 +124,7 @@ impl OsloHelper {
                 .chain(words.iter().cloned())
                 .collect(),
             value: stem.to_string(),
+            before: word.prefix.to_string(),
             flags: walk.flags.clone(),
             dir: String::new(),
         };
@@ -278,6 +279,7 @@ impl OsloHelper {
         let word = word.clone();
         let mut query = query.clone();
         query.value = word.stem.clone();
+        query.before = word.prefix.to_string();
         let resolved = resolve(action, &query);
 
         // `$list(,)` — the word is several values and only the last is being completed. Retargeting

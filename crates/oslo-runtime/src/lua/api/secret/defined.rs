@@ -91,13 +91,17 @@ pub fn names() -> Vec<String> {
 /// The handle `oslo.secret.open` answers with for a defined store.
 ///
 /// The crypto is the declared store's — so `[vault] crypto hook` replaces that half too, and a
-/// `[vault]` with nothing in it seals with your ordinary key.
-pub fn handle(store: Store) -> Value {
+/// `[vault]` with nothing in it seals with your ordinary key. `may` is the plugin filter
+/// `super::handle` takes, applied to the same four verbs.
+pub fn handle(store: Store, may: Option<Vec<String>>) -> Value {
     let mut table = Table::new();
 
-    let it = store.clone();
+    let (it, granted) = (store.clone(), may.clone());
     put(&mut table, "get", move |_, args| {
         let name = text(&args, 2, "store:get")?;
+        if let Some(refused) = super::refusal(&name, granted.clone()) {
+            return Ok(vec![Value::Nil, Value::str(refused)]);
+        }
         // Watched here as well as in `Store`, because a defined store never goes through it — and a
         // store somebody else supplied is the one an audit hook most wants to see.
         secrets::hooked::touched(true, &it.name, &name, false);
@@ -113,15 +117,18 @@ pub fn handle(store: Store) -> Value {
         let value = it.unseal_named(&name, &bytes);
         secrets::hooked::touched(false, &it.name, &name, false);
         Ok(match value {
-            Ok(value) => vec![Value::str(String::from_utf8_lossy(&value))],
+            Ok(value) => vec![super::handed(&value)],
             Err(message) => vec![Value::Nil, Value::str(message)],
         })
     });
 
-    let it = store.clone();
+    let (it, granted) = (store.clone(), may.clone());
     put(&mut table, "set", move |_, args| {
         let name = text(&args, 2, "store:set")?;
         let value = text(&args, 3, "store:set")?;
+        if let Some(refused) = super::refusal(&name, granted.clone()) {
+            return Ok(vec![Value::Nil, Value::str(refused)]);
+        }
         secrets::hooked::touched(true, &it.name, &name, true);
         let sealed = match it.seal_named(&name, value.as_bytes()) {
             Ok(sealed) => sealed,
@@ -136,9 +143,12 @@ pub fn handle(store: Store) -> Value {
         ok(Value::Bool(true))
     });
 
-    let it = store.clone();
+    let (it, granted) = (store.clone(), may.clone());
     put(&mut table, "forget", move |_, args| {
         let name = text(&args, 2, "store:forget")?;
+        if let Some(refused) = super::refusal(&name, granted.clone()) {
+            return Ok(vec![Value::Nil, Value::str(refused)]);
+        }
         match call(&it.name, "forget", vec![Value::str(name)])? {
             Some(_) => ok(Value::Bool(true)),
             None => Ok(vec![Value::Nil, Value::str("it has no `forget` handler")]),
@@ -152,10 +162,26 @@ pub fn handle(store: Store) -> Value {
         let Some(f) = listed else {
             return ok(Value::table(Table::new()));
         };
-        match crate::lua::engine::call_here(&f, Vec::new()) {
-            Ok(answers) => Ok(vec![answers.into_iter().next().unwrap_or(Value::Nil)]),
-            Err(problem) => Ok(vec![Value::Nil, Value::str(problem.to_string())]),
+        let answered = match crate::lua::engine::call_here(&f, Vec::new()) {
+            Ok(answers) => answers.into_iter().next().unwrap_or(Value::Nil),
+            Err(problem) => return Ok(vec![Value::Nil, Value::str(problem.to_string())]),
+        };
+        if may.is_none() {
+            return Ok(vec![answered]);
         }
+        let Value::Table(names) = answered else {
+            return ok(Value::table(Table::new()));
+        };
+        let names: Vec<String> = names
+            .borrow()
+            .sequence()
+            .iter()
+            .filter_map(|name| match name {
+                Value::Str(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .collect();
+        ok(super::list(&super::visible(names, &may)))
     });
 
     let it = store;

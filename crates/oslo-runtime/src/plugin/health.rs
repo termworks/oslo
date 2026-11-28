@@ -57,7 +57,12 @@ pub fn build() -> Value {
     // A plugin nobody granted anything reads no secrets at all. Denying by default is the only safe
     // way round: a missing grant is a plugin that has not been given anything yet, and the failure
     // of the other default is a plugin quietly reading your tokens.
+    //
+    // Refused while a plugin loads and once plugins have loaded; see `super::grant_refused`.
     super::super::lua::api::util::put(&mut plugin, "secrets", |_, args| {
+        if let Some(refused) = super::grant_refused() {
+            return Err(oslo_base::value::LuaError::new(refused.to_string()));
+        }
         let Some(Value::Str(name)) = args.first() else {
             return Err(oslo_base::value::LuaError::new(
                 "oslo.plugin.secrets: the first argument is the plugin's name".to_string(),

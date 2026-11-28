@@ -137,8 +137,10 @@ impl oslo_luavm::Globals for ShellGlobals {
     }
 
     fn set(&self, name: &str, value: &str) {
-        if let Ok(mut env) = self.env.try_lock() {
-            env.set_var(name, value, true);
+        if let Ok(mut env) = self.env.try_lock()
+            && env.set_var(name, value, true)
+        {
+            env.mark_if_handed_out(name, value);
         }
     }
 

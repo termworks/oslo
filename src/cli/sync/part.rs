@@ -200,11 +200,8 @@ fn merge_into(
         Part::Secrets => {
             let mine = oslo::secrets::Store::selected(None)?;
             let other = oslo::secrets::Store {
-                name: mine.name.clone(),
                 directory: theirs.join("secrets"),
-                keys: mine.keys.clone(),
-                recipients: mine.recipients.clone(),
-                crypto: mine.crypto.clone(),
+                ..mine.clone()
             };
             let report = oslo::secrets::sync::merge(&mine, &other, dry)?;
             Ok(Moved::from_secrets(&report))

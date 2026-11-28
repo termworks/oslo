@@ -16,6 +16,7 @@ pub mod origin;
 mod record;
 mod registry;
 mod seed;
+pub mod sensitive;
 mod special;
 #[cfg(test)]
 mod tests;

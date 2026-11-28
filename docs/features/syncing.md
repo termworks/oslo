@@ -133,8 +133,15 @@ the thing you may commit and copy about; the key is not, and that is the boundar
 
 The bundle format is deliberately not tar: it carries a flat directory of files whose names oslo
 already validates, and tar would bring permissions, ownership, symlinks, device nodes and path
-traversal in exchange for nothing this needs. A name with a `/`, a `..` or a NUL in it is refused
-rather than sanitised.
+traversal in exchange for nothing this needs. A name with a `/`, a `..`, a control character or a
+bidirectional override in it is refused rather than sanitised, and so is a name sent twice. Only
+regular files are packed: each entry is looked at without following it, so a link, a FIFO or a
+device in the store is passed over unopened, as are the store's `.lock` and a write's scratch
+files. What arrives is unpacked into a `0700` directory, each file `0600`.
+
+A header that is damaged — malformed, or a revision above 2^53 — on either side stops the merge
+before anything is written, and the error names the file. Both stores are locked for the merge, so a
+`set` cannot land in the middle of it.
 
 ## The far end is oslo, not scp
 

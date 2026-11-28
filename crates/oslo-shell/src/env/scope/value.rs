@@ -30,6 +30,9 @@ impl Attrs {
     pub const NAMEREF: Attrs = Attrs(1 << 7);
     /// Declared but holding no value.
     pub const UNSET: Attrs = Attrs(1 << 8);
+    /// Its value is a secret: traces and listings show `<secret>`. Only oslo sets it, and no
+    /// `declare` letter names it.
+    pub const SENSITIVE: Attrs = Attrs(1 << 9);
     /// The three case conversions, of which a binding holds at most one.
     pub const CASE: Attrs = Attrs(Self::LOWER.0 | Self::UPPER.0 | Self::CAPITAL.0);
 

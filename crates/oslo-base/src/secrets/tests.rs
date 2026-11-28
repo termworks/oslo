@@ -48,7 +48,10 @@ fn an_empty_dot_git_is_not_a_repository() {
 
 /// **A malformed line is an error, not a skipped line.** The failure the loudness prevents is a
 /// store quietly encrypting to one fewer recipient than its owner believes.
+///
+/// It parses `key` lines, which a build without `crypt` refuses.
 #[test]
+#[cfg(feature = "crypt")]
 fn a_conf_says_what_it_says_and_nothing_it_does_not() {
     let parsed = conf::parse(
         "# a comment\n\
@@ -91,6 +94,7 @@ fn a_conf_says_what_it_says_and_nothing_it_does_not() {
 /// Editing splices lines, so what a person wrote around the change survives being edited by a
 /// command — the reason this is not simply re-rendered from the parsed model.
 #[test]
+#[cfg(feature = "crypt")]
 fn editing_keeps_the_comments_and_the_order() {
     let mut parsed = conf::parse("# mine\n\n[user]\nkey file /k/one\n").expect("it parses");
     parsed.add("user", "key file /k/two");

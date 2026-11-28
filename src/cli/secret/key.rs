@@ -43,7 +43,7 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
             Ok(source) => remove(store, &source),
             Err(e) => fail(&e),
         },
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&secrets::recipient::shown(other)),
     }
 }
 
@@ -85,6 +85,10 @@ fn add(store: &Store, source: &KeySource) -> i32 {
     if store.name.starts_with(secrets::PLUGIN) && source.is_external() {
         return fail("a plugin's store may not run a command");
     }
+    let _held = match secrets::conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut conf = match secrets::conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
@@ -107,14 +111,28 @@ fn add(store: &Store, source: &KeySource) -> i32 {
 }
 
 fn remove(store: &Store, source: &KeySource) -> i32 {
+    let _held = match secrets::conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut conf = match secrets::conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
     };
-    let line = source.line();
-    let gone = conf.remove(&store.name, |written| written == line);
+    // Compared as key sources rather than as text, so `~/k` written by hand and the `/home/you/k`
+    // it expands to are the same key.
+    let gone = conf.remove(&store.name, |written| {
+        written
+            .strip_prefix("key ")
+            .and_then(|rest| KeySource::parse(rest).ok())
+            .is_some_and(|written| &written == source)
+    });
     if gone == 0 {
-        return fail(&format!("{}: {line} is not one of its keys", store.name));
+        return fail(&format!(
+            "{}: {} is not one of its keys",
+            store.name,
+            source.line()
+        ));
     }
     match conf.write() {
         Ok(()) => 0,

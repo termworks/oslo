@@ -113,6 +113,10 @@ oslo.plugin.secrets("notes", { "gh-token" })
 ```
 
 A plugin nobody granted anything reads nothing. Denying by default is the only safe way round.
+Only `init.lua` grants: `oslo.plugin.secrets` raises while a plugin's file is loading and once
+plugins have started loading, so a plugin cannot grant itself anything. What the grant does and
+does not hold back — a hook a plugin registers runs with your full reach — is in
+[secrets](secrets.md#what-a-plugin-may-reach).
 
 ## When something misbehaves
 

@@ -154,6 +154,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures 0.3.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -166,6 +167,7 @@ dependencies = [
  "chacha20",
  "cipher",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -422,6 +424,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -704,8 +707,8 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "luna"
-version = "0.7.0"
-source = "git+https://github.com/onix-os/luna?tag=v0.7.0#2bf4f2f7d4f50a968ba94d60928186d34b937354"
+version = "0.7.1"
+source = "git+https://github.com/onix-os/luna?tag=v0.7.1#2be004af32ea1b75430ca923621de4538d30ac33"
 dependencies = [
  "ahash",
  "allocator-api2",
@@ -810,7 +813,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "oslo"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "argc",
  "nix",
@@ -831,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-base"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ariadne",
  "base64",
@@ -846,11 +849,12 @@ dependencies = [
  "tempfile",
  "vista-recall",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
 name = "oslo-luavm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "luna",
  "oslo-base",
@@ -858,11 +862,11 @@ dependencies = [
 
 [[package]]
 name = "oslo-math"
-version = "0.8.1"
+version = "0.8.2"
 
 [[package]]
 name = "oslo-runtime"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "base64",
  "nix",
@@ -879,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-shell"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "argc",
  "nix",
@@ -897,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "oslo-ui"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "libc",
  "nix",
@@ -1574,6 +1578,7 @@ checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek",
  "rand_core 0.10.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -1601,6 +1606,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
 
 [[package]]
 name = "zmij"

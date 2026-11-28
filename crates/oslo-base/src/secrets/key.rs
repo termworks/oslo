@@ -20,8 +20,23 @@
 //! * **`$OSLO_SECRET_NO_EXEC`** set to anything non-empty skips every command source and names it
 //!   in the failure. Exported once by a cron job or a container, inherited by every child, it makes
 //!   "this will not fork" something to assert rather than infer.
+//! * **Standard error is the terminal's**, so a "touch your key" prompt is seen, and the run is
+//!   bounded by the store's `key timeout` and a cap on what it prints. See [`super::child`].
+//!
+//! # A file is a path that means one place
+//!
+//! `key file` takes an absolute path or one that starts with `~/`, which is `$HOME`. A relative
+//! one is refused: it would mean a different file in every directory the shell is run from.
 
 use std::path::PathBuf;
+#[cfg(feature = "crypt")]
+use std::time::Duration;
+#[cfg(feature = "crypt")]
+use zeroize::Zeroizing;
+
+/// The most a key file, or a key command's output, may hold.
+#[cfg(feature = "crypt")]
+const SMALL: u64 = crate::private::SMALL;
 
 /// Where one key comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,14 +58,17 @@ impl KeySource {
         let (kind, rest) = super::conf::split_word(rest);
         match kind {
             "profile" => Ok(KeySource::Profile),
-            "file" if !rest.is_empty() => Ok(KeySource::File(PathBuf::from(rest))),
+            "file" if !rest.is_empty() => {
+                super::conf::absolute("key file", rest).map(KeySource::File)
+            }
             "command" if !rest.is_empty() => {
                 let argv: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
                 Ok(KeySource::Command(argv))
             }
             "file" | "command" => Err(format!("`key {kind}` needs something after it")),
             other => Err(format!(
-                "a key is `profile`, `file` or `command`, not {other:?}"
+                "a key is `profile`, `file` or `command`, not {:?}",
+                super::recipient::shown(other)
             )),
         }
     }
@@ -64,58 +82,56 @@ impl KeySource {
         }
     }
 
+    /// What kind it is, as the start of its line: `key profile`, `key file` or `key command`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            KeySource::Profile => "key profile",
+            KeySource::File(_) => "key file",
+            KeySource::Command(_) => "key command",
+        }
+    }
+
     /// Whether reaching this key means running another program.
     pub fn is_external(&self) -> bool {
         matches!(self, KeySource::Command(_))
     }
 
-    /// The key, or why not.
+    /// The key, or why not, giving a command `timeout` to answer.
     ///
     /// A file that is not there is `Ok(None)` rather than an error: several key sources are a list
-    /// of places to look, and a laptop that has one of them is not misconfigured.
+    /// of places to look, and a laptop that has one of them is not misconfigured. Anything else —
+    /// unreadable, not a regular file, not a key — is an error, and is never read as "not there".
     #[cfg(feature = "crypt")]
-    pub fn key(&self) -> Result<Option<[u8; 32]>, String> {
+    pub fn key(&self, timeout: Duration) -> Result<Option<super::native::SecretKey>, String> {
+        use crate::private::{Links, read};
         match self {
             KeySource::Profile => Ok(None),
-            KeySource::File(path) => match std::fs::read_to_string(path) {
-                Ok(text) => super::native::read_secret(&text)
+            KeySource::File(path) => match read(path, SMALL, Links::Follow)?.map(Zeroizing::new) {
+                Some(bytes) => std::str::from_utf8(&bytes)
+                    .map_err(|_| "not text".to_string())
+                    .and_then(super::native::read_secret)
                     .map(Some)
                     .map_err(|e| format!("{}: {e}", path.display())),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(format!("{}: {e}", path.display())),
+                None => Ok(None),
             },
-            KeySource::Command(argv) => KeySource::run(argv).map(Some),
+            KeySource::Command(argv) => KeySource::run(argv, timeout).map(Some),
         }
     }
 
     #[cfg(feature = "crypt")]
-    fn run(argv: &[String]) -> Result<[u8; 32], String> {
+    fn run(argv: &[String], timeout: Duration) -> Result<super::native::SecretKey, String> {
         if no_exec() {
             return Err(format!(
                 "$OSLO_SECRET_NO_EXEC is set, so `{}` was not run",
                 argv.join(" ")
             ));
         }
-        let (program, rest) = argv.split_first().ok_or("a key command with no program")?;
-        let output = std::process::Command::new(program)
-            .args(rest)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("{program}: {e}"))?;
-        if !output.status.success() {
-            let said = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "{program}: exited {}{}",
-                output.status.code().unwrap_or(-1),
-                if said.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(": {}", said.trim())
-                }
-            ));
-        }
-        let text = String::from_utf8(output.stdout)
-            .map_err(|_| format!("{program}: what it printed is not a key"))?;
+        let program = argv.first().map_or("", String::as_str);
+        let output = super::child::run(argv, None, timeout, SMALL as usize)?;
+        let text = Zeroizing::new(
+            String::from_utf8(output)
+                .map_err(|_| format!("{program}: what it printed is not a key"))?,
+        );
         super::native::read_secret(&text).map_err(|e| format!("{program}: {e}"))
     }
 }
@@ -126,15 +142,22 @@ pub fn no_exec() -> bool {
 }
 
 /// Make one where `path` says, mode `0600` from the moment it exists.
+///
+/// **Never over anything.** The file is linked into place without replacing, so a key that is
+/// already there — readable or not, a file or a link — is refused rather than destroyed. Missing
+/// directories are made at `0700`; an existing one is left as its owner made it.
 #[cfg(feature = "crypt")]
-pub fn generate(path: &std::path::Path) -> Result<[u8; 32], String> {
+pub fn generate(path: &std::path::Path) -> Result<super::native::SecretKey, String> {
     let directory = path
         .parent()
         .ok_or_else(|| format!("{}: has no directory to be in", path.display()))?;
-    std::fs::create_dir_all(directory).map_err(|e| format!("{}: {e}", directory.display()))?;
+    crate::private::directory(directory)?;
     let fresh = super::native::generate_secret()?;
-    let scratch = directory.join("key.new");
-    super::write_private(&scratch, super::native::write_secret(&fresh).as_bytes())?;
-    std::fs::rename(&scratch, path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(fresh)
+    match crate::private::create(path, super::native::write_secret(&fresh).as_bytes())? {
+        true => Ok(fresh),
+        false => Err(format!(
+            "{}: something is already there, so no key was made over it",
+            path.display()
+        )),
+    }
 }

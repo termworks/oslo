@@ -167,11 +167,12 @@ pub fn after(name: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// The profile is process-wide state, so the tests that set it cannot run beside each other.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The profile is process-wide state, so the tests that set or read it cannot run beside each
+    /// other.
+    pub(crate) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A profile name is a letter, then letters, digits, `_` or `-`. Everything else is refused
     /// rather than cleaned: the name *is* the file, so turning a typo into a different valid name

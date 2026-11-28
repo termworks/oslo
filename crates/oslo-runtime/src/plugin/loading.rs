@@ -21,7 +21,7 @@ use std::cell::RefCell;
 #[derive(Debug, Clone)]
 pub struct Loading {
     pub plugin: String,
-    /// The user's secrets its manifest declared, in the order it wrote them.
+    /// The user's secrets the config granted it, in the order the grant lists them.
     pub secrets: Vec<String>,
 }
 

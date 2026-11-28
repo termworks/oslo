@@ -58,6 +58,9 @@ pub struct Query {
     pub words: Vec<String>,
     /// The word being completed. `${C_VALUE}`.
     pub value: String,
+    /// What a word break cut off the front of that word, break included: `VAR=` of `VAR=gh`, empty
+    /// for a whole word.
+    pub before: String,
     /// Flags that were given a value, keyed by longhand in upper case: `${C_FLAG_SUFFIX}`.
     pub flags: HashMap<String, String>,
     /// Where to look. `$chdir` is the only thing that changes it.

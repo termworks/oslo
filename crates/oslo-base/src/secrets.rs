@@ -26,10 +26,14 @@
 //! # What is on disk, and why the key is not next to it
 //!
 //! ```text
-//! ~/.local/share/oslo/secrets/NAME.sealed   one secret, encrypted — safe to commit
-//! ~/.local/state/oslo/key                   the key, mode 0600 — never
-//! ~/.local/state/oslo/secrets.conf          which stores exist — beside the key, and why is in `conf`
+//! ~/.local/share/oslo/secrets/NAME.sealed       one secret, encrypted — safe to commit
+//! ~/.local/share/oslo/secrets/.lock             held while a write reads and replaces a file
+//! ~/.local/state/oslo/profiles/default.key      the profile's key, mode 0600 — never
+//! ~/.local/state/oslo/secrets.conf              which stores exist — beside the key, see `conf`
 //! ```
+//!
+//! Both directories are `0700`, every file `0600`, and every write lands through a scratch file and
+//! a rename — see [`crate::private`].
 //!
 //! **Two directories, because they have opposite rules.** The point of encrypting a store is that
 //! the store can then go where files go — a dotfiles repository, a backup, a synced directory. A
@@ -38,40 +42,50 @@
 //!
 //! So the key lives under `$XDG_STATE_HOME` — a different tree, whose whole definition is state a
 //! machine keeps to itself — and `$OSLO_SECRET_IDENTITY` moves it anywhere else: a USB stick, an
-//! encrypted volume, `~/.ssh` beside the other private keys. `identity_path` is the one place that
-//! decides, and `identity_in_a_repository` is the check that says so out loud when the answer turns
-//! out to be under a `.git` anyway — because a home directory that is itself a repository is a
-//! thing people do.
+//! encrypted volume, `~/.ssh` beside the other private keys. [`Store::key_paths`] names every file
+//! a store reads a key from, and `in_a_repository` is the check that says so out loud when one
+//! turns out to be under a `.git` anyway — because a home directory that is itself a repository is
+//! a thing people do.
 //!
 //! The identity is a file at all because the alternative is asking for a passphrase on every read,
 //! and a shell that asks fifty times a day teaches you to keep the value somewhere else. Protecting
 //! it is the filesystem's job, the same as `~/.ssh/id_ed25519`.
 
+pub mod child;
 pub mod cipher;
 pub mod conf;
 pub mod crypto;
+pub mod dumpable;
 pub mod hooked;
 pub mod key;
+pub mod name;
 #[cfg(feature = "crypt")]
 pub mod native;
+#[cfg(feature = "crypt")]
+mod natively;
 // Where the files are: the store, the key, and why those are two different directories.
 pub mod place;
 pub mod recipient;
 // What lets a store travel: the stamp each file carries, and the merge that reads it. Deliberately
 // outside the sealed body, so a machine with no key for this store can still carry it.
 pub mod sync;
+mod write;
 
-use place::{default_directory, named_identity, write_private};
-pub use place::{
-    directory, forget, get, identity_in_a_repository, identity_path, names, path, set,
-};
+use place::{default_directory, named_identity};
+pub use place::{directory, forget, get, identity_path, in_a_repository, names, path, set};
 
 use std::path::PathBuf;
+use std::time::Duration;
+pub use zeroize::Zeroizing;
 
 pub use cipher::Cipher;
 pub use crypto::Crypto;
 pub use key::KeySource;
 pub use recipient::Recipient;
+use sync::Kept;
+
+/// The most a store file may hold, and the most a cipher command may print: 16 MiB.
+pub const LARGEST: u64 = 16 << 20;
 
 /// What one secret's file is called, after its name.
 ///
@@ -95,6 +109,10 @@ pub struct Store {
     pub recipients: Vec<Recipient>,
     /// What seals and opens its files: oslo's own age, another program, or a Lua hook.
     pub crypto: Crypto,
+    /// How long a key or cipher command may run: `key timeout`, else [`child::DEFAULT_TIMEOUT`].
+    pub timeout: Duration,
+    /// Whether an `OSLO2` file is still read. `rotate` ends it with `refuse OSLO2`.
+    pub reads_oslo2: bool,
 }
 
 impl Store {
@@ -114,6 +132,12 @@ impl Store {
             // USB stick, an encrypted volume — and a variable that quietly stopped meaning anything
             // would be worse than one that never existed.
             keys.push(match named_identity() {
+                Some(path) if path.is_relative() => {
+                    return Err(format!(
+                        "$OSLO_SECRET_IDENTITY is {}, a relative path; give it an absolute one",
+                        path.display()
+                    ));
+                }
                 Some(path) => KeySource::File(path),
                 None => KeySource::Profile,
             });
@@ -143,6 +167,10 @@ impl Store {
             keys,
             recipients,
             crypto,
+            timeout: section
+                .and_then(|s| s.timeout)
+                .unwrap_or(child::DEFAULT_TIMEOUT),
+            reads_oslo2: !section.is_some_and(|s| s.refuses_oslo2),
         })
     }
 
@@ -179,16 +207,9 @@ impl Store {
     ///
     /// A name is a filename, so it may not reach out of the directory it is written into: `..` and
     /// `/` are refused rather than sanitised, because a secret quietly stored somewhere other than
-    /// where it was asked for is worse than an error.
+    /// where it was asked for is worse than an error. See [`name`] for the rest of what is refused.
     pub fn path(&self, name: &str) -> Result<PathBuf, String> {
-        if name.is_empty()
-            || name.contains('/')
-            || name.contains('\0')
-            || name == ".."
-            || name.starts_with('.')
-        {
-            return Err(format!("{name:?} is not a usable name for a secret"));
-        }
+        name::check(name)?;
         Ok(self.directory.join(format!("{name}{KEPT}")))
     }
 
@@ -198,53 +219,33 @@ impl Store {
             return Err(why);
         }
         let path = self.path(name)?;
-        hooked::touched(true, &self.name, name, true);
-        let sealed = self.seal_named(name, value)?;
-        hooked::touched(false, &self.name, name, true);
-        // **The stamp is carried forward and advanced**, tombstone included: writing a name
-        // somebody deleted brings it back, and the new revision has to clear the tombstone's or the
-        // next sync would hand the deletion back and undo the write.
-        let mut stamp = sync::read_kept(&path)
-            .map(|kept| kept.stamp)
-            .unwrap_or(sync::Stamp {
-                revision: 0,
-                deleted: false,
-                tie_breaker: [0; 16],
-            });
-        stamp.deleted = false;
-        stamp.advance();
-        // The ciphertext is not a secret, but the file is still written privately: what it *is* is
-        // still information — a size, a modification time, the fact that this name exists at all.
-        sync::write_kept(&path, &sync::Kept { stamp, sealed })
+        let sealed = self.sealed(name, value)?;
+        self.put(&path, sealed, None).map(|_| ())
     }
 
-    /// The value kept under `name`.
-    pub fn get(&self, name: &str) -> Result<Vec<u8>, String> {
+    /// The value kept under `name`, wiped when it is dropped.
+    pub fn get(&self, name: &str) -> Result<Zeroizing<Vec<u8>>, String> {
         if let Some(why) = self.unreachable_here() {
             return Err(why);
         }
         let path = self.path(name)?;
-        let stored = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let kept = sync::unwrap(&stored);
         // A tombstone is a name that is gone, and reads like one rather than like a file full of
-        // nothing.
-        if kept.stamp.deleted {
-            return Err(format!("{name}: no such secret"));
+        // nothing; so does a file that is not there at all.
+        match sync::read_kept(&path)? {
+            Some(kept) if !kept.stamp.deleted => self.opened(name, &kept.sealed),
+            _ => Err(self.missing(name)),
         }
-        hooked::touched(true, &self.name, name, false);
-        let value = self.unseal_named(name, &kept.sealed);
-        hooked::touched(false, &self.name, name, false);
-        value
     }
 
-    /// Every name kept here, sorted. Tombstones are not names anybody has.
+    /// Every name kept here, sorted. Tombstones are not names anybody has, and nor is a file that is
+    /// not a regular one or whose header is damaged.
     pub fn names(&self) -> Vec<String> {
         sync::every_name(self)
             .into_iter()
             .filter(|name| {
                 self.path(name)
                     .ok()
-                    .and_then(|path| sync::read_kept(&path))
+                    .and_then(|path| sync::read_kept(&path).ok().flatten())
                     .is_some_and(|kept| !kept.stamp.deleted)
             })
             .collect()
@@ -255,24 +256,27 @@ impl Store {
     /// **A tombstone, not an erasure**, so that the removal survives the next sync instead of the
     /// other machine putting it back. The sealed body is dropped — there is no reason to keep
     /// ciphertext for something deleted — and what remains is the name and a stamp saying it is
-    /// gone. See [`crate::track::stamp`].
+    /// gone. See [`crate::track::stamp`]. Success means the tombstone is on disk.
     pub fn forget(&self, name: &str) -> Result<(), String> {
         let path = self.path(name)?;
-        let Some(kept) = sync::read_kept(&path) else {
-            return Err(format!("{}: {name}: no such secret", self.name));
-        };
-        if kept.stamp.deleted {
-            return Err(format!("{}: {name}: no such secret", self.name));
+        let alive = |kept: &Kept| !kept.stamp.deleted;
+        // Looked at before the lock, so forgetting a name nobody has makes no directory for it.
+        if !sync::read_kept(&path)?.is_some_and(|kept| alive(&kept)) {
+            return Err(self.missing(name));
         }
+        let _held = self.lock()?;
+        let Some(kept) = sync::read_kept(&path)?.filter(alive) else {
+            return Err(self.missing(name));
+        };
         let mut stamp = kept.stamp;
-        stamp.bury();
-        sync::write_kept(
-            &path,
-            &sync::Kept {
-                stamp,
-                sealed: Vec::new(),
-            },
-        )
+        stamp
+            .bury()
+            .ok_or_else(|| write::pinned(&path, &kept.stamp))?;
+        let tombstone = Kept {
+            stamp,
+            sealed: Vec::new(),
+        };
+        sync::write_kept(&path, &tombstone)
     }
 
     /// Encrypt to every recipient, without storing it anywhere.
@@ -280,36 +284,45 @@ impl Store {
     /// **A store with an `encrypt command` never reaches oslo's own age**: who that program
     /// encrypts to, and in what format, is its business. That is what makes a key oslo cannot
     /// compute — one held in hardware — usable at all.
-    pub fn seal(&self, value: &[u8]) -> Result<Vec<u8>, String> {
-        self.seal_named("", value)
-    }
-
-    /// The same, telling whatever does the work which secret this is.
     ///
-    /// The name is empty for an anonymous seal — `oslo.secret.seal`, which encrypts something the
-    /// caller keeps somewhere else of its own.
-    pub fn seal_named(&self, name: &str, value: &[u8]) -> Result<Vec<u8>, String> {
-        match &self.crypto {
-            Crypto::Hook => return hooked::encrypt(&self.name, name, value),
-            Crypto::Command(cipher) => {
-                if let Some(argv) = &cipher.encrypt {
-                    return cipher::through(argv, value);
-                }
-            }
-            Crypto::Native => {}
-        }
-        self.seal_natively(value)
+    /// **Anonymous**: `oslo.secret.seal`, which encrypts something the caller keeps somewhere else
+    /// of its own. The built-in crypto binds it to a fixed label rather than to a store and a name,
+    /// and a hook is handed an empty name.
+    pub fn seal(&self, value: &[u8]) -> Result<Vec<u8>, String> {
+        self.seal_as(None, value)
     }
 
-    /// oslo's own, in this process.
-    #[cfg(feature = "crypt")]
-    fn seal_natively(&self, value: &[u8]) -> Result<Vec<u8>, String> {
-        native::seal(&self.encrypt_to()?, value)
+    /// The same for one named secret, which the built-in crypto binds to this store and that name.
+    ///
+    /// **A store with only a `decrypt command` cannot write**, rather than writing with oslo's own
+    /// crypto: what that store's files are sealed to is the other program's business.
+    pub fn seal_named(&self, name: &str, value: &[u8]) -> Result<Vec<u8>, String> {
+        self.seal_as(Some(name), value)
+    }
+
+    fn seal_as(&self, name: Option<&str>, value: &[u8]) -> Result<Vec<u8>, String> {
+        match &self.crypto {
+            Crypto::Hook => hooked::encrypt(&self.name, name.unwrap_or(""), value),
+            Crypto::Command(cipher) => match &cipher.encrypt {
+                Some(argv) => cipher::through_within(argv, value, self.timeout),
+                None => Err(self.half("decrypt", "encrypt", "write")),
+            },
+            Crypto::Native => self.seal_natively(name, value),
+        }
+    }
+
+    /// Why a store that hands over one half of its crypto cannot do the other.
+    fn half(&self, has: &str, lacks: &str, cannot: &str) -> String {
+        format!(
+            "{}: it has a `{has} command` and no `{lacks} command`, so it cannot {cannot}; \
+             `oslo secret cipher {lacks} -- …` names one",
+            self.name
+        )
     }
 
     /// This build carries no crypto of its own, so a store has to name one.
     #[cfg(not(feature = "crypt"))]
-    fn seal_natively(&self, _value: &[u8]) -> Result<Vec<u8>, String> {
+    fn seal_natively(&self, _name: Option<&str>, _value: &[u8]) -> Result<Vec<u8>, String> {
         Err(no_native(&self.name))
     }
 
@@ -319,84 +332,73 @@ impl Store {
     /// first identity that fits, so a store whose file key opens the file never runs the program
     /// another key source names — no `$PATH` walk, no fork, and a cron job on a machine that cannot
     /// reach the other key degrades instead of hanging on it.
-    pub fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
-        self.unseal_named("", ciphertext)
+    pub fn unseal(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+        self.unseal_as(None, ciphertext)
     }
 
-    /// The same, telling whatever does the work which secret this is.
-    pub fn unseal_named(&self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    /// The same for one named secret.
+    pub fn unseal_named(
+        &self,
+        name: &str,
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
+        self.unseal_as(Some(name), ciphertext)
+    }
+
+    fn unseal_as(
+        &self,
+        name: Option<&str>,
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
         match &self.crypto {
-            Crypto::Hook => return hooked::decrypt(&self.name, name, ciphertext),
-            Crypto::Command(cipher) => {
-                if let Some(argv) = &cipher.decrypt {
-                    return cipher::through(argv, ciphertext);
-                }
+            Crypto::Hook => {
+                hooked::decrypt(&self.name, name.unwrap_or(""), ciphertext).map(Zeroizing::new)
             }
-            Crypto::Native => {}
-        }
-        self.unseal_natively(ciphertext)
-    }
-
-    /// oslo's own, in this process.
-    ///
-    /// **File keys before program keys**, so a store that opens with a file never runs the program
-    /// another key source names: no `$PATH` walk, no fork, and a cron job on a machine that cannot
-    /// reach the other key degrades instead of hanging on it.
-    #[cfg(feature = "crypt")]
-    fn unseal_natively(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
-        let mut tried = 0;
-        for external in [false, true] {
-            for key in self.keys_of(external)? {
-                tried += 1;
-                if let Ok(value) = native::unseal(&key, ciphertext) {
-                    return Ok(value);
+            Crypto::Command(cipher) => match &cipher.decrypt {
+                Some(argv) => {
+                    cipher::through_within(argv, ciphertext, self.timeout).map(Zeroizing::new)
                 }
-            }
+                None => Err(self.half("encrypt", "decrypt", "read")),
+            },
+            Crypto::Native => self.unseal_natively(name, ciphertext),
         }
-        Err(self.why_it_did_not_open(tried))
     }
 
     #[cfg(not(feature = "crypt"))]
-    fn unseal_natively(&self, _ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    fn unseal_natively(
+        &self,
+        _name: Option<&str>,
+        _ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
         Err(no_native(&self.name))
     }
 
-    /// Re-encrypt everything here to the recipients as they now stand, and answer how many moved.
-    pub fn rotate(&self) -> Result<usize, String> {
-        let names = self.names();
-        let mut values = Vec::with_capacity(names.len());
-        for name in &names {
-            values.push((name.clone(), self.get(name)?));
-        }
-        for (name, value) in &values {
-            self.set(name, value)?;
-        }
-        Ok(values.len())
-    }
-
-    /// The keys this store can offer, of one kind.
+    /// What each key source of one kind answers, in order, run only as far as it is read: a key, or
+    /// what went wrong, labelled with the source. A source with nothing there answers nothing.
     #[cfg(feature = "crypt")]
-    pub fn keys_of(&self, external: bool) -> Result<Vec<[u8; 32]>, String> {
-        let mut found = Vec::new();
-        for source in self.keys.iter().filter(|s| s.is_external() == external) {
-            // Only the store knows its own name, and the name is the salt — so this one is resolved
-            // here rather than by the key source.
-            if matches!(source, KeySource::Profile) {
-                if let Some(profile) = self.profile_key()? {
-                    found.push(native::derive_store_key(&profile, &self.name)?);
+    pub fn keys_of(
+        &self,
+        external: bool,
+    ) -> impl Iterator<Item = Result<native::SecretKey, String>> + '_ {
+        self.keys
+            .iter()
+            .filter(move |source| source.is_external() == external)
+            .filter_map(|source| {
+                let answer = match source {
+                    // Only the store knows its own name, and the name is the salt — so this one is
+                    // resolved here rather than by the key source.
+                    KeySource::Profile => self.profile_key().and_then(|profile| {
+                        profile
+                            .map(|profile| native::derive_store_key(&profile, &self.name))
+                            .transpose()
+                    }),
+                    other => other.key(self.timeout),
+                };
+                match answer {
+                    Ok(found) => found.map(Ok),
+                    Err(e) => Some(Err(format!("{} {e}", source.kind()))),
                 }
-                continue;
-            }
-            match source.key() {
-                Ok(Some(key)) => found.push(key),
-                Ok(None) => {}
-                // A key source that cannot answer is not the end of the list: the next one may be
-                // the one that opens this file, and the failure is reported only if none does.
-                Err(_) if self.keys.len() > 1 => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(found)
+            })
     }
 
     /// The first key file this store would look in, which is where `key init` makes one.
@@ -407,40 +409,43 @@ impl Store {
         })
     }
 
-    /// Who this store writes for.
-    ///
-    /// **A store with no `recipient` line is written for its own key**, which is what makes a fresh
-    /// install work without being told anything — and adding the first recipient is the moment that
-    /// stops being implied, which is why the command writes the implied one down first.
-    #[cfg(feature = "crypt")]
-    pub fn encrypt_to(&self) -> Result<Vec<[u8; 32]>, String> {
-        if !self.recipients.is_empty() {
-            return self.recipients.iter().map(Recipient::public).collect();
-        }
-        Ok(vec![native::public_of(&self.key_to_write_with()?)])
-    }
-
     /// This profile's key, if it has one.
     ///
     /// A plugin's store belongs to the same profile as everything else: the prefix names which
     /// plugin, not which identity.
     #[cfg(feature = "crypt")]
-    fn profile_key(&self) -> Result<Option<[u8; 32]>, String> {
+    fn profile_key(&self) -> Result<Option<native::SecretKey>, String> {
         crate::track::profile::key::read(&crate::track::profile::current())
     }
 
     /// The key this store writes with, made now if this is the first time.
     ///
     /// The first that answers, file keys before program ones — so a store with a spare key on a USB
-    /// stick still writes with the one it always used.
+    /// stick still writes with the one it always used. **A source that fails before one answers
+    /// stops the write**: writing with the spare instead would seal the file to a key its owner
+    /// may not have to hand.
+    ///
+    /// **A key is made only when every source said "not there".** Never over a file that failed to
+    /// read, and never for a store with a `key command`: that key lives somewhere oslo cannot see.
     #[cfg(feature = "crypt")]
-    pub fn key_to_write_with(&self) -> Result<[u8; 32], String> {
+    pub fn key_to_write_with(&self) -> Result<native::SecretKey, String> {
         for external in [false, true] {
-            if let Some(key) = self.keys_of(external)?.first() {
-                return Ok(*key);
+            if let Some(answer) = self.keys_of(external).next() {
+                return answer.map_err(|e| {
+                    format!(
+                        "{}: {e}; nothing was written, and no key was made",
+                        self.name
+                    )
+                });
             }
         }
-        // Nothing answered, so this is the first write. A store that takes its key from the
+        if self.keys.iter().any(KeySource::is_external) {
+            return Err(format!(
+                "{}: no key answered, and a store with a `key command` never has one made for it",
+                self.name
+            ));
+        }
+        // Nothing is there, so this is the first write. A store that takes its key from the
         // profile makes the *profile's* key rather than one of its own — which is what `oslo secret
         // set` does on a machine that has never been told anything, and is the same key
         // `oslo profile export` then carries.
@@ -450,12 +455,19 @@ impl Store {
             .any(|source| matches!(source, KeySource::Profile))
         {
             let profile = crate::track::profile::current();
-            let made = crate::track::profile::key::generate(&profile)
+            let made = crate::track::profile::key::obtain(&profile)
                 .map_err(|e| format!("{}: {e}", self.name))?;
             return native::derive_store_key(&made, &self.name);
         }
         match self.key_file() {
-            Some(path) => key::generate(&path),
+            Some(path) => key::generate(&path).or_else(|e| {
+                // Another process made it between the look and the link: use theirs.
+                KeySource::File(path)
+                    .key(self.timeout)
+                    .ok()
+                    .flatten()
+                    .ok_or(e)
+            }),
             None => Err(format!(
                 "{}: no key, and no key file to make one in",
                 self.name
@@ -463,21 +475,18 @@ impl Store {
         }
     }
 
-    /// Why nothing opened it, in the terms of what this store was told to try.
-    #[cfg(feature = "crypt")]
-    fn why_it_did_not_open(&self, tried: usize) -> String {
-        let skipped = key::no_exec() && self.keys.iter().any(KeySource::is_external);
-        if skipped {
-            return format!(
-                "no key opened it. $OSLO_SECRET_NO_EXEC is set, so {} of {} key sources were not run",
-                self.keys.iter().filter(|s| s.is_external()).count(),
-                self.keys.len()
-            );
-        }
-        if tried == 0 {
-            return format!("{}: no key to open it with", self.name);
-        }
-        format!("no key opened it, of the {tried} this store has")
+    /// Every key file this store reads: each `key file`, and the profile's key for `key profile`.
+    pub fn key_paths(&self) -> Vec<PathBuf> {
+        self.keys
+            .iter()
+            .filter_map(|source| match source {
+                KeySource::File(path) => Some(path.clone()),
+                KeySource::Profile => {
+                    crate::track::profile::key::path(&crate::track::profile::current())
+                }
+                KeySource::Command(_) => None,
+            })
+            .collect()
     }
 }
 
@@ -498,3 +507,7 @@ fn no_native(store: &str) -> String {
 #[cfg(test)]
 #[path = "secrets/tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "crypt"))]
+#[path = "secrets/hardening_tests.rs"]
+mod hardening_tests;

@@ -186,6 +186,7 @@ from that directory, and then its crash report.
 ```lua
 oslo.env.set("PROJECT", "oslo")                      -- exported, as before
 oslo.env.set("CACHE_KEY", key, { export = false })   -- this shell only
+oslo.env.set("API_TOKEN", token, { secret = true })  -- listed and traced as <secret>
 oslo.env.all{ exported = false }                     -- everything, local included
 oslo.env.snapshot()                                  -- with the flag each one carries
 ```

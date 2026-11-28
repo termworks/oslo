@@ -24,8 +24,15 @@
 //! `$XDG_DATA_HOME`. The store is the thing that gets synced, backed up and copied between
 //! machines; a key inside it would travel with every copy, which is exactly what a key that means
 //! "this machine is authorised" must not do.
+//!
+//! `oslo` and `profiles/` are `0700`, and every write goes through [`crate::private`]: fsynced,
+//! renamed or linked into place, never half there after a crash.
 
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
+
+/// A profile key held in memory, wiped when it is dropped.
+pub type ProfileKey = Zeroizing<[u8; KEY]>;
 
 /// What a profile key file holds, so one is recognisable on sight.
 const PREFIX: &str = "OSLO-PROFILE-1:";
@@ -54,38 +61,57 @@ pub fn path(name: &str) -> Option<PathBuf> {
 }
 
 /// The key `name` holds, or `None` when it has none yet.
-pub fn read(name: &str) -> Result<Option<[u8; KEY]>, String> {
-    let Some(path) = path(name) else {
-        return Err(format!("{name:?} is not a usable profile name"));
+///
+/// Only a regular file is read, at most [`crate::private::SMALL`] bytes; a link to one is followed.
+pub fn read(name: &str) -> Result<Option<ProfileKey>, String> {
+    use crate::private::{Links, SMALL};
+    let path = located(name)?;
+    let Some(bytes) = crate::private::read(&path, SMALL, Links::Follow)?.map(Zeroizing::new) else {
+        return Ok(None);
     };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => decode(&text)
-            .map(Some)
-            .map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
+    // A key made by an older oslo sits in directories others may list; tightening is best-effort.
+    let _ = prepare(&path);
+    std::str::from_utf8(&bytes)
+        .map_err(|_| "not text".to_string())
+        .and_then(decode)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Make one for `name`, refusing to replace one that is already there.
 ///
 /// **Refusing rather than overwriting**, because the key is what ties this machine to the others: a
 /// second `init` that quietly replaced it would leave a profile that syncs with nothing and says
-/// nothing about why.
-pub fn generate(name: &str) -> Result<[u8; KEY], String> {
-    let Some(path) = path(name) else {
-        return Err(format!("{name:?} is not a usable profile name"));
-    };
-    if path.exists() {
-        return Err(format!(
+/// nothing about why. The refusal is the filesystem's — the key is linked into place without
+/// replacing — so two processes making the first key at once cannot both win.
+pub fn generate(name: &str) -> Result<ProfileKey, String> {
+    let path = located(name)?;
+    let key = fresh()?;
+    prepare(&path)?;
+    match crate::private::create(&path, encode(&key).as_bytes())? {
+        true => Ok(key),
+        false => Err(format!(
             "{name}: already has a key at {} — `oslo profile export` copies it to another machine",
             path.display()
-        ));
+        )),
     }
-    let mut key = [0u8; KEY];
-    getrandom::fill(&mut key).map_err(|e| format!("no randomness from the system: {e}"))?;
-    install(name, &key)?;
-    Ok(key)
+}
+
+/// The key `name` holds, made now if it has none: whichever process links one into place first,
+/// every other one reads.
+pub fn obtain(name: &str) -> Result<ProfileKey, String> {
+    if let Some(key) = read(name)? {
+        return Ok(key);
+    }
+    let path = located(name)?;
+    let key = fresh()?;
+    prepare(&path)?;
+    match crate::private::create(&path, encode(&key).as_bytes())? {
+        true => Ok(key),
+        false => {
+            read(name)?.ok_or_else(|| format!("{}: is there and holds no key", path.display()))
+        }
+    }
 }
 
 /// Write `key` as `name`'s, whatever was there before.
@@ -93,18 +119,31 @@ pub fn generate(name: &str) -> Result<[u8; KEY], String> {
 /// This is `import`'s half: replacing is the whole point when the key is arriving from the machine
 /// that already has the profile.
 pub fn install(name: &str, key: &[u8; KEY]) -> Result<PathBuf, String> {
-    let Some(path) = path(name) else {
-        return Err(format!("{name:?} is not a usable profile name"));
-    };
-    let directory = path
+    let path = located(name)?;
+    prepare(&path)?;
+    crate::private::replace(&path, encode(key).as_bytes())?;
+    Ok(path)
+}
+
+fn located(name: &str) -> Result<PathBuf, String> {
+    path(name).ok_or_else(|| format!("{name:?} is not a usable profile name"))
+}
+
+fn fresh() -> Result<ProfileKey, String> {
+    let mut key = Zeroizing::new([0u8; KEY]);
+    getrandom::fill(&mut key[..]).map_err(|e| format!("no randomness from the system: {e}"))?;
+    Ok(key)
+}
+
+/// `$XDG_STATE_HOME/oslo` and its `profiles/`, made or tightened to `0700`: both are oslo's.
+fn prepare(path: &Path) -> Result<(), String> {
+    let profiles = path
         .parent()
         .ok_or_else(|| format!("{}: has no directory to be in", path.display()))?;
-    std::fs::create_dir_all(directory).map_err(|e| format!("{}: {e}", directory.display()))?;
-
-    let scratch = path.with_extension("key.new");
-    write_private(&scratch, encode(key).as_bytes())?;
-    std::fs::rename(&scratch, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
+    if let Some(oslo) = profiles.parent() {
+        crate::private::own_directory(oslo)?;
+    }
+    crate::private::own_directory(profiles)
 }
 
 /// What two machines compare to decide they mean the same profile.
@@ -128,18 +167,20 @@ pub fn fingerprint(key: &[u8; KEY]) -> String {
 /// **Hex, not base64.** `base64` is a dependency of the secrets feature and this has to work in a
 /// build that has no secrets at all — and sixty-four hex characters is a thing somebody can read
 /// down a phone line, which is exactly how a profile key gets to the second machine.
-pub fn encode(key: &[u8; KEY]) -> String {
-    let mut text = String::with_capacity(PREFIX.len() + KEY * 2 + 1);
+pub fn encode(key: &[u8; KEY]) -> Zeroizing<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut text = Zeroizing::new(String::with_capacity(PREFIX.len() + KEY * 2 + 1));
     text.push_str(PREFIX);
     for byte in key {
-        text.push_str(&format!("{byte:02x}"));
+        text.push(HEX[(byte >> 4) as usize] as char);
+        text.push(HEX[(byte & 0xf) as usize] as char);
     }
     text.push('\n');
     text
 }
 
 /// The first key in what a file or a person gave us.
-pub fn decode(text: &str) -> Result<[u8; KEY], String> {
+pub fn decode(text: &str) -> Result<ProfileKey, String> {
     let line = text
         .lines()
         .map(str::trim)
@@ -156,27 +197,12 @@ pub fn decode(text: &str) -> Result<[u8; KEY], String> {
             body.len()
         ));
     }
-    let mut key = [0u8; KEY];
+    let mut key = Zeroizing::new([0u8; KEY]);
     for (at, byte) in key.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&body[at * 2..at * 2 + 2], 16)
             .map_err(|_| "the key is not hexadecimal".to_string())?;
     }
     Ok(key)
-}
-
-/// Write bytes where only this user can read them, before anything is in them.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -188,9 +214,9 @@ mod tests {
         let key = [7u8; KEY];
         let text = encode(&key);
         assert!(text.starts_with(PREFIX));
-        assert_eq!(decode(&text).expect("read"), key);
+        assert_eq!(*decode(&text).expect("read"), key);
         assert_eq!(
-            decode(&format!("# carried by hand\n{text}")).expect("read"),
+            *decode(&format!("# carried by hand\n{}", text.as_str())).expect("read"),
             key
         );
 

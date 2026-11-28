@@ -20,6 +20,9 @@
 
 use oslo_ui::spec::{CommandSpec, OptionSpec, SubcommandSpec};
 
+#[cfg(feature = "secrets")]
+mod secret;
+
 /// Register the source. Called once, as the interactive shell starts.
 pub(crate) fn register() {
     oslo_ui::spec::custom::add_source(
@@ -37,16 +40,21 @@ fn spec() -> CommandSpec {
         description: "a POSIX shell that also speaks Lua".to_string(),
         subcommands: super::tools::TOOLS
             .iter()
-            .map(|tool| SubcommandSpec {
-                name: tool.name.to_string(),
-                description: tool.about.to_string(),
-                // Every tool answers it, and it is the one flag somebody types when they do not
-                // yet know what the others are.
-                options: vec![OptionSpec::new(
-                    vec!["-h".to_string(), "--help".to_string()],
-                    "what this tool does, and its options".to_string(),
-                )],
-                ..SubcommandSpec::default()
+            .map(|tool| match tool.name {
+                // A tool with a spec of its own: its subcommands, flags and operands.
+                #[cfg(feature = "secrets")]
+                "secret" => secret::spec(tool.about),
+                _ => SubcommandSpec {
+                    name: tool.name.to_string(),
+                    description: tool.about.to_string(),
+                    // Every tool answers it, and it is the one flag somebody types when they do not
+                    // yet know what the others are.
+                    options: vec![OptionSpec::new(
+                        vec!["-h".to_string(), "--help".to_string()],
+                        "what this tool does, and its options".to_string(),
+                    )],
+                    ..SubcommandSpec::default()
+                },
             })
             .collect(),
         options: vec![

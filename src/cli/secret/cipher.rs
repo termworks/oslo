@@ -29,7 +29,7 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
         }
         Some(half @ ("encrypt" | "decrypt")) => set(store, half, &args[1..]),
         Some("rm" | "remove") => remove(store),
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&secrets::recipient::shown(other)),
     }
 }
 
@@ -75,6 +75,10 @@ fn set(store: &Store, half: &str, args: &[String]) -> i32 {
         return fail(&e);
     }
 
+    let _held = match conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut declared = match conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
@@ -89,6 +93,10 @@ fn set(store: &Store, half: &str, args: &[String]) -> i32 {
 }
 
 fn remove(store: &Store) -> i32 {
+    let _held = match conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut declared = match conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),

@@ -53,6 +53,7 @@ fn secret(home: &std::path::Path, args: &[&str], input: &[u8]) -> (String, Strin
         .env("XDG_DATA_HOME", home)
         .env("XDG_STATE_HOME", home.join("state"))
         .env_remove("OSLO_SECRET_IDENTITY")
+        .env_remove("OSLO_SECRET_CONF")
         .env_remove("OSLO_SECRET_STORE")
         .env_remove("OSLO_SECRET_NO_EXEC")
         .stdin(Stdio::piped())
@@ -296,7 +297,7 @@ fn a_store_can_hand_its_crypto_to_another_program() {
     // A program that fails is an error, never an empty value quietly written down.
     secret(
         home.path(),
-        &["--store", "broken", "cipher", "encrypt", "--", "/bin/false"],
+        &["--store", "broken", "cipher", "encrypt", "--", "false"],
         b"",
     );
     let (_, err, status) = secret(home.path(), &["--store", "broken", "set", "x"], b"v");
@@ -441,6 +442,21 @@ fn a_second_recipient_reads_it_with_a_key_of_their_own() {
         theirs_store.join("token.sealed"),
     )
     .expect("copy the store");
+
+    // **A reader accepts only writers it lists.** Until they list me, my file is refused there,
+    // and it names the key that wrote it.
+    let (out, err, status) = secret(mine.path(), &["recipient", "--export"], b"");
+    assert_eq!(status, 0, "{err}");
+    let me = out.lines().next().expect("mine first").to_string();
+    let (_, err, status) = secret(theirs.path(), &["get", "token"], b"");
+    assert_ne!(status, 0, "a writer nobody listed was accepted");
+    assert!(
+        err.contains("not one of the recipients") && err.contains(&me),
+        "{err}"
+    );
+
+    let (_, err, status) = secret(theirs.path(), &["recipient", "add", &me], b"");
+    assert_eq!(status, 0, "{err}");
     assert_eq!(
         secret(theirs.path(), &["get", "token"], b"").0,
         "shared-value",

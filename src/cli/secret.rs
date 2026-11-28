@@ -25,28 +25,22 @@ mod recipient;
 mod run;
 
 pub fn run(args: &[String]) -> i32 {
+    // No core file and no ptrace attach for as long as this process holds a key; it exits or
+    // execs, and an exec'd command is dumpable again.
+    secrets::dumpable::for_good();
     if let Some(page) = MENU.asked(args, Paint::detect()) {
         print!("{page}");
         return 0;
     }
-    // Said once, wherever the command is going: a key under a `.git` is one `git add -A` from being
-    // published, and the person it happens to did not choose it — they moved a directory.
-    if let Some(repository) = secrets::identity_in_a_repository() {
-        eprintln!(
-            "oslo secret: the key is inside the git repository at {}",
-            repository.display()
-        );
-        eprintln!(
-            "oslo secret: move it with $OSLO_SECRET_IDENTITY, or the next commit publishes it"
-        );
-    }
-
     let (asked, args) = match store_argument(args) {
         Ok(taken) => taken,
         Err(e) => return fail(&e),
     };
     let store = || match Store::selected(asked.as_deref()) {
-        Ok(store) => Ok(store),
+        Ok(store) => {
+            warn_about_repositories(&store);
+            Ok(store)
+        }
         Err(e) => {
             eprintln!("oslo secret: {e}");
             Err(1)
@@ -60,7 +54,7 @@ pub fn run(args: &[String]) -> i32 {
             name,
             "list" | "ls" | "stores" | "where" | "paths" | "rotate"
         )
-        && let Some(bad) = MENU.extra(name, &args, 0)
+        && let Some(bad) = MENU.extra(name, &shown(&args), 0)
     {
         return bad;
     }
@@ -89,8 +83,10 @@ pub fn run(args: &[String]) -> i32 {
                 if let Some(why) = store.unreachable_here() {
                     return fail(&why);
                 }
+                // Escaped, so a file somebody committed under a hostile name cannot write to the
+                // terminal through a listing.
                 for name in store.names() {
-                    println!("{name}");
+                    println!("{}", secrets::name::shown(&name));
                 }
                 0
             }
@@ -135,13 +131,17 @@ pub fn run(args: &[String]) -> i32 {
                     "store     {}   encrypted, safe to commit",
                     store.directory.display()
                 );
+                // The keys this store actually reads, not a default it may not be using.
                 if !store.crypto.is_external() {
-                    println!(
-                        "key       {}   never commit this",
-                        secrets::identity_path()
-                            .unwrap_or(unknown.clone())
-                            .display()
-                    );
+                    for path in store.key_paths() {
+                        println!("key       {}   never commit this", path.display());
+                    }
+                    for source in store.keys.iter().filter(|s| s.is_external()) {
+                        println!(
+                            "key       {}   run when no key file opens it",
+                            source.line()
+                        );
+                    }
                 }
                 println!(
                     "config    {}   names the keys, so never commit this either",
@@ -165,17 +165,44 @@ pub fn run(args: &[String]) -> i32 {
             }
             Err(code) => code,
         },
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&secrets::recipient::shown(other)),
+    }
+}
+
+/// Said once, wherever the command is going, for every key file the store reads: a key under a
+/// `.git` is one `git add -A` from being published, and the person it happens to did not choose it
+/// — they moved a directory.
+fn warn_about_repositories(store: &Store) {
+    for path in store.key_paths() {
+        if let Some(repository) = secrets::in_a_repository(&path) {
+            eprintln!(
+                "oslo secret: the key {} is inside the git repository at {}",
+                path.display(),
+                repository.display()
+            );
+            eprintln!(
+                "oslo secret: move it (`key file` in secrets.conf, or $OSLO_SECRET_IDENTITY), \
+                 or the next commit publishes it"
+            );
+        }
     }
 }
 
 /// Take `--store NAME` out of the arguments wherever it is, so it can be written before or after
 /// the command the way a person expects a global option to be.
+///
+/// Only before a `--`: everything from it on is kept as written, as the command `run` and
+/// `cipher` hand on.
 fn store_argument(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
     let mut name = None;
     let mut rest = Vec::with_capacity(args.len());
     let mut args = args.iter();
     while let Some(arg) = args.next() {
+        if arg == "--" {
+            rest.push(arg.clone());
+            rest.extend(args.by_ref().cloned());
+            break;
+        }
         match arg.strip_prefix("--store") {
             Some("") => match args.next() {
                 Some(value) => name = Some(value.clone()),
@@ -197,7 +224,7 @@ fn store_argument(args: &[String]) -> Result<(Option<String>, Vec<String>), Stri
 fn with_name(args: &[String], then: impl FnOnce(&str) -> i32) -> i32 {
     let command = args.first().map(String::as_str);
     match args.get(1) {
-        Some(name) => match command.and_then(|c| MENU.extra(c, args, 1)) {
+        Some(name) => match command.and_then(|c| MENU.extra(c, &shown(args), 1)) {
             Some(bad) => bad,
             None => then(name),
         },
@@ -219,7 +246,8 @@ fn with_name(args: &[String], then: impl FnOnce(&str) -> i32) -> i32 {
 /// the scrollback, and finished with a Ctrl-D nobody is told about.
 fn set(store: &Store, name: &str) -> i32 {
     use std::io::{IsTerminal, Read};
-    let mut value = Vec::new();
+    // Room for an ordinary secret up front, so reading it does not leave grown-out-of copies.
+    let mut value = secrets::Zeroizing::new(Vec::with_capacity(8192));
     if std::io::stdin().is_terminal() {
         let asked = oslo_ui::ask::input(&oslo_ui::ask::Input {
             prompt: format!("{name}: "),
@@ -228,7 +256,7 @@ fn set(store: &Store, name: &str) -> i32 {
             ..Default::default()
         });
         match asked {
-            oslo_ui::ask::Answer::Given(typed) => value = typed.into_bytes(),
+            oslo_ui::ask::Answer::Given(typed) => *value = typed.into_bytes(),
             oslo_ui::ask::Answer::Cancelled => return 1,
             oslo_ui::ask::Answer::NoTerminal => return fail("nothing to read the value from"),
         }
@@ -285,4 +313,11 @@ fn stores() -> i32 {
 pub fn fail(message: &str) -> i32 {
     eprintln!("oslo secret: {message}");
     1
+}
+
+/// The arguments as an error may repeat them: a private key by its prefix alone.
+fn shown(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|arg| secrets::recipient::shown(arg))
+        .collect()
 }

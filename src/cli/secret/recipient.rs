@@ -56,7 +56,7 @@ pub fn run(store: &Store, args: &[String]) -> i32 {
             Ok(recipients) => remove(store, &recipients),
             Err(e) => fail(&e),
         },
-        Some(other) => MENU.unknown(other),
+        Some(other) => MENU.unknown(&oslo::secrets::recipient::shown(other)),
     }
 }
 
@@ -78,7 +78,7 @@ pub fn show(store: &Store) {
     for recipient in &store.recipients {
         match recipient.public() {
             Ok(_) => println!("recipient {recipient}"),
-            Err(e) => println!("recipient {recipient}   UNUSABLE: {e}"),
+            Err(e) => println!("recipient UNUSABLE: {e}"),
         }
     }
 }
@@ -130,6 +130,10 @@ fn add(store: &Store, recipients: &[Recipient]) -> i32 {
             return fail(&e);
         }
     }
+    let _held = match conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut declared = match conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
@@ -157,6 +161,10 @@ fn add(store: &Store, recipients: &[Recipient]) -> i32 {
 }
 
 fn remove(store: &Store, recipients: &[Recipient]) -> i32 {
+    let _held = match conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut declared = match conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),

@@ -4,6 +4,7 @@
 //! local value = oslo.secret.get("gh-token")        -- the store this shell would use
 //! oslo.secret.set("gh-token", value)
 //! for _, name in ipairs(oslo.secret.list()) do print(name) end
+//! oslo.secret.forget("gh-token")
 //!
 //! local work = oslo.secret.open("work")            -- another store by name
 //! print(work:get("deploy"))
@@ -17,23 +18,29 @@
 //!
 //! # Three doors, on purpose
 //!
-//! `get`/`set`/`list` act on the store this invocation would use — `$OSLO_SECRET_STORE`, the
-//! `default` line, or `user`. `open(name)` names another. `mine()` is a plugin's own, and takes no
-//! name because the name is not the plugin's to write.
+//! `get`/`set`/`forget`/`list` act on the store this invocation would use — `$OSLO_SECRET_STORE`,
+//! the `default` line, or `user`. `open(name)` names another. `mine()` is a plugin's own, and takes
+//! no name because the name is not the plugin's to write.
 //!
 //! # What a plugin may reach
 //!
-//! **`plugin.` is refused from Lua, always, to every caller.** The check is on the *name asked for*
-//! rather than on who is asking, so it cannot be sidestepped by deferring the call into a hook or a
-//! timer — and `mine()` stays the only door to a plugin store. The command line has no such rule:
-//! `oslo secret --store plugin.notes list` works, because you must be able to see and remove what a
-//! plugin kept on your machine.
+//! **`plugin.` is refused from Lua, always, to every caller**, whether it is named to `open` or
+//! selected for the bare calls through `$OSLO_SECRET_STORE`. `mine()` is the only door to a plugin
+//! store. The command line has no such rule: `oslo secret --store plugin.notes list` works.
 //!
-//! **A handle acquired while a plugin is loading is filtered to the names its manifest declared.**
-//! That is a disclosure and not a sandbox, and the difference matters: the declaration is shown by
-//! `oslo plugin install` before trust is decided, but a plugin can call `oslo secret get` as a
-//! subprocess and nothing here stops it. What it buys is a plugin that can be caught contradicting
-//! its own manifest — see `docs/features/secrets.md`.
+//! **While a plugin's file loads, a call or a handle is filtered to the names the user's config
+//! granted that plugin**: `get`, `set` and `forget` refuse any other name, and `list` answers only
+//! granted names. A handle made then keeps the filter for as long as it lives.
+//!
+//! **`seal` and `unseal` are refused to a plugin's load and to a handle made during one**, because
+//! `unseal` opens an `OSLO2` file sealed to the store's key whatever its name. An `OSLO3` file is
+//! bound to its store and name, and a seal to the fixed label `oslo.secret.seal`, so neither opens
+//! as the other. `mine():seal` and `mine():unseal` stay, on the plugin's own store. The config, the
+//! prompt and every hook keep both: a hook a plugin registered is indistinguishable from one the
+//! config did.
+//!
+//! None of this is a sandbox: a plugin can run `oslo secret get` as a subprocess. See
+//! `docs/features/secrets.md`.
 //!
 //! # Bytes, and base64
 //!
@@ -56,7 +63,7 @@ pub fn build() -> Value {
         let name = text(&args, 1, "oslo.secret.open")?;
         match reachable(&name).and_then(|()| Store::named(&name)) {
             // A store Lua defined keeps its own bytes; everything else is a directory of files.
-            Ok(store) if defined::holds(&name) => ok(defined::handle(store)),
+            Ok(store) if defined::holds(&name) => ok(defined::handle(store, allowed())),
             Ok(store) => ok(handle(store, allowed())),
             Err(message) => Ok(vec![Value::Nil, Value::str(message)]),
         }
@@ -147,7 +154,7 @@ pub fn build() -> Value {
 
     for (verb, on_selected) in DIRECT {
         put(&mut secret, verb, move |_, args| {
-            let store = match Store::selected(None) {
+            let store = match selected() {
                 Ok(store) => store,
                 Err(message) => return Ok(vec![Value::Nil, Value::str(message)]),
             };
@@ -156,6 +163,13 @@ pub fn build() -> Value {
     }
 
     Value::table(secret)
+}
+
+/// The store a bare `oslo.secret.X` acts on, held to the same rule as `open`.
+fn selected() -> Result<Store, String> {
+    let store = Store::selected(None)?;
+    reachable(&store.name)?;
+    Ok(store)
 }
 
 /// What a bare `oslo.secret.X` does, against the store this shell would use.
@@ -170,25 +184,71 @@ const DIRECT: &[(&str, Direct)] = &[
         let value = text(args, 2, "oslo.secret.set")?;
         Ok(wrote(store, &name, &value, allowed()))
     }),
-    ("list", |store, _| ok(list(&store.names()))),
+    ("forget", |store, args| {
+        let name = text(args, 1, "oslo.secret.forget")?;
+        Ok(forgot(store, &name, allowed()))
+    }),
+    ("list", |store, _| {
+        ok(list(&visible(store.names(), &allowed())))
+    }),
     ("seal", |store, args| {
         let value = text(args, 1, "oslo.secret.seal")?;
-        Ok(match store.seal(value.as_bytes()) {
-            Ok(sealed) => vec![Value::str(base64(&sealed))],
-            Err(message) => vec![Value::Nil, Value::str(message)],
-        })
+        Ok(sealed(
+            store,
+            &value,
+            allowed().is_some(),
+            "oslo.secret.seal",
+        ))
     }),
     ("unseal", |store, args| {
         let sealed = text(args, 1, "oslo.secret.unseal")?;
-        let Some(bytes) = unbase64(&sealed) else {
-            return Ok(vec![Value::Nil, Value::str("not base64")]);
-        };
-        Ok(match store.unseal(&bytes) {
-            Ok(value) => vec![Value::str(String::from_utf8_lossy(&value))],
-            Err(message) => vec![Value::Nil, Value::str(message)],
-        })
+        Ok(opened(
+            store,
+            &sealed,
+            allowed().is_some(),
+            "oslo.secret.unseal",
+        ))
     }),
 ];
+
+/// `seal`: the store's crypto without its filing, refused to a plugin.
+fn sealed(store: &Store, value: &str, plugin: bool, verb: &str) -> Vec<Value> {
+    if plugin {
+        return vec![Value::Nil, Value::str(not_to_a_plugin(verb))];
+    }
+    match store.seal(value.as_bytes()) {
+        Ok(sealed) => vec![Value::str(base64(&sealed))],
+        Err(message) => vec![Value::Nil, Value::str(message)],
+    }
+}
+
+/// `unseal`: the other half, refused to a plugin the same way.
+fn opened(store: &Store, sealed: &str, plugin: bool, verb: &str) -> Vec<Value> {
+    if plugin {
+        return vec![Value::Nil, Value::str(not_to_a_plugin(verb))];
+    }
+    let Some(bytes) = unbase64(sealed) else {
+        return vec![Value::Nil, Value::str("not base64")];
+    };
+    match store.unseal(&bytes) {
+        Ok(value) => vec![handed(&value)],
+        Err(message) => vec![Value::Nil, Value::str(message)],
+    }
+}
+
+fn not_to_a_plugin(verb: &str) -> String {
+    format!(
+        "{verb}: not while a plugin loads, nor on a handle it made — a plugin seals with \
+         oslo.secret.mine()"
+    )
+}
+
+/// A value leaving the store for Lua, remembered so a variable later given it is marked sensitive.
+pub(crate) fn handed(value: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(value);
+    oslo_shell::env::scope::sensitive::note(text.as_bytes());
+    Value::str(text)
+}
 
 /// The plugin whose file is running, when there is one and this build has plugins at all.
 ///
@@ -201,8 +261,8 @@ fn who() -> Option<crate::plugin::loading::Loading> {
 
 /// The names this caller may read, or `None` for all of them.
 ///
-/// Taken at the moment a handle is made or a call is answered, which is what makes it attribution:
-/// it is the manifest of whatever plugin is loading, and nothing at all otherwise.
+/// Taken at the moment a handle is made or a call is answered: the grant of whatever plugin is
+/// loading, and nothing at all otherwise.
 #[cfg(feature = "plugin")]
 fn allowed() -> Option<Vec<String>> {
     who().map(|it| it.secrets)
@@ -243,28 +303,12 @@ fn handle(store: Store, allowed: Option<Vec<String>>) -> Value {
     let (it, may) = (store.clone(), allowed.clone());
     put(&mut table, "forget", move |_, args| {
         let name = text(&args, 2, "store:forget")?;
-        if let Some(refused) = refusal(&name, may.clone()) {
-            return Ok(vec![Value::Nil, Value::str(refused)]);
-        }
-        Ok(match it.forget(&name) {
-            Ok(()) => vec![Value::Bool(true)],
-            Err(message) => vec![Value::Nil, Value::str(message)],
-        })
+        Ok(forgot(&it, &name, may.clone()))
     });
 
-    let (it, may) = (store.clone(), allowed);
+    let (it, may) = (store.clone(), allowed.clone());
     put(&mut table, "list", move |_, _| {
-        // A filtered handle lists what it could read, not what is there: the names in a store are
-        // themselves information, and a plugin allowed one of them has been told about one.
-        let names = match &may {
-            Some(allowed) => it
-                .names()
-                .into_iter()
-                .filter(|name| allowed.contains(name))
-                .collect(),
-            None => it.names(),
-        };
-        ok(list(&names))
+        ok(list(&visible(it.names(), &may)))
     });
 
     let it = store.clone();
@@ -272,25 +316,16 @@ fn handle(store: Store, allowed: Option<Vec<String>>) -> Value {
         ok(Value::str(it.directory.to_string_lossy()))
     });
 
-    let it = store.clone();
+    let (it, plugin) = (store.clone(), allowed.is_some());
     put(&mut table, "seal", move |_, args| {
         let value = text(&args, 2, "store:seal")?;
-        Ok(match it.seal(value.as_bytes()) {
-            Ok(sealed) => vec![Value::str(base64(&sealed))],
-            Err(message) => vec![Value::Nil, Value::str(message)],
-        })
+        Ok(sealed(&it, &value, plugin, "store:seal"))
     });
 
-    let it = store;
+    let (it, plugin) = (store, allowed.is_some());
     put(&mut table, "unseal", move |_, args| {
         let sealed = text(&args, 2, "store:unseal")?;
-        let Some(bytes) = unbase64(&sealed) else {
-            return Ok(vec![Value::Nil, Value::str("not base64")]);
-        };
-        Ok(match it.unseal(&bytes) {
-            Ok(value) => vec![Value::str(String::from_utf8_lossy(&value))],
-            Err(message) => vec![Value::Nil, Value::str(message)],
-        })
+        Ok(opened(&it, &sealed, plugin, "store:unseal"))
     });
 
     Value::table(table)
@@ -301,8 +336,29 @@ fn read(store: &Store, name: &str, may: Option<Vec<String>>) -> Vec<Value> {
         return vec![Value::Nil, Value::str(refused)];
     }
     match store.get(name) {
-        Ok(value) => vec![Value::str(String::from_utf8_lossy(&value))],
+        Ok(value) => vec![handed(&value)],
         Err(message) => vec![Value::Nil, Value::str(message)],
+    }
+}
+
+fn forgot(store: &Store, name: &str, may: Option<Vec<String>>) -> Vec<Value> {
+    if let Some(refused) = refusal(name, may) {
+        return vec![Value::Nil, Value::str(refused)];
+    }
+    match store.forget(name) {
+        Ok(()) => vec![Value::Bool(true)],
+        Err(message) => vec![Value::Nil, Value::str(message)],
+    }
+}
+
+/// The names a caller may see: all of them, or only the granted ones while a plugin loads.
+pub(crate) fn visible(names: Vec<String>, may: &Option<Vec<String>>) -> Vec<String> {
+    match may {
+        Some(allowed) => names
+            .into_iter()
+            .filter(|name| allowed.contains(name))
+            .collect(),
+        None => names,
     }
 }
 
@@ -317,13 +373,13 @@ fn wrote(store: &Store, name: &str, value: &str, may: Option<Vec<String>>) -> Ve
 }
 
 /// Why this caller may not touch `name`, if it may not.
-fn refusal(name: &str, may: Option<Vec<String>>) -> Option<String> {
+pub(crate) fn refusal(name: &str, may: Option<Vec<String>>) -> Option<String> {
     let allowed = may?;
     if allowed.iter().any(|declared| declared == name) {
         return None;
     }
     Some(format!(
-        "{name}: not declared in this plugin's `secrets = {{ … }}`"
+        "{name}: not granted to this plugin; oslo.plugin.secrets in init.lua grants it"
     ))
 }
 

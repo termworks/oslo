@@ -61,6 +61,8 @@ pub mod messages;
 pub mod nesting;
 #[cfg(feature = "vista")]
 pub mod predict;
+/// Files only this user may read: made private, written whole, read without following a link.
+pub mod private;
 pub mod prompts;
 /// Whether the command now running must leave no trace of itself.
 pub mod quiet;

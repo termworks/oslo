@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.8.2] - 2026-11-28
+
+### <!-- 0 -->⛰️  Features
+
+- Name the OSLO2 files rotate rewrote
+- Authenticate the writer in OSLO3
+- Offer oslo secret on Tab
+- Run --env-file, --all and --file
+- Mark secrets assigned from Lua sensitive
+- Hide sensitive variables in output
+- Add private file helpers
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Lock secrets.conf around an edit
+- Tighten the key's directories on read
+- Name the grant in the plugin refusal
+- Keep --store after -- for the command
+- Close the plugin doors in oslo.secret
+- Refuse a relative identity path
+- Bundle only regular, printable files
+- Harden key sources, files and names
+- Link the first key into place
+- Bound revisions at 2^53
+
+### <!-- 2 -->🚜 Refactor
+
+- Move writes into write.rs
+
+### <!-- 3 -->📚 Documentation
+
+- Measure OSLO3 on the merged base
+- Link no private item from native
+- Describe OSLO3 and what it binds
+- Say where store_argument stops
+- Show the secret option of env.set
+- Run flags, Tab, sensitive, plugins
+- Fix private module doc links
+- Describe the hardened file handling
+
+### <!-- 6 -->🧪 Testing
+
+- Gate crypt tests, share the lock
+- A user file stays shut in mine()
+- Port the forge, swap and strip probes
+- Drop a Store literal from Tab tests
+- Fill the new query field in a test
+- Name the planted scratch link plainly
+- Gate the conf helper on crypt
+- Port the audit's h4-h9 probes
+
+### Build
+
+- Move luna to v0.7.1
+- Turn on zeroize in the crypto crates
+
 ## [0.8.1] - 2026-11-28
 
 ### <!-- 1 -->🐛 Bug Fixes
