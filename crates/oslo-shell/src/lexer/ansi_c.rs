@@ -89,12 +89,9 @@ fn decode_bytes(raw: &str) -> Vec<u8> {
             // A shell string cannot carry a NUL, so everything from here on is unreachable data.
             Some(0) => return out,
             Some(v) if byte => out.push(v as u8),
-            Some(v) => match char::from_u32(v) {
-                Some(c) => push(&mut out, c),
-                // A surrogate or a value past U+10FFFF is written as bash writes it, in the
-                // original UTF-8 scheme of up to six bytes.
-                None => out.extend(raw_code_point(v)),
-            },
+            // A code point is written in UTF-8's original scheme, which is bash's for a surrogate
+            // or a value past U+10FFFF too.
+            Some(v) => out.extend(raw_code_point(v)),
             None => {
                 out.push(b'\\');
                 push(&mut out, esc);

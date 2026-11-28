@@ -5,6 +5,7 @@ printf %s $'\xff' | od -An -tx1
 printf %s $'\xe2\x94\x80' | od -An -tx1
 printf %s $'\377\376' | od -An -tx1
 printf %s $'\303\251|\777' | od -An -tx1
+printf %s $'\xf4\x8f\xbf\xbf' "$(printf '\xf4\x8f\xbc\x80')" | od -An -tx1
 x=$'\xe2\x94'
 echo "${#x}"
 printf %s "$x" | od -An -tx1

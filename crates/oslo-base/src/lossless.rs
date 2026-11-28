@@ -10,8 +10,8 @@
 //!   byte 0xXY that is not part of valid UTF-8   ⇄   U+10FFXY
 //! ```
 //!
-//! The last 256 code points of plane 16: private use, produced by no input method, so the only
-//! collision is a real filename spelled in those code points — which is written down as the limit.
+//! The last 256 code points of plane 16: private use, produced by no input method. One of them
+//! read from outside is itself carried as its four bytes, so every byte string round-trips.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -29,16 +29,24 @@ pub fn encode(name: &OsStr) -> String {
 }
 
 /// Bytes read from outside the shell, as the shell carries them; see [`encode`].
+///
+/// A character that is itself one of the carriers is carried byte by byte, so it too comes back
+/// as the bytes it was read from.
 pub fn from_bytes(bytes: &[u8]) -> String {
-    if let Ok(text) = std::str::from_utf8(bytes) {
+    if let Ok(text) = std::str::from_utf8(bytes)
+        && !has_raw(text)
+    {
         return text.to_string();
     }
     let mut out = String::with_capacity(bytes.len() + 8);
     for chunk in bytes.utf8_chunks() {
-        out.push_str(chunk.valid());
-        for &byte in chunk.invalid() {
-            out.push(raw_char(byte));
+        for ch in chunk.valid().chars() {
+            match is_raw(ch) {
+                true => out.extend(ch.encode_utf8(&mut [0u8; 4]).bytes().map(raw_char)),
+                false => out.push(ch),
+            }
         }
+        out.extend(chunk.invalid().iter().copied().map(raw_char));
     }
     out
 }
@@ -151,6 +159,14 @@ mod tests {
             &*restore_bytes("plain é\n".as_bytes()),
             "plain é\n".as_bytes()
         );
+    }
+
+    #[test]
+    fn a_carrier_read_from_outside_round_trips() {
+        let read = from_bytes("a\u{10FFFF}".as_bytes());
+        assert_eq!(read.chars().count(), 5);
+        assert_eq!(decode(&read), "a\u{10FFFF}".as_bytes());
+        assert_eq!(normalize(read.clone()), read);
     }
 
     #[test]
