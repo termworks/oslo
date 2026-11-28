@@ -219,6 +219,14 @@ fn check_nounset(
     ) {
         return Ok(());
     }
+    // `${#a[5]}` of an array that is set is 0, missing element or not.
+    if matches!(expansion_type, ParamExpansion::Length)
+        && env
+            .variable(name)
+            .is_some_and(|v| v.is_set() && (v.indexed().is_some() || v.assoc().is_some()))
+    {
+        return Ok(());
+    }
     let target = Target::Element {
         name,
         key: match key {
