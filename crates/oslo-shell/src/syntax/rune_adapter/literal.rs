@@ -13,15 +13,30 @@ use rune::{Node, SyntaxKind, Tree};
 /// The elements of the array value `array`.
 pub(super) fn array_elements(tree: &Tree, array: &Node) -> Result<Vec<oslo_ast::ArrayElement>> {
     let source = tree.source().text();
-    let spans: Vec<(usize, usize)> = array
+    let words: Vec<&Node> = array
         .nodes()
         .filter(|node| node.kind() == SyntaxKind::Word)
+        .collect();
+    let spans: Vec<(usize, usize)> = words
+        .iter()
         .map(|node| (node.span().start as usize, node.span().end as usize))
         .collect();
     let mut elements = Vec::new();
     let mut at = 0;
     while at < spans.len() {
         let start = spans[at].0;
+        // `a=(<(cmd))`: the element is the substitution's `/dev/fd/N`.
+        if super::commands::holds_a_process_substitution(words[at])
+            && !source[start..spans[at].1].starts_with('[')
+        {
+            elements.push(oslo_ast::ArrayElement {
+                index: None,
+                value: super::commands::process_substitution_word(tree, words[at])?,
+                append: false,
+            });
+            at += 1;
+            continue;
+        }
         let open = source[start..spans[at].1].starts_with('[')
             && subscript_end(&source[start..spans[at].1]).is_none();
         // A bracket its word leaves open runs on into the words after it, to the one closing it.

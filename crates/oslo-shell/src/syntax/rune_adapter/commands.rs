@@ -85,15 +85,23 @@ pub(super) fn word_of(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
     process_substitution_word(tree, node)
 }
 
+/// Whether `node` holds a `<( )` of its own, directly or in the value word of an assignment.
 pub(super) fn holds_a_process_substitution(node: &Node) -> bool {
-    node.nodes()
-        .any(|child| child.kind() == SyntaxKind::ProcessSubstitution)
+    node.nodes().any(|child| {
+        child.kind() == SyntaxKind::ProcessSubstitution
+            || (child.kind() == SyntaxKind::Word && holds_a_process_substitution(child))
+    })
 }
 
-fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
+pub(super) fn process_substitution_word(tree: &Tree, node: &Node) -> Result<oslo_ast::Word> {
     let mut parts = Vec::new();
     for child in node.children() {
         match child {
+            rune::Element::Node(inner)
+                if inner.kind() == SyntaxKind::Word && holds_a_process_substitution(inner) =>
+            {
+                parts.extend(process_substitution_word(tree, inner)?.parts);
+            }
             rune::Element::Node(inner) if inner.kind() == SyntaxKind::ProcessSubstitution => {
                 let text = text_of(tree, inner);
                 // The body is carried as text and re-parsed when it runs, exactly as `$(cmd)` is.
@@ -419,12 +427,15 @@ fn convert_assignment(tree: &Tree, node: &Node) -> Result<oslo_ast::Assignment> 
         Some(array) => {
             oslo_ast::AssignmentValue::Array(super::literal::array_elements(tree, array)?)
         }
-        None => oslo_ast::AssignmentValue::Scalar(single_word_with_tilde(
-            node.node(SyntaxKind::Word)
-                .map(|word| text_of(tree, word))
-                .unwrap_or_default(),
-            TildeMode::Value,
-        )?),
+        None => match node.node(SyntaxKind::Word) {
+            Some(word) if holds_a_process_substitution(word) => {
+                oslo_ast::AssignmentValue::Scalar(process_substitution_word(tree, word)?)
+            }
+            word => oslo_ast::AssignmentValue::Scalar(single_word_with_tilde(
+                word.map(|word| text_of(tree, word)).unwrap_or_default(),
+                TildeMode::Value,
+            )?),
+        },
     };
 
     Ok(oslo_ast::Assignment {
