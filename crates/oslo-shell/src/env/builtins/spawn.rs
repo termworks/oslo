@@ -109,8 +109,8 @@ fn looks_binary(path: &CString) -> bool {
 /// relative path stays relative to the working directory. Anything else is searched for on `PATH`.
 pub fn resolve_program(name: &str) -> Option<PathBuf> {
     if name.contains('/') {
-        let path = Path::new(name);
-        return path.is_file().then(|| path.to_path_buf());
+        let path = PathBuf::from(oslo_base::lossless::to_os(name));
+        return path.is_file().then_some(path);
     }
     // A name this directory hides is not on `$PATH` as far as anything asking here is concerned.
     // See `oslo_base::command`. This is the lowest of the `$PATH` searches — `command -v`, `which`

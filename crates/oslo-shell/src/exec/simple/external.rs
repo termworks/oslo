@@ -48,7 +48,7 @@ pub(crate) enum Lookup {
 /// is dropped whenever `PATH` is assigned or `hash -r` runs.
 pub(crate) fn look_up_command(name: &str) -> Lookup {
     if name.contains('/') {
-        return classify_path(Path::new(name));
+        return classify_path(Path::new(&oslo_base::lossless::to_os(name)));
     }
     match crate::env::builtins::hash_lookup(name) {
         Some(path) => Lookup::Program(path),

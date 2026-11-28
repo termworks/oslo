@@ -280,7 +280,7 @@ impl Dirs {
         }
         let dir = if prefix.is_empty() { "." } else { prefix };
         let allowed = self.left.unwrap_or(usize::MAX);
-        let entries: Rc<[Entry]> = match fs::read_dir(dir) {
+        let entries: Rc<[Entry]> = match fs::read_dir(crate::lossless::to_os(dir)) {
             Ok(entries) => entries
                 .flatten()
                 .take(allowed)
@@ -493,11 +493,11 @@ fn finish(path: String, trailing_slash: bool) -> String {
 
 /// Whether the path names anything, a dangling symlink included.
 fn exists(path: &str) -> bool {
-    fs::symlink_metadata(path).is_ok()
+    fs::symlink_metadata(crate::lossless::to_os(path)).is_ok()
 }
 
 fn is_dir(path: &str) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_dir())
+    fs::metadata(crate::lossless::to_os(path)).is_ok_and(|m| m.is_dir())
 }
 
 #[cfg(test)]
