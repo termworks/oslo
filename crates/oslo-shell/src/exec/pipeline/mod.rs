@@ -15,6 +15,7 @@
 //! knows which command of a list POSIX makes it answerable for. Constructs whose *conditions* are
 //! exempt reach in through `suspend_errexit`.
 
+mod abandon;
 mod coordinates;
 pub(crate) mod describe;
 mod errexit;
@@ -27,6 +28,7 @@ mod stages;
 mod structured;
 mod timing;
 
+pub(crate) use abandon::as_string_program;
 pub(super) use stages::pipeline_status;
 use stages::run_byte_stages;
 
@@ -84,17 +86,6 @@ pub fn eval_command_list(env: &mut Environment, cmd_list: &CommandList) -> Resul
 struct Catches {
     line: bool,
     discard: bool,
-}
-
-/// Whether `err` abandons only the top-level command it happened in, rather than the shell: a
-/// refused assignment, a `failglob` miss, and an expansion error other than the ones a
-/// non-interactive POSIX-mode shell treats as fatal.
-fn abandons_line(env: &Environment, err: &ShellError) -> bool {
-    match err {
-        ShellError::NoMatch(_) | ShellError::Abandoned | ShellError::ExpansionError(_) => true,
-        ShellError::MalformedExpansion(_) => !env.posix() || env.interactive(),
-        _ => false,
-    }
 }
 
 fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catches) -> Result<i32> {
@@ -209,13 +200,17 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
                 // top-level command, not the script.** bash drops the rest of that line — the
                 // whole `if` around it, the function it was in — with status 1, and carries on
                 // with the next line. A refused assignment's reason is already printed.
-                Err(e) if outermost && abandons_line(env, &e) => {
+                Err(e) if outermost && abandon::abandons_line(env, &e) => {
                     if !matches!(e, ShellError::Abandoned) {
                         eprintln!("{}{e}", env.origin());
                     }
+                    // In a child, an `eval` or `source` takes the rest of the child with it.
+                    if !catches.discard && abandon::in_child(env) {
+                        return Err(ShellError::Abandoned);
+                    }
                     abandoned = Some(item.line);
-                    env.last_status = 1;
-                    1
+                    env.last_status = abandon::line_status(env, &e, catches.discard);
+                    env.last_status
                 }
                 other => other?,
             };

@@ -44,14 +44,18 @@ pub(super) fn spawn_background(env: &mut Environment, and_or: &AndOrList) -> Res
                 super::quiet_deaths();
                 detach_stdin();
                 // A lone simple command is this child: a program it names replaces it.
-                if let ([Command::Simple(simple)], true) =
+                let lone = if let ([Command::Simple(simple)], true) =
                     (and_or.first.commands.as_slice(), and_or.rest.is_empty())
                     && !and_or.first.negated
                     && !and_or.first.timed
                 {
                     crate::exec::simple::oneshot::mark(simple, Some(Tail::Async));
-                }
-                let res = status_of(eval_and_or_list(env, and_or));
+                    true
+                } else {
+                    false
+                };
+                let res = eval_and_or_list(env, and_or);
+                let res = status_of(super::abandon::forked_simple(env, lone, res));
                 flush_stdout();
                 // A background job is a subshell too: `{ trap ... EXIT; ...; } &` must clean up.
                 std::process::exit(run_exit_trap(env, res));

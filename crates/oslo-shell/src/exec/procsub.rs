@@ -92,7 +92,7 @@ pub fn open(
             crate::exec::pipeline::quiet_deaths();
             use crate::exec::simple::oneshot::{Tail, tail_list_next};
             tail_list_next(Tail::ProcSub);
-            let status = status_of(run(env, &ast));
+            let status = status_of(crate::exec::pipeline::as_string_program(run(env, &ast)));
             flush_stdout();
             std::process::exit(crate::env::builtins::run_exit_trap(env, status));
         }

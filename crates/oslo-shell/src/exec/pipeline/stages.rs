@@ -73,7 +73,9 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
                         crate::exec::simple::oneshot::mark(simple, None);
                     }
                     // `echo x | exit 3` exits the stage with 3, not with 1.
-                    let status = status_of(eval_command(env, cmd));
+                    let result = eval_command(env, cmd);
+                    let simple = matches!(cmd, Command::Simple(_));
+                    let status = status_of(super::abandon::forked_simple(env, simple, result));
                     flush_stdout();
                     std::process::exit(run_exit_trap(env, status));
                 }

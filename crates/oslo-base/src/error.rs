@@ -35,6 +35,12 @@ pub enum ShellError {
     /// which is why "the expansion failed" is three variants and not one.
     MalformedExpansion(String),
 
+    /// A `${name:=word}` whose assignment was refused, as to a read-only name, outside POSIX mode.
+    ///
+    /// bash abandons the top-level command with status 2. The top level of a `-c` program, an
+    /// `eval`, a `source` and a command substitution each report 1 instead.
+    AssignmentRefused(String),
+
     /// A pattern that matched nothing while `failglob` is on, as the text it was written as.
     ///
     /// Its own variant because bash abandons **the top-level command** it occurred in — the rest
@@ -152,7 +158,8 @@ impl std::fmt::Display for ShellError {
             ShellError::SyntaxError(m) => write!(f, "syntax error: {m}"),
             ShellError::ExpansionError(m)
             | ShellError::UnsetParameter(m)
-            | ShellError::MalformedExpansion(m) => write!(f, "{m}"),
+            | ShellError::MalformedExpansion(m)
+            | ShellError::AssignmentRefused(m) => write!(f, "{m}"),
             ShellError::NoMatch(pattern) => write!(f, "no match: {pattern}"),
             ShellError::Abandoned => write!(f, "assignment failed"),
             ShellError::Discard(m, _) | ShellError::ExecutionError(m) => write!(f, "{m}"),
@@ -249,7 +256,7 @@ impl ShellError {
     /// but the same error inside a subshell or a pipeline stage still reports 1.
     pub fn failure_status(&self) -> i32 {
         match self {
-            ShellError::SyntaxError(_) => 2,
+            ShellError::SyntaxError(_) | ShellError::AssignmentRefused(_) => 2,
             ShellError::Discard(_, status) => *status,
             ShellError::UtilityError { status, .. } => *status,
             _ => 1,

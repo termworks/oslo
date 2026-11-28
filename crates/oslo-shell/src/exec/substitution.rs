@@ -70,7 +70,9 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
                 }
                 use crate::exec::simple::oneshot::{Tail, tail_list_next};
                 tail_list_next(Tail::Substitution);
-                let res = status_of(eval_command_list(env, &ast));
+                let res = status_of(crate::exec::pipeline::as_string_program(eval_command_list(
+                    env, &ast,
+                )));
                 // Without this the capture pipe would close on an unflushed partial line.
                 flush_stdout();
                 // The substitution is a shell of its own, so an EXIT trap set inside it runs here

@@ -78,9 +78,11 @@ impl Target<'_> {
             )));
         }
         if env.is_readonly(name) {
-            return Err(ShellError::MalformedExpansion(format!(
-                "{name}: readonly variable"
-            )));
+            let message = format!("{name}: readonly variable");
+            return Err(match env.posix() && !env.interactive() {
+                true => ShellError::MalformedExpansion(message),
+                false => ShellError::AssignmentRefused(message),
+            });
         }
         match self {
             Self::Param(name) => {
