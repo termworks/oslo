@@ -68,17 +68,22 @@ base64 = { version = "0.22", optional = true }
 # used for its payload, without the key exchange — which is what `age` as a *program* is for, named
 # by a store that wants recipients. Eight packages against age's thirty-two.
 chacha20poly1305 = { version = "0.11", optional = true, default-features = false, features = [
-    "alloc",
+    "alloc", "zeroize",
 ] }
 
 # The key model behind `crypt`: a secret you keep and recipients you publish. `x25519-dalek` is the
 # exchange and `hkdf` turns a shared curve point into a key that may be used as one. `sha2` is
 # already an unconditional dependency, so the hash costs nothing here.
 x25519-dalek = { version = "3", optional = true, default-features = false, features = [
-    "static_secrets",
+    "static_secrets", "zeroize",
 ] }
-# 0.12 rather than 0.13: it is the generation that pairs with the `sha2 0.10` already here.
+# 0.12 rather than 0.13: it is the generation that pairs with the `sha2 0.10` already here. It has
+# no `zeroize` feature, so its PRK is left in freed memory.
 hkdf = { version = "0.12", optional = true }
+
+# Wipes keys and plaintext when they are dropped. Unconditional: the profile key is read in every
+# build, with or without `secrets`.
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 
 [features]
