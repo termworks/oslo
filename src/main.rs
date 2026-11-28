@@ -14,7 +14,6 @@ use handoff::{block_every_signal, inherited_stack_limit, restore_signal_mask};
 use program::run_program;
 use startup::language::{self, Language};
 use std::env;
-use std::fs;
 use std::io::Read;
 
 /// Undo the Rust runtime's `SIG_IGN` for SIGPIPE, which a shell must not have.
@@ -213,12 +212,10 @@ fn run_script(invocation: &cli::Invocation, path: &str) -> ! {
 
 /// A script as text, whatever bytes are actually in it.
 ///
-/// `read_to_string` refuses a file holding one non-UTF-8 byte, which a Latin-1 comment or a binary
-/// heredoc is enough to produce — and every such script was reported as missing. A shell has no
-/// business deciding a valid script is unreadable, so the bytes are taken as they are and the
-/// undecodable ones become U+FFFD, exactly where they already were.
+/// A byte that is not part of valid UTF-8 is carried losslessly, so a Latin-1 comment or a binary
+/// here-document reaches its command as the bytes the file holds.
 fn read_script(path: &str) -> std::io::Result<String> {
-    Ok(String::from_utf8_lossy(&fs::read(path)?).into_owned())
+    oslo_base::lossless::read_file(oslo_base::lossless::to_os(path))
 }
 
 /// What to say, and what to exit with — bash's answers.
@@ -250,7 +247,7 @@ fn run_stdin(invocation: &cli::Invocation) -> ! {
         eprintln!("oslo: cannot read standard input: {}", e);
         std::process::exit(1);
     }
-    let script = String::from_utf8_lossy(&bytes).into_owned();
+    let script = oslo_base::lossless::from_bytes(&bytes);
     match language::detect_asked(invocation.modes, None, &script) {
         Language::Lua => std::process::exit(startup::lua_init::run_lua_source(
             &script,
@@ -270,14 +267,12 @@ fn stdin_is_a_terminal() -> bool {
     nix::unistd::isatty(0).unwrap_or(false) && nix::unistd::isatty(2).unwrap_or(false)
 }
 
-/// This process's arguments, with any byte that is not UTF-8 replaced rather than fatal.
+/// This process's arguments, with any byte that is not UTF-8 carried losslessly.
 ///
-/// **`env::args()` panics on such a byte**, before `main` has done anything: `oslo ./café.sh` with
-/// the name in Latin-1 died with `SIGABRT` and no message a person could act on, where bash runs
-/// the script. A positional parameter cannot be skipped the way an environment variable can —
-/// `$2` has to stay `$2` — so the byte is replaced and the argument keeps its place.
+/// `env::args()` panics on such a byte, so the arguments are read as `OsString`s and each keeps
+/// its place and its bytes: `oslo ./café.sh` with the name in Latin-1 runs the file it names.
 fn arguments() -> Vec<String> {
     env::args_os()
-        .map(|arg| arg.to_string_lossy().into_owned())
+        .map(|arg| oslo_base::lossless::encode(&arg))
         .collect()
 }
