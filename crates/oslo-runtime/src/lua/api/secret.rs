@@ -259,8 +259,8 @@ fn who() -> Option<crate::plugin::loading::Loading> {
 
 /// The names this caller may read, or `None` for all of them.
 ///
-/// Taken at the moment a handle is made or a call is answered, which is what makes it attribution:
-/// it is the manifest of whatever plugin is loading, and nothing at all otherwise.
+/// Taken at the moment a handle is made or a call is answered: the grant of whatever plugin is
+/// loading, and nothing at all otherwise.
 #[cfg(feature = "plugin")]
 fn allowed() -> Option<Vec<String>> {
     who().map(|it| it.secrets)
@@ -377,7 +377,7 @@ pub(crate) fn refusal(name: &str, may: Option<Vec<String>>) -> Option<String> {
         return None;
     }
     Some(format!(
-        "{name}: not declared in this plugin's `secrets = {{ … }}`"
+        "{name}: not granted to this plugin; oslo.plugin.secrets in init.lua grants it"
     ))
 }
 

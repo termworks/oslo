@@ -92,7 +92,7 @@ fn a_plugin_reaches_what_the_user_granted_and_no_more() {
     let home = tempfile::tempdir().expect("tempdir");
     keep(
         home.path(),
-        &[("gh-token", "declared"), ("bank", "not declared")],
+        &[("gh-token", "granted-value"), ("bank", "ungranted-value")],
     );
     let said = with_plugins(
         home.path(),
@@ -102,7 +102,7 @@ fn a_plugin_reaches_what_the_user_granted_and_no_more() {
             "init.lua",
             r#"
             print("granted:", oslo.secret.get("gh-token"))
-            print("undeclared:", select(2, oslo.secret.get("bank")))
+            print("ungranted:", select(2, oslo.secret.get("bank")))
             print("listed:", table.concat(oslo.secret.open("user"):list(), ","))
             print("bare list:", table.concat(oslo.secret.list(), ","))
             print("forget:", select(2, oslo.secret.forget("bank")))
@@ -113,18 +113,19 @@ fn a_plugin_reaches_what_the_user_granted_and_no_more() {
         )],
     );
     assert!(
-        said.contains("granted:\tdeclared"),
+        said.contains("granted:\tgranted-value"),
         "the granted name is readable: {said:?}"
     );
     assert!(
-        said.contains("undeclared:\tbank: not declared in this plugin"),
-        "an undeclared name is refused: {said:?}"
+        said.contains("ungranted:\tbank: not granted to this plugin"),
+        "an ungranted name is refused: {said:?}"
     );
+    assert!(!said.contains("ungranted-value"), "{said:?}");
     // The list is what it could read, not what is there: a name is itself information.
     assert!(said.contains("listed:\tgh-token\n"), "{said:?}");
     assert!(said.contains("bare list:\tgh-token\n"), "{said:?}");
     assert!(
-        said.contains("forget:\tbank: not declared"),
+        said.contains("forget:\tbank: not granted"),
         "the bare forget is filtered too: {said:?}"
     );
     // Its own store is somewhere else entirely, beside the database `oslo.db` would make for it.
@@ -264,7 +265,7 @@ fn a_plugin_cannot_grant_itself_a_secret() {
         "{said:?}"
     );
     assert!(
-        said.contains("second file:\tnil\tgh-token: not declared"),
+        said.contains("second file:\tnil\tgh-token: not granted"),
         "{said:?}"
     );
     assert!(!said.contains("the-token"), "{said:?}");
@@ -304,7 +305,7 @@ fn a_defined_store_is_filtered_for_a_plugin_too() {
             "#,
         )],
     );
-    assert!(said.contains("get:\tnil\tdeploy: not declared"), "{said:?}");
+    assert!(said.contains("get:\tnil\tdeploy: not granted"), "{said:?}");
     assert!(said.contains("granted:\tgranted-value"), "{said:?}");
     assert!(said.contains("list:\tshared\n"), "{said:?}");
     assert!(!said.contains("vault-value"), "{said:?}");
