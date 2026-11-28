@@ -4,7 +4,6 @@
 //! the usage line and the short description bash prints for `help -s` and `help -d`. Without a
 //! pattern, `help` lists every synopsis in two columns half of `$COLUMNS` wide.
 
-use crate::env::origin_now;
 use crate::env::scope::Environment;
 use oslo_base::error::Result;
 
@@ -86,10 +85,10 @@ pub fn builtin_help(env: &mut Environment, args: &[String]) -> Result<i32> {
     let mut status = 0;
     for pattern in rest {
         if !show(env, pattern, &flags) {
-            eprintln!(
-                "{}help: no help topics match `{pattern}'.  Try `help help' or `man -k {pattern}' or `info {pattern}'.",
-                origin_now()
+            let body = format!(
+                "help: no help topics match `{pattern}'.  Try `help help' or `man -k {pattern}' or `info {pattern}'."
             );
+            crate::env::complain(args, pattern, &body, "no such topic", None);
             status = 1;
         }
     }

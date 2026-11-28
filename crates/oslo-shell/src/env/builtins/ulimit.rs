@@ -244,7 +244,13 @@ fn set_one(flag: char, operand: &str, which: Which) -> i32 {
         .expect("the option run only accepts flags from the table");
     if flag == 'p' {
         if parse_operand(operand, limit.divisor).is_none() {
-            eprintln!("{}ulimit: {operand}: invalid number", origin_now());
+            let words = [
+                String::from("ulimit"),
+                format!("-{flag}"),
+                operand.to_string(),
+            ];
+            let body = format!("ulimit: {operand}: invalid number");
+            crate::env::complain(&words, operand, &body, "not a limit", None);
         } else {
             eprintln!(
                 "{}ulimit: pipe size: cannot modify limit: Invalid argument",

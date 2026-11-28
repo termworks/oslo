@@ -185,6 +185,26 @@ const KEPT: &[(&str, &str)] = &[
         "{name}[]: bad array subscript",
         "the same expansion, for an empty key",
     ),
+    (
+        "fc: {message}",
+        "fc's conditions — a history range, a missing command, a temporary file's errno",
+    ),
+    (
+        "[[: {error}",
+        "the arithmetic evaluator's message about the whole expression",
+    ),
+    (
+        "ulimit: {}: cannot get limit",
+        "a resource's label from the limit table, not a word the script wrote",
+    ),
+    (
+        "ulimit: {}: cannot modify limit: {}",
+        "the same label, and an errno",
+    ),
+    (
+        "`{target}': not a valid identifier",
+        "a prefix assignment, which is not among the command's words",
+    ),
 ];
 
 /// Every `.rs` file under the scanned directories, except the test modules beside them.

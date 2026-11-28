@@ -53,14 +53,14 @@ pub(super) fn builtin_fc(env: &mut Environment, args: &[String]) -> Result<i32> 
                         false => Some(rest),
                     };
                     if opts.editor.is_none() {
-                        complain("-e: option requires an argument");
-                        eprintln!("{USAGE}");
+                        let body = "fc: -e: option requires an argument";
+                        oslo_shell::env::complain_option(args, 'e', body, USAGE);
                         return Ok(2);
                     }
                 }
                 other => {
-                    complain(&format!("-{other}: invalid option"));
-                    eprintln!("{USAGE}");
+                    let body = format!("fc: -{other}: invalid option");
+                    oslo_shell::env::complain_option(args, other, &body, USAGE);
                     return Ok(2);
                 }
             }

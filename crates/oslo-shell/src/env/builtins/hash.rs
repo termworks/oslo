@@ -95,8 +95,8 @@ fn parse(args: &[String]) -> std::result::Result<(Options, usize), i32> {
                         false => Some(rest.to_string()),
                     };
                     let Some(value) = value else {
-                        eprintln!("{}hash: -p: option requires an argument", origin_now());
-                        eprintln!("{USAGE}");
+                        let body = "hash: -p: option requires an argument";
+                        crate::env::complain_option(args, 'p', body, USAGE);
                         return Err(2);
                     };
                     opts.path = Some(value);
@@ -132,10 +132,8 @@ pub fn builtin_hash(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
     if (opts.delete || opts.terse) && names.is_empty() {
         let letter = if opts.delete { 'd' } else { 't' };
-        eprintln!(
-            "{}hash: -{letter}: option requires an argument",
-            origin_now()
-        );
+        let body = format!("hash: -{letter}: option requires an argument");
+        crate::env::complain(args, &format!("-{letter}"), &body, "needs a name", None);
         return Ok(1);
     }
     if names.is_empty() {

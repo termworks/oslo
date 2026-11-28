@@ -133,8 +133,8 @@ pub(super) fn parse(
             let c = arg[at..].chars().next().unwrap_or_default();
             at += c.len_utf8();
             if !letters.contains(c) || c == '+' {
-                report(cmd, &format!("-{c}: invalid option"));
-                eprintln!("{usage}");
+                let body = format!("{cmd}: -{c}: invalid option");
+                crate::env::complain_option(args, c, &body, usage);
                 return Err(2);
             }
             if "oAGWPSXFCV".contains(c) {
@@ -145,14 +145,14 @@ pub(super) fn parse(
                         match args.get(i) {
                             Some(value) => value.clone(),
                             None => {
-                                report(cmd, &format!("-{c}: option requires an argument"));
-                                eprintln!("{usage}");
+                                let body = format!("{cmd}: -{c}: option requires an argument");
+                                crate::env::complain_option(args, c, &body, usage);
                                 return Err(2);
                             }
                         }
                     }
                 };
-                take_value(cmd, &mut parsed, c, plus, value)?;
+                take_value((cmd, args), &mut parsed, c, plus, value)?;
                 break;
             }
             take_flag(&mut parsed, c);
@@ -181,7 +181,7 @@ fn take_flag(parsed: &mut Parsed, c: char) {
 }
 
 fn take_value(
-    cmd: &str,
+    (cmd, args): (&str, &[String]),
     parsed: &mut Parsed,
     c: char,
     plus: bool,
@@ -191,7 +191,11 @@ fn take_value(
     match c {
         'o' => {
             let Some(b) = bit(OPTIONS.iter().copied(), &value) else {
-                report(cmd, &format!("{value}: invalid option name"));
+                report(
+                    args,
+                    &value,
+                    &format!("{cmd}: {value}: invalid option name"),
+                );
                 return Err(2);
             };
             match plus {
@@ -201,7 +205,11 @@ fn take_value(
         }
         'A' => {
             let Some(b) = bit(ACTIONS.iter().map(|(name, _)| *name), &value) else {
-                report(cmd, &format!("{value}: invalid action name"));
+                report(
+                    args,
+                    &value,
+                    &format!("{cmd}: {value}: invalid action name"),
+                );
                 return Err(2);
             };
             spec.actions |= b;
@@ -218,8 +226,9 @@ fn take_value(
     Ok(())
 }
 
-fn report(cmd: &str, message: &str) {
-    eprintln!("{}{cmd}: {message}", origin_now());
+/// Report `message` about `word`, pointing at it where `args` holds it.
+fn report(args: &[String], word: &str, message: &str) {
+    crate::env::complain(args, word, message, "here", None);
 }
 
 thread_local! {
@@ -329,10 +338,8 @@ pub fn builtin_complete(_env: &mut Environment, args: &[String]) -> Result<i32> 
         let mut status = 0;
         for key in &keys {
             if SPECS.with(|specs| specs.borrow_mut().remove(key)).is_none() {
-                report(
-                    "complete",
-                    &format!("{}: no completion specification", shown_key(key)),
-                );
+                let body = format!("complete: {}: no completion specification", shown_key(key));
+                report(args, key, &body);
                 status = 1;
             }
         }
@@ -350,10 +357,8 @@ pub fn builtin_complete(_env: &mut Environment, args: &[String]) -> Result<i32> 
             match lookup(key) {
                 Some(spec) => print_spec(key, &spec),
                 None => {
-                    report(
-                        "complete",
-                        &format!("{}: no completion specification", shown_key(key)),
-                    );
+                    let body = format!("complete: {}: no completion specification", shown_key(key));
+                    report(args, key, &body);
                     status = 1;
                 }
             }
@@ -376,16 +381,17 @@ pub fn builtin_compopt(_env: &mut Environment, args: &[String]) -> Result<i32> {
     let mut keys: Vec<String> = parsed.keys.iter().map(|k| k.to_string()).collect();
     keys.extend(parsed.operands.iter().cloned());
     if keys.is_empty() {
-        report("compopt", "not currently executing completion function");
+        eprintln!(
+            "{}compopt: not currently executing completion function",
+            origin_now()
+        );
         return Ok(1);
     }
     let mut status = 0;
     for key in &keys {
         let Some(mut spec) = lookup(key) else {
-            report(
-                "compopt",
-                &format!("{}: no completion specification", shown_key(key)),
-            );
+            let body = format!("compopt: {}: no completion specification", shown_key(key));
+            report(args, key, &body);
             status = 1;
             continue;
         };

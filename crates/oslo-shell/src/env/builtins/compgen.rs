@@ -5,7 +5,6 @@
 //! the array `-V` names. Status 1 when there are none.
 
 use super::complete::{generate, parse};
-use crate::env::origin_now;
 use crate::env::scope::{Environment, ShellArray};
 use oslo_base::error::Result;
 
@@ -24,10 +23,8 @@ pub fn builtin_compgen(env: &mut Environment, args: &[String]) -> Result<i32> {
         ("-C", spec.command.is_some()),
     ] {
         if given {
-            eprintln!(
-                "{}compgen: warning: {flag} option may not work as you expect",
-                origin_now()
-            );
+            let body = format!("compgen: warning: {flag} option may not work as you expect");
+            crate::env::complain(args, flag, &body, "here", None);
         }
     }
     let word = parsed.operands.first().cloned().unwrap_or_default();

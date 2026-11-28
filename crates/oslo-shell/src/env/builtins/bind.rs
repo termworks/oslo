@@ -49,11 +49,11 @@ pub fn builtin_bind(_env: &mut Environment, args: &[String]) -> Result<i32> {
                     false => Some(rest),
                 };
                 let Some(value) = value else {
-                    eprintln!("{}bind: -{c}: option requires an argument", origin_now());
-                    eprintln!("{USAGE}");
+                    let body = format!("bind: -{c}: option requires an argument");
+                    crate::env::complain_option(args, c, &body, USAGE);
                     return Ok(2);
                 };
-                status = status.max(with_value(c, &value));
+                status = status.max(with_value(args, c, &value));
                 break;
             }
             match c {
@@ -70,8 +70,8 @@ pub fn builtin_bind(_env: &mut Environment, args: &[String]) -> Result<i32> {
                 }),
                 'v' | 'V' | 's' | 'S' => {}
                 other => {
-                    eprintln!("{}bind: -{other}: invalid option", origin_now());
-                    eprintln!("{USAGE}");
+                    let body = format!("bind: -{other}: invalid option");
+                    crate::env::complain_option(args, other, &body, USAGE);
                     return Ok(2);
                 }
             }
@@ -85,7 +85,8 @@ pub fn builtin_bind(_env: &mut Environment, args: &[String]) -> Result<i32> {
 }
 
 /// The options that take a value: `-m`, `-f`, `-q`, `-u`, `-r` and `-x`.
-fn with_value(c: char, value: &str) -> i32 {
+fn with_value(args: &[String], c: char, value: &str) -> i32 {
+    let complain = |body: String| crate::env::complain(args, value, &body, "here", None);
     match c {
         'm' => 0,
         'f' => match std::fs::read_to_string(value) {
@@ -96,13 +97,13 @@ fn with_value(c: char, value: &str) -> i32 {
                 .max()
                 .unwrap_or(0),
             Err(e) => {
-                eprintln!("{}bind: {value}: cannot read: {e}", origin_now());
+                complain(format!("bind: {value}: cannot read: {e}"));
                 1
             }
         },
         'q' => {
             if !known(value) {
-                eprintln!("{}bind: `{value}': unknown function name", origin_now());
+                complain(format!("bind: `{value}': unknown function name"));
                 return 1;
             }
             let seqs: Vec<String> = KEYS.with(|keys| {
@@ -120,7 +121,7 @@ fn with_value(c: char, value: &str) -> i32 {
         }
         'u' => {
             if !known(value) {
-                eprintln!("{}bind: `{value}': unknown function name", origin_now());
+                complain(format!("bind: `{value}': unknown function name"));
                 return 1;
             }
             KEYS.with(|keys| keys.borrow_mut().retain(|(_, function)| function != value));
@@ -142,7 +143,7 @@ fn with_value(c: char, value: &str) -> i32 {
                 0
             }
             None => {
-                eprintln!("{}bind: {value}: missing colon separator", origin_now());
+                complain(format!("bind: {value}: missing colon separator"));
                 1
             }
         },
