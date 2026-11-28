@@ -168,6 +168,7 @@ impl Store {
 
     /// Mark this store as holding no `OSLO2` file, so one that appears later is refused.
     fn refuse_oslo2(&self) -> Result<(), String> {
+        let _held = conf::locked()?;
         let mut declared = conf::read()?;
         if declared
             .section(&self.name)

@@ -258,7 +258,11 @@ pub struct Lock {
 ///
 /// The directory must exist. The `.lock` file is made at `0600` and is never a link.
 pub fn lock(directory: &Path, shared: bool) -> Result<Lock, String> {
-    let path = directory.join(".lock");
+    lock_file(&directory.join(".lock"), shared)
+}
+
+/// Take the lock held in the file at `path`, made at `0600` when missing and never a link.
+pub fn lock_file(path: &Path, shared: bool) -> Result<Lock, String> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -266,7 +270,7 @@ pub fn lock(directory: &Path, shared: bool) -> Result<Lock, String> {
         .truncate(false)
         .mode(FILE_MODE)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&path)
+        .open(path)
         .map_err(|e| match e.raw_os_error() {
             Some(libc::ELOOP) => format!("{}: {LINK}", path.display()),
             _ => format!("{}: {e}", path.display()),
@@ -274,7 +278,7 @@ pub fn lock(directory: &Path, shared: bool) -> Result<Lock, String> {
     let seen = file
         .metadata()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    regular(&path, &seen)?;
+    regular(path, &seen)?;
     match shared {
         true => file.lock_shared(),
         false => file.lock(),

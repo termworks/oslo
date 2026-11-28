@@ -85,6 +85,10 @@ fn add(store: &Store, source: &KeySource) -> i32 {
     if store.name.starts_with(secrets::PLUGIN) && source.is_external() {
         return fail("a plugin's store may not run a command");
     }
+    let _held = match secrets::conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut conf = match secrets::conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
@@ -107,6 +111,10 @@ fn add(store: &Store, source: &KeySource) -> i32 {
 }
 
 fn remove(store: &Store, source: &KeySource) -> i32 {
+    let _held = match secrets::conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut conf = match secrets::conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),

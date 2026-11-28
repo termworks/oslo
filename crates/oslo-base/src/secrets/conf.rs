@@ -88,6 +88,21 @@ pub struct Conf {
     pub sections: Vec<Section>,
 }
 
+/// Hold the file's lock, kept beside it as `secrets.lock`, for a read, a change and a write.
+///
+/// Every edit takes it before [`read`] and keeps it until [`Conf::write`] has returned, so two
+/// commands editing the file at once both land.
+pub fn locked() -> Result<crate::private::Lock, String> {
+    let path = path().ok_or("no $XDG_STATE_HOME and no $HOME, so there is nowhere for it")?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        match named() {
+            Some(_) => crate::private::directory(parent)?,
+            None => crate::private::own_directory(parent)?,
+        }
+    }
+    crate::private::lock_file(&path.with_extension("lock"), false)
+}
+
 /// Read it, or an empty one when there is no file — which is every install that has never
 /// configured anything, and must cost one failed `open`.
 pub fn read() -> Result<Conf, String> {

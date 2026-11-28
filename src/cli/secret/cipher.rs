@@ -75,6 +75,10 @@ fn set(store: &Store, half: &str, args: &[String]) -> i32 {
         return fail(&e);
     }
 
+    let _held = match conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut declared = match conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
@@ -89,6 +93,10 @@ fn set(store: &Store, half: &str, args: &[String]) -> i32 {
 }
 
 fn remove(store: &Store) -> i32 {
+    let _held = match conf::locked() {
+        Ok(held) => held,
+        Err(e) => return fail(&e),
+    };
     let mut declared = match conf::read() {
         Ok(conf) => conf,
         Err(e) => return fail(&e),
