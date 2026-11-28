@@ -150,7 +150,7 @@ pub fn builtin_hash(env: &mut Environment, args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if opts.terse {
-        return Ok(print_terse(args, names));
+        return Ok(print_terse(args, names, opts.list));
     }
     if !hashing() {
         eprintln!("{}hash: hashing disabled", origin_now());
@@ -196,11 +196,13 @@ fn not_found(args: &[String], name: &str) {
     );
 }
 
-/// `hash -t`: the remembered path, prefixed with the name when several were asked for.
-fn print_terse(args: &[String], names: &[String]) -> i32 {
+/// `hash -t`: the remembered path, prefixed with the name when several were asked for. `-l` asks
+/// for each as the `hash -p` command that remembers it.
+fn print_terse(args: &[String], names: &[String], reusable: bool) -> i32 {
     let mut status = 0;
     for name in names {
         match recall(name) {
+            Some(path) if reusable => println!("builtin hash -p {} {name}", path.display()),
             Some(path) if names.len() == 1 => println!("{}", path.display()),
             Some(path) => println!("{name}\t{}", path.display()),
             None => {
