@@ -173,7 +173,7 @@ fn combined(
         };
         return format!("({})+({})", or_zero(&existing), or_zero(value));
     }
-    format!("{existing}{value}")
+    oslo_base::lossless::normalize(format!("{existing}{value}"))
 }
 
 /// Drop one element if `operand` names one — `unset 'a[1]'`, `unset 'm[key]'`.
