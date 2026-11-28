@@ -142,6 +142,12 @@ impl Environment {
             .owner_frame(name)
             .is_some_and(|i| self.scope_stack[i].kind == ScopeKind::Temp);
         let local = match shadowed {
+            // `shopt -s localvar_inherit`: a copy of what it shadows, all but the nameref mark.
+            Some(outer) if crate::env::builtins::shopt::on("localvar_inherit") => {
+                let mut copy = outer.clone();
+                copy.attrs.remove(Attrs::NAMEREF);
+                copy
+            }
             Some(outer) if from_prefix && outer.is_set() => {
                 Var::scalar(outer.text().unwrap_or_default(), outer.attrs)
             }
@@ -195,11 +201,18 @@ impl Environment {
     /// Remove `name` the way `unset` does.
     ///
     /// A local of the function now running stays a local, with no value and no attributes, until
-    /// it is assigned again or the function returns. Any other binding is removed outright, which
-    /// reveals whatever it was shadowing — a caller's local, or the global.
+    /// it is assigned again or the function returns; under `shopt -s localvar_unset` so does a
+    /// caller's. Any other binding is removed outright, which reveals whatever it was shadowing —
+    /// a caller's local, or the global.
     pub(super) fn unbind(&mut self, name: &str) {
         let was_exported = self.chain_exports(name);
-        if self.is_local_here(name) {
+        let callers_local = || {
+            crate::env::builtins::shopt::on("localvar_unset")
+                && self
+                    .owner_frame(name)
+                    .is_some_and(|i| self.scope_stack[i].kind == ScopeKind::Function)
+        };
+        if self.is_local_here(name) || callers_local() {
             self.vars
                 .insert(name.to_string(), Var::unset(Attrs::empty()));
         } else {
