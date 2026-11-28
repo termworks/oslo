@@ -20,4 +20,8 @@ printf '<%s>' "$all"; echo
 declare -A m=(['$1']=lit)
 set -- x
 [[ -v m[\$1] ]]; echo "assoc set test: $?"
+[[ -v "m[\$1]" ]]; echo "assoc quoted set test: $?"
 test -v "m[\$1]"; echo "assoc test builtin: $?"
+k=1
+[[ -v 'a[$k]' ]]; echo "single-quoted subscript: $?"
+( [[ -v "a[\$k]" ]] ) 2>/dev/null; echo "escaped in double quotes: $?"

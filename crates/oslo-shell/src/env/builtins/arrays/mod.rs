@@ -62,6 +62,20 @@ pub fn key_for(env: &mut Environment, name: &str, text: &str) -> Result<Key> {
     Ok(Key::Index(index_of(env, text)?))
 }
 
+/// [`key_for`] for a subscript already expanded once, which an indexed array reads as it stands:
+/// the `$1` that `\$1` leaves is an operand error, as it is in bash.
+fn expanded_key(env: &mut Environment, name: &str, text: &str) -> Result<Key> {
+    if text.is_empty() || env.is_assoc(name) {
+        return key_for(env, name, text);
+    }
+    match text.trim() {
+        "" => Ok(Key::Index(0)),
+        trimmed => Ok(Key::Index(
+            crate::expand::arithmetic::eval_expanded_subscript(env, trimmed)?,
+        )),
+    }
+}
+
 /// The key an assignment's `name[subscript]` names. An indexed array's subscript is expanded once
 /// as arithmetic text and read as it stands, as `${name[subscript]}` reads it.
 pub fn assigned_key(
@@ -79,39 +93,21 @@ pub fn assigned_key(
     let text = crate::expand::arithmetic::expand_expression_word(env, index)?;
     match text.trim() {
         "" => Ok(Key::Index(0)),
-        trimmed => Ok(Key::Index(
-            crate::expand::arithmetic::eval_expanded_subscript(env, trimmed)?,
-        )),
+        _ => expanded_key(env, name, &text),
     }
 }
 
-/// `-v name[subscript]` with the subscript evaluated as an element write would be, expanded first
-/// when `expand`, written back as `name[key]`; `None` when the operand names no array element.
-pub(crate) fn resolve_element(
-    env: &mut Environment,
-    operand: &str,
-    expand: bool,
-) -> Result<Option<String>> {
+/// `-v name[subscript]` with the subscript expanded and evaluated as an element write would be,
+/// written back as `name[key]`; `None` when the operand names no array element to resolve.
+pub(crate) fn resolve_element(env: &mut Environment, operand: &str) -> Result<Option<String>> {
     let Some(Target::Element { name, subscript }) = parse_target(operand) else {
         return Ok(None);
     };
     if matches!(subscript, "@" | "*") {
         return Ok(None);
     }
-    let key = match expand {
-        true => {
-            let text = expand_subscript_text(env, subscript)?;
-            key_for(env, name, &text)?
-        }
-        false if env.is_assoc(name) => key_for(env, name, subscript)?,
-        false => match subscript.trim() {
-            "" => Key::Index(0),
-            text => Key::Index(crate::expand::arithmetic::eval_expanded_subscript(
-                env, text,
-            )?),
-        },
-    };
-    Ok(Some(match key {
+    let text = expand_subscript_text(env, subscript)?;
+    Ok(Some(match expanded_key(env, name, &text)? {
         Key::Index(index) => format!("{name}[{index}]"),
         Key::Name(key) => format!("{name}[{key}]"),
     }))
@@ -133,7 +129,7 @@ pub fn assign_element(
     value: &str,
 ) -> Result<bool> {
     let text = expand_subscript_text(env, subscript)?;
-    let key = key_for(env, name, &text)?;
+    let key = expanded_key(env, name, &text)?;
     write_element(env, name, key, value, false)
 }
 
@@ -254,7 +250,7 @@ pub fn unset_element(env: &mut Environment, operand: &str) -> Option<Result<()>>
     }
     Some((|| {
         let text = expand_subscript_text(env, subscript)?;
-        match key_for(env, name, &text)? {
+        match expanded_key(env, name, &text)? {
             Key::Name(key) => env.unset_assoc_element(name, &key),
             Key::Index(index) => {
                 let in_range = match env.get_array(name) {

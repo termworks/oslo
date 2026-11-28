@@ -73,11 +73,44 @@ pub(crate) fn negate(list: oslo_ast::AndOrList) -> oslo_ast::AndOrList {
 }
 
 /// `-f x` — an operator and one operand.
+///
+/// The name `-v` tests is expanded as an arithmetic expression is, so an escaped `$` reaches the
+/// subscript still escaped: `[[ -v a[\$i] ]]` evaluates `$i` and not `i`'s value.
 pub(crate) fn unary(op: &str, operand_text: &str) -> Result<oslo_ast::AndOrList> {
-    Ok(bracket_and_or(vec![
-        oslo_ast::Word::from_literal(op),
-        operand(operand_text, Coordinates::Substituted)?,
-    ]))
+    let word = match op {
+        "-v" => operand(&keep_escapes(operand_text), Coordinates::Substituted)?,
+        _ => operand(operand_text, Coordinates::Substituted)?,
+    };
+    Ok(bracket_and_or(vec![oslo_ast::Word::from_literal(op), word]))
+}
+
+/// `text` with each backslash before `$`, `` ` `` or `\` outside single quotes doubled, so quote
+/// removal leaves that escape in place.
+fn keep_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let (mut chars, mut single, mut double) = (text.chars(), false, false);
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '\\' if !single => match chars.next() {
+                Some(next @ ('$' | '`' | '\\')) => {
+                    out.push_str("\\\\\\");
+                    out.push(next);
+                    continue;
+                }
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                    continue;
+                }
+                None => {}
+            },
+            _ => {}
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// `x == y` — two operands with an operator between them, the operator as written.
