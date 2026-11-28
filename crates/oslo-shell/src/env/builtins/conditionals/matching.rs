@@ -144,10 +144,10 @@ fn unicode_classes(source: &str) -> String {
             '[' if !bracket => {
                 bracket = true;
                 let after = &rest[1..];
-                take += [&"^]"[..], "]", "^"]
-                    .iter()
-                    .find(|lead| after.starts_with(*lead))
-                    .map_or(0, |lead| lead.len());
+                take += ["^]", "]", "^"]
+                    .into_iter()
+                    .find(|lead| after.starts_with(lead))
+                    .map_or(0, str::len);
             }
             ']' if bracket => bracket = false,
             _ => {}
