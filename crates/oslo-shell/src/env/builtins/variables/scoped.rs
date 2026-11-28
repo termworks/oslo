@@ -37,6 +37,12 @@ pub fn builtin_readonly(env: &mut Environment, args: &[String]) -> Result<i32> {
         assoc: opts.has('A'),
         ..Spec::default()
     };
+    // `-a` and `-A` shape an assigned value; a bare name keeps the value it has.
+    let bare = Spec {
+        indexed: false,
+        assoc: false,
+        ..spec.clone()
+    };
     let mut status = 0;
     // `readonly` is a special builtin, so a name it cannot accept ends a POSIX-mode shell — see
     // the identical note in [`super::exporting::builtin_export`].
@@ -51,7 +57,8 @@ pub fn builtin_readonly(env: &mut Environment, args: &[String]) -> Result<i32> {
             continue;
         }
         let compound = written.operand(args, operands, nth);
-        if !declare_one(env, "readonly", arg, &spec, Scope::Visible, compound)? {
+        let shape = if arg.contains('=') { &spec } else { &bare };
+        if !declare_one(env, "readonly", arg, shape, Scope::Visible, compound)? {
             status = 1;
         }
     }

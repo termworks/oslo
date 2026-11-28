@@ -11,13 +11,14 @@ use oslo_base::error::{Result, ShellError};
 const EXPORT_USAGE: &str = "usage: export [-fn] [name[=value] ...] or export -p";
 const UNSET_USAGE: &str = "usage: unset [-f] [-v] [-n] [name ...]";
 
-/// `export [-fnp] [name[=value] ...]`.
+/// `export [-aAfnp] [name[=value] ...]`.
 ///
 /// With no operands — and with `-p`, which POSIX makes the explicit spelling of the same thing —
-/// this prints the exported variables as `declare -x` lines a shell can read back, sorted.
+/// this prints the exported variables as `declare -x` lines a shell can read back, sorted. `-a`
+/// and `-A` make an assigned value an indexed or associative array, and narrow a listing to them.
 pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     let written = declare::Written::take();
-    let opts = match options::parse(args, "fnp") {
+    let opts = match options::parse(args, "aAfnp") {
         Ok(o) => o,
         Err(letter) => return Err(options::invalid(args, "export", letter, EXPORT_USAGE)),
     };
@@ -28,20 +29,31 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
     if operands.is_empty() || opts.has('p') {
         if operands.is_empty() {
-            print_matching(env, Some("export"), |_, var| var.exported());
+            print_matching(env, Some("export"), |_, var| {
+                var.exported()
+                    && (!opts.has('a') || var.indexed().is_some())
+                    && (!opts.has('A') || var.assoc().is_some())
+            });
         }
         return Ok(0);
     }
 
-    let spec = match opts.has('n') {
-        true => Spec {
-            off: Attrs::EXPORT,
-            ..Spec::default()
-        },
-        false => Spec {
-            on: Attrs::EXPORT,
-            ..Spec::default()
-        },
+    let (on, off) = match opts.has('n') {
+        true => (Attrs::default(), Attrs::EXPORT),
+        false => (Attrs::EXPORT, Attrs::default()),
+    };
+    let spec = Spec {
+        on,
+        off,
+        indexed: opts.has('a'),
+        assoc: opts.has('A'),
+        ..Spec::default()
+    };
+    // `-a` and `-A` shape an assigned value; a bare name keeps the value it has.
+    let bare = Spec {
+        indexed: false,
+        assoc: false,
+        ..spec.clone()
     };
     let mut status = 0;
     // A name `export` cannot accept is a *utility error*, not just a failed command, and POSIX
@@ -60,7 +72,8 @@ pub fn builtin_export(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
         let compound = written.operand(args, operands, nth);
         let scope = declare::Scope::Visible;
-        if !declare::declare_one(env, "export", arg, &spec, scope, compound)? {
+        let shape = if arg.contains('=') { &spec } else { &bare };
+        if !declare::declare_one(env, "export", arg, shape, scope, compound)? {
             status = 1;
             continue;
         }
