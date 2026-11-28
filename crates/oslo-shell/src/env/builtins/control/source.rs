@@ -3,7 +3,6 @@
 use crate::env::origin_now;
 use crate::env::scope::Environment;
 use oslo_base::error::{Result, ShellError};
-use std::fs;
 
 /// The file `. name` reads: `name` itself when it holds a `/`, otherwise the first regular file
 /// of that name on `$PATH` (with `sourcepath`, the default), and failing that the current
@@ -40,7 +39,7 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
         return Err(ShellError::utility_error("source", 1));
     };
     let file_path = &found;
-    let content = match fs::read_to_string(oslo_base::lossless::to_os(file_path)) {
+    let content = match oslo_base::lossless::read_file(oslo_base::lossless::to_os(file_path)) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
