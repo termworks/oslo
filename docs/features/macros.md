@@ -80,8 +80,13 @@ Two consequences worth knowing:
   when you want the parent back.
 * **A recipe reaches a program that reads the environment only once the name has been read.** For
   `gh` that means mentioning it — `echo "$GITHUB_TOKEN" >/dev/null` first, or writing the command as
-  `gh …` after anything that expands it. A `secret run NAME -- cmd` that puts one value in one
-  child's environment is the better answer and is not built yet.
+  `gh …` after anything that expands it. `oslo secret run GITHUB_TOKEN=gh-token -- gh pr list`
+  puts the one value in that one child's environment and no shell's, and is the better answer; see
+  [secrets](secrets.md#the-two-ways-a-value-reaches-a-program).
+* **A recipe that runs `oslo secret get` or `oslo secret run` marks its variable sensitive** before
+  it runs, so `set -x` traces the materialisation as `export GITHUB_TOKEN=<secret>`, and `set`,
+  `declare -p` and `export -p` print `<secret>` for it. The value itself expands and exports as it
+  is. See [sensitive variables](secrets.md#sensitive-variables).
 
 ## A script is a file
 
