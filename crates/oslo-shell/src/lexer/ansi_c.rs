@@ -17,11 +17,16 @@
 /// `\xHH` and `\NNN` are bytes, not code points: `$'\xe2\x94\x80'` is `─`, and a run that is not
 /// UTF-8 is carried as `oslo_base::lossless` carries any other byte.
 pub fn decode(raw: &str) -> String {
-    oslo_base::lossless::from_bytes(&decode_bytes(raw))
+    decode_in(raw, locale_is_utf8())
+}
+
+/// [`decode`] in a locale that is UTF-8 or not: outside one a `\u` past ASCII stays written out.
+fn decode_in(raw: &str, utf8: bool) -> String {
+    oslo_base::lossless::from_bytes(&decode_bytes(raw, utf8))
 }
 
 /// The bytes the body of `$'…'` stands for.
-fn decode_bytes(raw: &str) -> Vec<u8> {
+fn decode_bytes(raw: &str, utf8: bool) -> Vec<u8> {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -89,6 +94,14 @@ fn decode_bytes(raw: &str) -> Vec<u8> {
             // A shell string cannot carry a NUL, so everything from here on is unreachable data.
             Some(0) => return out,
             Some(v) if byte => out.push(v as u8),
+            // Outside a UTF-8 locale a character past ASCII has no encoding and stays written out.
+            Some(v) if v >= 0x80 && !utf8 => {
+                let text = match v <= 0xffff {
+                    true => format!("\\u{v:04X}"),
+                    false => format!("\\U{v:08X}"),
+                };
+                out.extend(text.bytes());
+            }
             // A code point is written in UTF-8's original scheme, which is bash's for a surrogate
             // or a value past U+10FFFF too.
             Some(v) => out.extend(raw_code_point(v)),
@@ -100,6 +113,18 @@ fn decode_bytes(raw: &str) -> Vec<u8> {
     }
 
     out
+}
+
+/// Whether the locale the shell runs in is a UTF-8 one, read from its environment: `$'…'` is
+/// decoded as it is read, before any command of the program has run.
+fn locale_is_utf8() -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            name.contains("utf-8") || name.contains("utf8")
+        })
 }
 
 /// The bytes of `value` in UTF-8's original scheme, which reaches 31 bits in six bytes.
@@ -158,7 +183,21 @@ fn radix_escape(
 
 #[cfg(test)]
 mod tests {
-    use super::decode;
+    use super::decode_in;
+
+    /// In a UTF-8 locale, which every case here but the last assumes.
+    fn decode(raw: &str) -> String {
+        decode_in(raw, true)
+    }
+
+    /// Outside a UTF-8 locale a character past ASCII has no encoding, so it stays written out.
+    #[test]
+    fn a_code_point_past_ascii_stays_escaped_outside_utf8() {
+        assert_eq!(
+            decode_in("\\u00e9 \\U1F600 \\u41", false),
+            "\\u00E9 \\U0001F600 A"
+        );
+    }
 
     #[test]
     fn control_escapes() {
