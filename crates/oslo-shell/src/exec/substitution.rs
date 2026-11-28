@@ -60,6 +60,7 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
                 // The child keeps the inherited environment, so `$(helper_fn)` can still see
                 // the shell's functions and `$(echo $1)` its positional parameters.
                 env.enter_subshell();
+                crate::exec::job::enter_child(true);
                 env.number_lines_from_here();
                 crate::exec::simple::trace::nest();
                 crate::exec::pipeline::quiet_deaths();

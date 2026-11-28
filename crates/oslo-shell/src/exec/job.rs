@@ -43,6 +43,11 @@ pub use signals::{
 };
 pub use table::{Job, JobState, JobTable, with_jobs};
 
+/// Give a freshly forked child the job table it starts with; see `JobTable::enter_child`.
+pub(crate) fn enter_child(keep: bool) {
+    with_jobs(|jobs| jobs.enter_child(keep));
+}
+
 pub use sentinel::started as watcher_started;
 
 pub(crate) use sentinel::{Orders, stand_down, take_events, watch};

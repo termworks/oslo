@@ -448,6 +448,7 @@ pub(crate) fn eval_compound_command(
                         // aliases, positionals, `$?` and export flags all survive, and nothing
                         // private is force-exported. Only subshell-local state is refreshed.
                         env.enter_subshell();
+                        crate::exec::job::enter_child(false);
                         // `status_of`, not `unwrap_or(1)`: `( exit 3 )` unwinds as an error
                         // carrying its code, and the exit status is the only channel left here.
                         let res = status_of(eval_command_list(env, body));

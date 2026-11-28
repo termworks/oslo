@@ -95,6 +95,9 @@ pub struct JobTable {
     /// calling one from inside would be a handler waiting for a lock its own caller holds. The
     /// transitions queue instead, and [`super::reap`] drains and fires them once the lock is gone.
     transitions: Vec<Transition>,
+    /// The processes of jobs a command substitution inherited from its parent, which it lists but
+    /// cannot wait for.
+    foreign: Vec<Pid>,
 }
 
 /// Something that happened to a job or one of its processes, waiting to be announced.

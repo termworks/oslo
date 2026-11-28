@@ -59,6 +59,7 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
                     close_all(&pipes);
                     let counted = super::stage::stage_is_nested(env, cmd);
                     env.enter_pipeline_stage(counted);
+                    job::enter_child(!counted);
                     if idx + 1 < num_cmds {
                         super::quiet_deaths();
                     }

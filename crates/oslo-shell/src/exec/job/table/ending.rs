@@ -69,7 +69,21 @@ impl super::JobTable {
             .flat_map(|j| j.pids.iter().copied())
             // The disowned, who have no job to be found under and are still this process's to bury.
             .chain(self.orphans.iter().copied())
+            .filter(|pid| !self.foreign.contains(pid))
             .collect()
+    }
+
+    /// The table a forked child starts with: none of the parent's jobs are its children. A
+    /// command substitution and a simple pipeline stage still list them, as they last were; every
+    /// other subshell starts empty, as in bash.
+    pub(in crate::exec::job) fn enter_child(&mut self, keep: bool) {
+        LIVE_CHILDREN.store(0, Ordering::SeqCst);
+        if !keep {
+            *self = Self::default();
+            return;
+        }
+        self.orphans.clear();
+        self.foreign = self.jobs.iter().flat_map(|j| j.pids.clone()).collect();
     }
 
     /// Keep `status` as the answer a later `wait` for `pid` gets.
