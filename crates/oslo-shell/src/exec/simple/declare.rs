@@ -63,6 +63,44 @@ pub(super) fn written_as_compound(word: &Word) -> bool {
         .is_some_and(|(_, rest)| rest.starts_with('('))
 }
 
+/// `declare -A m=([a]=1 b)`: bash refuses the bare element while it expands the words, so before
+/// the builtin's redirections, and abandons the command. `before` holds the words expanded so far.
+pub(super) fn refuse_unkeyed(
+    env: &crate::env::Environment,
+    before: &[String],
+    word: &Word,
+) -> oslo_base::error::Result<()> {
+    let text = crate::env::builtins::format_word(word);
+    let Some((lhs, rest)) = text.split_once('=') else {
+        return Ok(());
+    };
+    let name = lhs.strip_suffix('+').unwrap_or(lhs);
+    let Some(body) = rest
+        .strip_prefix('(')
+        .and_then(|body| body.strip_suffix(')'))
+    else {
+        return Ok(());
+    };
+    let options = before.iter().skip(1);
+    let options = options.filter(|w| w.len() > 1 && w.starts_with('-') && !w.contains('='));
+    let (assoc, array) = options.fold((false, false), |(assoc, array), option| {
+        (assoc || option.contains('A'), array || option.contains('a'))
+    });
+    if !assoc && (array || !env.is_assoc(name)) {
+        return Ok(());
+    }
+    let Ok(elements) = crate::syntax::array_literal(body) else {
+        return Ok(());
+    };
+    match crate::env::builtins::arrays::unkeyed_element(&elements) {
+        Some(bare) => {
+            crate::env::builtins::arrays::refuse_unkeyed(env, name, bare, true);
+            Err(oslo_base::error::ShellError::Abandoned)
+        }
+        None => Ok(()),
+    }
+}
+
 /// A function named after a declaration builtin, given `name=(…)` operands.
 ///
 /// bash performs each compound assignment while it expands the words, with an internal `declare`

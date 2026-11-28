@@ -7,7 +7,10 @@
 
 mod literal;
 
-pub use literal::{LiteralItem, assign_literal, literal_items, literal_items_from_ast};
+pub use literal::{
+    LiteralItem, assign_literal, literal_items, literal_items_from_ast, refuse_unkeyed,
+    unkeyed_element,
+};
 
 use crate::env::Environment;
 use crate::env::scope::is_valid_identifier;

@@ -104,6 +104,12 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
                     None => format_word(&e.value),
                 })
                 .collect();
+            if env.is_assoc(&env.ref_target_name(name))
+                && let Some(bare) = arrays::unkeyed_element(elements)
+            {
+                arrays::refuse_unkeyed(env, name, bare, false);
+                return Err(ShellError::Abandoned);
+            }
             let items = arrays::literal_items_from_ast(env, elements)?;
             let list = written.join(" ");
             trace_assignment(env, &list_assignment_text(name, assign.append, &list));

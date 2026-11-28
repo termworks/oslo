@@ -122,7 +122,11 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
             if testing {
                 words.push(crate::expand::word::expand_word_to_test_string(env, w)?);
             } else if declaring && looks_like_an_assignment(w) {
-                shapes.push(declare::written_as_compound(w));
+                let compound = declare::written_as_compound(w);
+                if compound {
+                    declare::refuse_unkeyed(env, &words, w)?;
+                }
+                shapes.push(compound);
                 words.push(crate::expand::expand_word_to_string(env, w)?);
             } else if keyword && looks_like_an_assignment(w) {
                 let text = crate::expand::expand_word_to_string(env, w)?;

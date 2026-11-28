@@ -10,7 +10,7 @@ use crate::env::Environment;
 use crate::env::scope::{AssocArray, ShellArray};
 use crate::expand::{expand_word, expand_word_to_string};
 use oslo_base::ast::ArrayElement;
-use oslo_base::error::{Result, ShellError};
+use oslo_base::error::Result;
 
 /// One element of a literal, expanded.
 pub enum LiteralItem {
@@ -56,6 +56,32 @@ pub fn literal_items_from_ast(
         }
     }
     Ok(items)
+}
+
+/// The first element of an associative literal written without a subscript, which bash refuses:
+/// `m=([a]=1 b)`. A literal whose first element is bare and does not start with `[` is a list of
+/// keys and values instead, and has none.
+pub fn unkeyed_element(elements: &[ArrayElement]) -> Option<&ArrayElement> {
+    let first = elements.first()?;
+    let pairs =
+        first.index.is_none() && !crate::env::builtins::format_word(&first.value).starts_with('[');
+    match pairs {
+        true => None,
+        false => elements.iter().find(|element| element.index.is_none()),
+    }
+}
+
+/// Report `element` of `name`'s literal as bash does, quoted as a declaration builtin quotes it.
+pub fn refuse_unkeyed(env: &Environment, name: &str, element: &ArrayElement, quoted: bool) {
+    let word = crate::env::builtins::format_word(&element.value);
+    let word = match quoted {
+        true => format!("'{word}'"),
+        false => word,
+    };
+    eprintln!(
+        "{}{name}: {word}: must use subscript when assigning associative array",
+        env.origin()
+    );
 }
 
 /// Assign a literal to `name`: `name=(…)`, or `name+=(…)` when `append`.
@@ -135,9 +161,17 @@ fn build_assoc(
         true => old.clone(),
         false => AssocArray::default(),
     };
-    let keyed = items.iter().any(|i| matches!(i, LiteralItem::Keyed { .. }));
+    // A first element that is bare and not `[…` makes the literal keys and values, `[k]=v` too.
+    let pairs = matches!(items.first(), Some(LiteralItem::Plain(word)) if !word.starts_with('['));
     let mut pending_key: Option<String> = None;
     for item in items {
+        let item = match item {
+            LiteralItem::Keyed { key, value, append } if pairs => {
+                let op = if append { "+=" } else { "=" };
+                LiteralItem::Plain(format!("[{key}]{op}{value}"))
+            }
+            item => item,
+        };
         match item {
             LiteralItem::Keyed {
                 key,
@@ -156,10 +190,12 @@ fn build_assoc(
                 let value = super::combined(env, name, base.map(str::to_string), &value, add);
                 map.set(&key, env.transform_with(attrs, &value));
             }
-            LiteralItem::Plain(word) if keyed => {
-                return Err(ShellError::ExpansionError(format!(
-                    "{name}: {word}: must use subscript when assigning associative array"
-                )));
+            // Only a literal read from a string gets here, which bash warns about and skips.
+            LiteralItem::Plain(word) if !pairs => {
+                eprintln!(
+                    "{}{name}: {word}: must use subscript when assigning associative array",
+                    env.origin()
+                );
             }
             LiteralItem::Plain(word) => match pending_key.take() {
                 None => pending_key = Some(word),
