@@ -217,11 +217,11 @@ fn universal(env: &mut Environment, args: &[String]) -> i32 {
 /// way — are skipped, because the listing's contract is that a shell can read it back.
 fn print_variables(env: &Environment) {
     let utf8 = crate::expand::locale::is_utf8(env);
-    for (name, var) in env.bindings() {
-        if !is_valid_identifier(name) {
+    for (name, var) in env.listing() {
+        if !is_valid_identifier(&name) {
             continue;
         }
-        if let Some(line) = crate::env::builtins::declare::set_line(name, var, utf8) {
+        if let Some(line) = crate::env::builtins::declare::set_line(&name, &var, utf8) {
             println!("{line}");
         }
     }

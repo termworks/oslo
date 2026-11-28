@@ -260,6 +260,21 @@ pub fn forget_all() {
     oslo_ui::invalidate_command_cache();
 }
 
+/// Every remembered command and its path, in the order bash walks its table: `BASH_CMDS`.
+pub fn entries() -> Vec<(String, PathBuf)> {
+    in_bash_order()
+        .into_iter()
+        .map(|(name, path, _)| (name, path))
+        .collect()
+}
+
+/// `BASH_CMDS[name]=path`: remember `path` for `name` as `hash -p` does.
+pub fn assign(name: &str, path: &str) {
+    if !name.contains('/') {
+        insert(name, PathBuf::from(oslo_base::lossless::to_os(path)), 0);
+    }
+}
+
 /// Record `path` for `name` with `hits`, keeping an existing entry's place in the listing.
 fn insert(name: &str, path: PathBuf, hits: u32) {
     let seq = SEQ.with(|seq| {

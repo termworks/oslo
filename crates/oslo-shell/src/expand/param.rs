@@ -134,6 +134,7 @@ pub fn expand_param(
 
     // A stored variable is a line until somebody reads the name, and a value from then on.
     materialise(env, name);
+    env.note_read(name);
 
     // `$@` and `$*` are the only parameters that stand for a *list*, and only `$@` keeps its
     // members apart. Everything list-valued has to be answered here: falling through to the

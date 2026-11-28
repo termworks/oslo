@@ -10,8 +10,8 @@ use crate::env::scope::value::Attrs;
 pub(super) fn variables(env: &Environment, spec: &Spec) {
     if !spec.print && !spec.filters() {
         let utf8 = utf8(env);
-        for (name, var) in env.bindings() {
-            if let Some(line) = set_line(name, var, utf8).filter(|_| is_listable(name)) {
+        for (name, var) in env.listing() {
+            if let Some(line) = set_line(&name, &var, utf8).filter(|_| is_listable(&name)) {
                 println!("{line}");
             }
         }
@@ -48,10 +48,11 @@ fn is_listable(name: &str) -> bool {
 }
 
 /// `declare -p name…`: each name's declaration, without following a nameref.
-pub(super) fn named(env: &Environment, names: &[String], builtin: &str) -> i32 {
+pub(super) fn named(env: &mut Environment, names: &[String], builtin: &str) -> i32 {
     let mut status = 0;
     for operand in names {
         let name = operand.split_once('=').map_or(operand.as_str(), |(n, _)| n);
+        env.note_read(name);
         match env.variable(name) {
             Some(var) => println!("{}", declaration(name, var, utf8(env))),
             None if env.special_value(name).is_some() => {

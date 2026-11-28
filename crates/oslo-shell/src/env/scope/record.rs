@@ -25,7 +25,15 @@ impl Environment {
         if line == self.published_line {
             return;
         }
-        self.set_var("LINENO", &line.to_string(), false);
+        self.publish_line(line);
+    }
+
+    /// Write `$LINENO` as the shell's own record, not the script's assignment, until an `unset`.
+    fn publish_line(&mut self, line: u32) {
+        if crate::env::dynamic::retired("LINENO") || self.is_readonly("LINENO") {
+            return;
+        }
+        self.store("LINENO", line.to_string(), false);
         self.published_line = line;
     }
 
@@ -54,8 +62,7 @@ impl Environment {
     pub fn resume_line(&mut self, line: u32) {
         self.current_line = line;
         if line != self.published_line {
-            self.set_var("LINENO", &line.to_string(), false);
-            self.published_line = line;
+            self.publish_line(line);
         }
     }
 

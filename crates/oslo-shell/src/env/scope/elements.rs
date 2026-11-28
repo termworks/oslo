@@ -51,7 +51,13 @@ impl Environment {
     /// Replace `name`'s value with an associative array.
     pub fn set_assoc(&mut self, name: &str, map: AssocArray) -> bool {
         let name = self.ref_target_name(name).into_owned();
-        self.writable(&name) && self.store_value(&name, Value::Assoc(map))
+        if !self.writable(&name) {
+            return false;
+        }
+        for (key, value) in map.iter() {
+            self.mirror_write(&name, key, value);
+        }
+        self.store_value(&name, Value::Assoc(map))
     }
 
     /// Store a whole value, keeping the binding's attributes.
@@ -123,6 +129,7 @@ impl Environment {
             return false;
         }
         let value = self.transform(&name, value);
+        self.mirror_write(&name, key, &value);
         let var = self
             .vars
             .entry(name.clone())

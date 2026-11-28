@@ -122,11 +122,11 @@ pub fn print_matching(
 ) {
     let posix_as = posix_as.filter(|_| env.posix());
     let utf8 = utf8(env);
-    for (name, var) in env.bindings() {
-        if crate::env::scope::is_valid_identifier(name) && keep(name, var) {
+    for (name, var) in env.listing() {
+        if crate::env::scope::is_valid_identifier(&name) && keep(&name, &var) {
             match posix_as {
-                Some(builtin) => println!("{}", posix_declaration(builtin, name, var, utf8)),
-                None => println!("{}", declaration(name, var, utf8)),
+                Some(builtin) => println!("{}", posix_declaration(builtin, &name, &var, utf8)),
+                None => println!("{}", declaration(&name, &var, utf8)),
             }
         }
     }

@@ -7,6 +7,7 @@ mod environ;
 mod frames;
 mod functions;
 mod level;
+mod listed;
 pub mod nameref;
 mod names;
 mod options;
@@ -39,6 +40,7 @@ pub use array::{ShellArray, array_literal_body};
 pub use assoc::AssocArray;
 pub use calls::{CallFrame, FrameKind};
 pub use registry::{BuiltinFn, is_special_builtin};
+pub use special::is_call_stack_array;
 pub use traps::TrapFrame;
 pub(crate) use vars::take_integer_failure;
 

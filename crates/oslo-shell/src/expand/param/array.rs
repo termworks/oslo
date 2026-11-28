@@ -37,6 +37,7 @@ pub fn expand_array_ref(
         )));
     }
     let origin = origin_of(in_quotes);
+    env.note_read(name);
 
     match subscript {
         Subscript::All | Subscript::Joined => {

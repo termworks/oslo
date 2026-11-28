@@ -31,7 +31,9 @@ impl Environment {
         match name {
             "?" | "$" | "!" | "#" | "*" | "@" | "-" => None,
             "BASH_ARGV0" if !crate::env::dynamic::retired(name) => Some(&self.shell_name),
-            "BASH_COMMAND" => Some(self.bash_command.as_str()),
+            "BASH_COMMAND" if !crate::env::dynamic::retired(name) => {
+                Some(self.bash_command.as_str())
+            }
             _ => {
                 let var = self.vars.get(name)?;
                 if var.is_nameref() {
@@ -110,6 +112,11 @@ impl Environment {
         if name == "LINENO" {
             self.published_line = 0;
         }
+        // An assignment is what a listing shows of these until the next read.
+        if matches!(name, "LINENO" | "COMP_WORDBREAKS" | "HISTCMD") {
+            crate::env::dynamic::mark_read(name);
+            crate::env::dynamic::remember(name, value);
+        }
         if self.vars.get(name).is_some_and(Var::is_nameref) {
             return self.write_through_ref(name, value, export);
         }
@@ -163,7 +170,7 @@ impl Environment {
     }
 
     /// The assignment itself, once the name's attributes have had their say.
-    fn store(&mut self, name: &str, value: String, export: bool) -> bool {
+    pub(super) fn store(&mut self, name: &str, value: String, export: bool) -> bool {
         let export = export || self.allexport();
         let was_exported = self.chain_exports(name);
         match self.vars.get_mut(name) {

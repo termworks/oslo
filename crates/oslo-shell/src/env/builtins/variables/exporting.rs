@@ -192,6 +192,18 @@ pub fn builtin_unset(env: &mut Environment, args: &[String]) -> Result<i32> {
             refused = true;
             continue;
         }
+        // The call stack's arrays stay for the life of the shell, as bash keeps them.
+        if !opts.has('n') && crate::env::scope::is_call_stack_array(name) {
+            crate::env::complain(
+                args,
+                name,
+                &format!("unset: {name}: cannot unset"),
+                "the shell keeps it",
+                None,
+            );
+            status = 1;
+            continue;
+        }
         match opts.has('n') {
             true => env.unset_binding(name),
             false => env.unset_var(name),

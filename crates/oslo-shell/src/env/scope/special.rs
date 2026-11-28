@@ -7,6 +7,15 @@ use super::value::{Attrs, Var};
 use super::{Environment, ShellArray};
 use crate::env::dynamic;
 
+/// Whether `name` is one of the call stack's arrays, which an assignment leaves alone and an
+/// `unset` refuses, as bash's `noassign` and `nounset` attributes do.
+pub fn is_call_stack_array(name: &str) -> bool {
+    matches!(
+        name,
+        "BASH_ARGC" | "BASH_ARGV" | "BASH_LINENO" | "BASH_SOURCE"
+    )
+}
+
 /// One write to an array, as the array store receives it.
 pub(super) enum ArrayWrite<'a> {
     Whole(&'a ShellArray),
@@ -20,6 +29,7 @@ impl Environment {
     pub fn special_value(&self, name: &str) -> Option<String> {
         match name {
             "BASH_ARGV0" if !dynamic::retired(name) => Some(self.shell_name.clone()),
+            "BASH_COMMAND" if !dynamic::retired(name) => Some(self.bash_command.clone()),
             _ => dynamic::value(name),
         }
     }
@@ -31,6 +41,7 @@ impl Environment {
         }
         match name {
             "BASHPID" | "HISTCMD" | "GROUPS" | "DIRSTACK" => true,
+            _ if is_call_stack_array(name) => true,
             "BASH_ARGV0" => {
                 self.shell_name = value.to_string();
                 true
@@ -50,6 +61,7 @@ impl Environment {
         }
         match name {
             "GROUPS" => Some(true),
+            _ if is_call_stack_array(name) => Some(true),
             "DIRSTACK" => {
                 match write {
                     ArrayWrite::Whole(array) => {
@@ -130,6 +142,7 @@ impl Environment {
         self.publish_array("BASH_SOURCE", ShellArray::default());
         self.publish_array("BASH_LINENO", ShellArray::default());
         self.unpublish_array("FUNCNAME");
+        self.seed_mirrors();
     }
 
     /// Publish the arguments the shell was started with as `BASH_ARGV` (last first) and

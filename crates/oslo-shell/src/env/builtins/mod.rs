@@ -126,6 +126,8 @@ pub use exec::makes_redirections_permanent as exec_makes_redirections_permanent;
 /// [`hash_lookup`], which is what makes the table describe the session rather than only what an
 /// explicit `hash name` put there. [`hash_forget_all`] is the invalidation side: `hash -r` and an
 /// assignment to `PATH`.
+pub(crate) use hash::assign as hash_assign;
+pub(crate) use hash::entries as hash_entries;
 pub use hash::forget_all as hash_forget_all;
 pub use hash::lookup as hash_lookup;
 pub use hash::note_hashall;

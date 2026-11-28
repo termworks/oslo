@@ -13,6 +13,9 @@
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod cells;
+pub use cells::{COMPUTED, mark_read, remember, remembered, unread};
+
 /// When the shell started, for `$SECONDS`.
 static STARTED: AtomicU64 = AtomicU64::new(0);
 
@@ -35,7 +38,7 @@ static SEED_PID: AtomicU32 = AtomicU32::new(0);
 static RETIRED: AtomicU64 = AtomicU64::new(0);
 
 /// Every special name whose `unset` this module records, in the order [`RETIRED`]'s bits are in.
-const ALL: [&str; 12] = [
+const ALL: [&str; 17] = [
     "EPOCHREALTIME",
     "EPOCHSECONDS",
     "SECONDS",
@@ -48,6 +51,11 @@ const ALL: [&str; 12] = [
     "GROUPS",
     "DIRSTACK",
     "BASH_SUBSHELL",
+    "LINENO",
+    "COMP_WORDBREAKS",
+    "BASH_COMMAND",
+    "BASH_ALIASES",
+    "BASH_CMDS",
 ];
 
 /// Record the start time and seed the generator. Called once, from `Environment::new`.
@@ -86,7 +94,7 @@ pub fn value(name: &str) -> Option<String> {
     if retired(name) {
         return None;
     }
-    Some(match name {
+    let value = match name {
         "EPOCHREALTIME" => {
             let d = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
             format!("{}.{:06}", d.as_secs(), d.subsec_micros())
@@ -104,7 +112,9 @@ pub fn value(name: &str) -> Option<String> {
             None => intrand32(SEED.load(Ordering::Relaxed)).to_string(),
         },
         _ => return None,
-    })
+    };
+    remember(name, &value);
+    Some(value)
 }
 
 /// Whether `name` is one of the clock or generator names, without computing it.
@@ -150,6 +160,7 @@ pub fn assign(name: &str, value: &str, eval: &mut dyn FnMut(&str) -> Option<i64>
             };
             STARTED.store(now_secs(), Ordering::Relaxed);
             ORIGIN.store(number.unwrap_or(0), Ordering::Relaxed);
+            remember(name, &number.unwrap_or(0).to_string());
             true
         }
         "RANDOM" => {
@@ -157,6 +168,7 @@ pub fn assign(name: &str, value: &str, eval: &mut dyn FnMut(&str) -> Option<i64>
                 SEED.store(seed as u32, Ordering::Relaxed);
                 LAST.store(0, Ordering::Relaxed);
                 SEED_PID.store(std::process::id(), Ordering::Relaxed);
+                remember(name, &seed.to_string());
             }
             true
         }
