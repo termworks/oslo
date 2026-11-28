@@ -218,7 +218,7 @@ fn apply_valued_flag(
 
     match flag {
         // bash's `-d ''` is the NUL delimiter, which is what pairs with `find -print0`.
-        'd' => opts.delim = value.as_bytes().first().copied().unwrap_or(0),
+        'd' => opts.delim = oslo_base::lossless::decode(value).first().copied().unwrap_or(0),
         'n' => opts.count = number('n', value)?,
         'O' => opts.origin = Some(number('O', value)?),
         's' => opts.skip = number('s', value)?,
@@ -284,7 +284,11 @@ fn push_record(
         if opts.strip && bytes.last() == Some(&opts.delim) {
             bytes.pop();
         }
-        records.push(String::from_utf8_lossy(&bytes).into_owned());
+        // A value is a C string, so a record ends at its first NUL.
+        if let Some(nul) = bytes.iter().position(|&b| b == 0) {
+            bytes.truncate(nul);
+        }
+        records.push(oslo_base::lossless::from_bytes(&bytes));
     }
     opts.count != 0 && records.len() >= opts.count
 }

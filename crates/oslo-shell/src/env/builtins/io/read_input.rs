@@ -110,7 +110,7 @@ impl InputLine {
     }
 
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
+        oslo_base::lossless::from_bytes(&self.bytes)
     }
 }
 
@@ -300,6 +300,10 @@ pub fn read_logical_line(spec: &InputSpec) -> Result<InputLine, Errno> {
         }
 
         let byte = buf[0];
+        // A NUL that is not the delimiter is dropped, and counts toward no `-n` budget.
+        if byte == 0 && spec.delim != Some(0) {
+            continue;
+        }
         if pending_escape {
             pending_escape = false;
             // Backslash-delimiter is a line continuation: both characters vanish and the line

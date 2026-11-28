@@ -161,7 +161,7 @@ fn apply_flag<'a>(
         't' => opts.timeout = Some(timeout_seconds(&value)?),
         'u' => opts.fd = parse_number('u', &value)?,
         // `-d ''` is bash's way of spelling a NUL delimiter, which is what `find -print0` needs.
-        'd' => opts.delim = value.bytes().next().unwrap_or(0),
+        'd' => opts.delim = oslo_base::lossless::decode(&value).first().copied().unwrap_or(0),
         // `-i text` is readline's initial text, which a read from a descriptor ignores.
         'i' => {}
         _ => unreachable!("takes_argument admits only the letters handled here"),

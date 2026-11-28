@@ -40,9 +40,8 @@ impl Splitter<'_> {
             return None;
         }
         for ch in self.ifs.chars() {
-            let mut buf = [0u8; 4];
-            let encoded = ch.encode_utf8(&mut buf).as_bytes();
-            if self.line.bytes[i..].starts_with(encoded) {
+            let encoded = oslo_base::lossless::decode(ch.encode_utf8(&mut [0u8; 4]));
+            if self.line.bytes[i..].starts_with(&encoded) {
                 return Some(Delim {
                     len: encoded.len(),
                     whitespace: ch.is_whitespace(),
@@ -103,7 +102,7 @@ impl Splitter<'_> {
     }
 
     fn slice(&self, start: usize, end: usize) -> String {
-        String::from_utf8_lossy(&self.line.bytes[start..end]).into_owned()
+        oslo_base::lossless::from_bytes(&self.line.bytes[start..end])
     }
 
     /// The byte range as runs for [`split_field`]: escaped stretches are [`Origin::Quoted`], so
