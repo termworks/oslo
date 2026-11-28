@@ -19,7 +19,7 @@
 
 use super::TildeMode;
 use super::quoting::parse_word_source;
-use operators::operator_expansion;
+use operators::{operator_expansion, quote_left_open};
 use oslo_base::ast::{ParamExpansion, Subscript, WordPart};
 use oslo_base::error::Result;
 use scan::{find_param_operator, split_name_subscript};
@@ -46,15 +46,12 @@ pub(super) fn parse_braced_body(
     let Some((idx, op)) = find_param_operator(content) else {
         return reference(content, ParamExpansion::Normal);
     };
-    // `${x:}` has no offset at all, which bash reports as a bad substitution.
-    if op == ":" && idx + 1 == content.len() {
+    // `${x:}` has no offset at all, and a `$'…'` can leave a quote open: bad substitutions.
+    let rest = &content[idx + op.len()..];
+    if (op == ":" && rest.is_empty()) || quote_left_open(op, rest, ctx) {
         return reference(content, ParamExpansion::Normal);
     }
-
-    reference(
-        &content[..idx],
-        operator_expansion(op, &content[idx + op.len()..], ctx)?,
-    )
+    reference(&content[..idx], operator_expansion(op, rest, ctx)?)
 }
 
 /// What an operand's lexing depends on besides its own text.
@@ -137,6 +134,9 @@ fn indirect_form(body: &str, ctx: Context) -> Result<WordPart> {
         );
     }
     let inner = match find_param_operator(body) {
+        Some((idx, op)) if quote_left_open(op, &body[idx + op.len()..], ctx) => {
+            return reference(&format!("!{body}"), ParamExpansion::Normal);
+        }
         Some((idx, op)) => {
             let expansion = operator_expansion(op, &body[idx + op.len()..], ctx)?;
             return reference(&body[..idx], ParamExpansion::Indirect(Box::new(expansion)));

@@ -27,6 +27,48 @@ fn payload(rest: &str, ctx: Context) -> Result<Word> {
     parse_operand(rest, ctx.in_double_quotes, ctx.tilde)
 }
 
+/// Whether a double-quoted payload holds `$'…'` text that leaves a single quote open.
+///
+/// bash puts the decoded text back into the `${…}` before it finds the `}`, and a quote that does
+/// not close hides it: `"${x:-$'a\'b'}"` is a bad substitution, whether or not the word is used.
+pub(super) fn quote_left_open(op: &str, rest: &str, ctx: Context) -> bool {
+    if !ctx.in_double_quotes || !matches!(op.trim_start_matches(':'), "-" | "=" | "+" | "?") {
+        return false;
+    }
+    let chars: Vec<char> = rest.chars().collect();
+    let (mut i, mut quotes, mut depth) = (0, 0usize, 0usize);
+    // The end of a quoted run that opens at `from`, a backslash escaping where `escapes` says.
+    let close = |from: usize, quote: char, escapes: bool| {
+        let mut end = from;
+        while end < chars.len() && chars[end] != quote {
+            end += if escapes && chars[end] == '\\' { 2 } else { 1 };
+        }
+        end.min(chars.len())
+    };
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1,
+            '$' if depth == 0 && chars.get(i + 1) == Some(&'\'') => {
+                let end = close(i + 2, '\'', true);
+                let body: String = chars[i + 2..end].iter().collect();
+                quotes += crate::lexer::decode_ansi_c(&body).matches('\'').count();
+                i = end;
+            }
+            '\'' if depth == 0 => i = close(i + 1, '\'', false),
+            '"' if depth == 0 => i = close(i + 1, '"', true),
+            '$' if matches!(chars.get(i + 1), Some('{' | '(')) => {
+                depth += 1;
+                i += 1;
+            }
+            '{' | '(' if depth > 0 => depth += 1,
+            '}' | ')' if depth > 0 => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    quotes % 2 == 1
+}
+
 /// The pattern of a case operator, which an empty operand leaves out.
 fn selector(rest: &str) -> Result<Option<Word>> {
     if rest.is_empty() {
