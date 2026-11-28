@@ -101,9 +101,29 @@ pub fn needs_chunks(env: &Environment, text: &str) -> bool {
         (ShellOption::Verbose, 'v', "o verbose"),
         (ShellOption::OneCmd, 't', "o onecmd"),
     ];
-    options.iter().any(|&(option, letter, name)| {
-        env.option(option) || text.contains(name) || sets_letter(text, letter)
-    })
+    if options.iter().any(|&(option, ..)| env.option(option)) {
+        return true;
+    }
+    let mentions = |text: &str| {
+        options
+            .iter()
+            .any(|&(_, letter, name)| text.contains(name) || sets_letter(text, letter))
+    };
+    // The cheap look first, then the same look with the comments taken out.
+    mentions(text) && mentions(&without_comments(text))
+}
+
+/// `text` without its comments, which the parser drops.
+fn without_comments(text: &str) -> String {
+    let parsed = rune::parse(text);
+    let tree = parsed.tree();
+    let mut out = String::with_capacity(text.len());
+    tree.root().visit_tokens(&mut |token| {
+        if token.kind() != rune::SyntaxKind::Comment {
+            out.push_str(token.text(tree.source()));
+        }
+    });
+    out
 }
 
 /// Whether a `set -…` word in `text` carries `letter`; `unset -v` is not one.
@@ -164,4 +184,21 @@ pub fn run_unit_chunks(
         status = result?;
     }
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_chunks;
+    use crate::env::Environment;
+
+    #[test]
+    fn only_a_command_that_turns_the_option_on_asks_for_chunks() {
+        let env = Environment::new();
+        assert!(needs_chunks(&env, "set -v\necho a\n"));
+        assert!(needs_chunks(&env, "set -o verbose; echo a"));
+        assert!(needs_chunks(&env, "x=1; set -et"));
+        assert!(!needs_chunks(&env, "echo a # set -o verbose\n"));
+        assert!(!needs_chunks(&env, "# turn o verbose on later\necho a\n"));
+        assert!(!needs_chunks(&env, "unset -v x"));
+    }
 }
