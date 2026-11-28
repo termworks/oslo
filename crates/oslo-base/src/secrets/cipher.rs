@@ -36,9 +36,12 @@
 //! * argv, never a shell string, so nothing reaches `/bin/sh`.
 //! * Never in a `plugin.*` store.
 //! * `$OSLO_SECRET_NO_EXEC` refuses, and says which command it did not run.
+//! * The store's `key timeout` (30s unless it says) bounds each run; a program still going then is
+//!   killed, and so is one that prints more than a store file may hold.
 
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::time::Duration;
+
+pub use super::child::DEFAULT_TIMEOUT;
 
 /// The two halves of a store's crypto, when another program does it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -78,52 +81,29 @@ pub fn parse(kind: &str, rest: &str) -> Result<Vec<String>, String> {
     Ok(argv.split_whitespace().map(str::to_string).collect())
 }
 
-/// Put `input` through `argv` and answer what came back.
-///
-/// **Standard input is written on a thread**, because a program that starts answering before it has
-/// read everything would otherwise fill the pipe and wait for us while we wait for it. `age` on a
-/// small value would not, but a wrapper that buffers differently is exactly the kind of program
-/// somebody puts here.
+/// Put `input` through `argv` and answer what came back, within [`DEFAULT_TIMEOUT`].
 pub fn through(argv: &[String], input: &[u8]) -> Result<Vec<u8>, String> {
+    through_within(argv, input, DEFAULT_TIMEOUT)
+}
+
+/// The same, within `timeout`: a store's `key timeout`.
+///
+/// Standard input is written on a thread, standard error goes to the terminal so a touch or PIN
+/// prompt is seen, and the child is always reaped. See [`super::child`].
+pub fn through_within(argv: &[String], input: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
     if super::key::no_exec() {
         return Err(format!(
             "$OSLO_SECRET_NO_EXEC is set, so `{}` was not run",
             argv.join(" ")
         ));
     }
-    let (program, rest) = argv.split_first().ok_or("a command with no program")?;
-    let mut child = Command::new(program)
-        .args(rest)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        // **Inherited, not captured.** A key in hardware asks for a touch or a PIN, and it asks on
-        // standard error — captured, that prompt never reaches the person it is asking, and the
-        // shell appears to hang until they touch the device for reasons they cannot see.
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("{program}: {e}"))?;
-
-    let mut stdin = child.stdin.take().ok_or("no standard input to write to")?;
-    let written = input.to_vec();
-    let writer = std::thread::spawn(move || stdin.write_all(&written));
-
-    let mut output = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut output)
-            .map_err(|e| format!("{program}: {e}"))?;
-    }
-    let status = child.wait().map_err(|e| format!("{program}: {e}"))?;
-    // Joined after the wait: a program that exits without reading its input leaves the write
-    // failing with a broken pipe, which is its business rather than an error of ours.
-    let _ = writer.join();
-
-    if !status.success() {
-        // Whatever it had to say went straight to the terminal on its way past, so this names the
-        // program and the status and does not pretend to know more.
-        return Err(format!("{program}: exited {}", status.code().unwrap_or(-1)));
-    }
+    let output = super::child::run(argv, Some(input), timeout, LARGEST)?;
     if output.is_empty() {
+        let program = argv.first().map_or("", String::as_str);
         return Err(format!("{program}: gave nothing back"));
     }
     Ok(output)
 }
+
+/// The most a cipher command may print: the same cap a store file is read with.
+const LARGEST: usize = super::LARGEST as usize;

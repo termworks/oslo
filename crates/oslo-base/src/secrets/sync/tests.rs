@@ -13,6 +13,7 @@ fn store(at: &Path, name: &str) -> Store {
         keys: vec![KeySource::File(key)],
         recipients: Vec::new(),
         crypto: Crypto::Native,
+        timeout: crate::secrets::child::DEFAULT_TIMEOUT,
     }
 }
 
@@ -25,6 +26,7 @@ fn pair(at: &Path) -> (Store, Store) {
         keys: here.keys.clone(),
         recipients: here.recipients.clone(),
         crypto: Crypto::Native,
+        timeout: here.timeout,
     };
     std::fs::create_dir_all(&there.directory).expect("directory");
     (here, there)
@@ -40,14 +42,14 @@ fn a_header_survives_being_written_down() {
         },
         sealed: vec![9, 8, 7],
     };
-    let read = unwrap(&wrap(&kept));
+    let read = unwrap(&wrap(&kept)).expect("a header");
     assert_eq!(read, kept);
 }
 
 /// A file written before there were stamps opens, and counts as never having been synced.
 #[test]
 fn a_body_with_no_header_is_revision_one() {
-    let read = unwrap(b"OSLO2 and then some sealed bytes");
+    let read = unwrap(b"OSLO2 and then some sealed bytes").expect("no header");
     assert_eq!(read.stamp.revision, 1);
     assert!(!read.stamp.deleted);
     assert_eq!(read.sealed, b"OSLO2 and then some sealed bytes");
@@ -62,7 +64,7 @@ fn a_stamp_is_readable_without_the_key() {
 
     let raw = std::fs::read(here.path("token").expect("path")).expect("read");
     assert!(raw.starts_with(b"OSLOSEC1 "), "no header");
-    let kept = unwrap(&raw);
+    let kept = unwrap(&raw).expect("a header");
     assert_eq!(kept.stamp.revision, 1);
     // And the body is genuinely sealed — the value is not sitting in the file.
     assert!(

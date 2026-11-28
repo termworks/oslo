@@ -29,24 +29,15 @@ pub fn run(args: &[String]) -> i32 {
         print!("{page}");
         return 0;
     }
-    // Said once, wherever the command is going: a key under a `.git` is one `git add -A` from being
-    // published, and the person it happens to did not choose it — they moved a directory.
-    if let Some(repository) = secrets::identity_in_a_repository() {
-        eprintln!(
-            "oslo secret: the key is inside the git repository at {}",
-            repository.display()
-        );
-        eprintln!(
-            "oslo secret: move it with $OSLO_SECRET_IDENTITY, or the next commit publishes it"
-        );
-    }
-
     let (asked, args) = match store_argument(args) {
         Ok(taken) => taken,
         Err(e) => return fail(&e),
     };
     let store = || match Store::selected(asked.as_deref()) {
-        Ok(store) => Ok(store),
+        Ok(store) => {
+            warn_about_repositories(&store);
+            Ok(store)
+        }
         Err(e) => {
             eprintln!("oslo secret: {e}");
             Err(1)
@@ -89,8 +80,10 @@ pub fn run(args: &[String]) -> i32 {
                 if let Some(why) = store.unreachable_here() {
                     return fail(&why);
                 }
+                // Escaped, so a file somebody committed under a hostile name cannot write to the
+                // terminal through a listing.
                 for name in store.names() {
-                    println!("{name}");
+                    println!("{}", secrets::name::shown(&name));
                 }
                 0
             }
@@ -135,13 +128,17 @@ pub fn run(args: &[String]) -> i32 {
                     "store     {}   encrypted, safe to commit",
                     store.directory.display()
                 );
+                // The keys this store actually reads, not a default it may not be using.
                 if !store.crypto.is_external() {
-                    println!(
-                        "key       {}   never commit this",
-                        secrets::identity_path()
-                            .unwrap_or(unknown.clone())
-                            .display()
-                    );
+                    for path in store.key_paths() {
+                        println!("key       {}   never commit this", path.display());
+                    }
+                    for source in store.keys.iter().filter(|s| s.is_external()) {
+                        println!(
+                            "key       {}   run when no key file opens it",
+                            source.line()
+                        );
+                    }
                 }
                 println!(
                     "config    {}   names the keys, so never commit this either",
@@ -166,6 +163,25 @@ pub fn run(args: &[String]) -> i32 {
             Err(code) => code,
         },
         Some(other) => MENU.unknown(other),
+    }
+}
+
+/// Said once, wherever the command is going, for every key file the store reads: a key under a
+/// `.git` is one `git add -A` from being published, and the person it happens to did not choose it
+/// — they moved a directory.
+fn warn_about_repositories(store: &Store) {
+    for path in store.key_paths() {
+        if let Some(repository) = secrets::in_a_repository(&path) {
+            eprintln!(
+                "oslo secret: the key {} is inside the git repository at {}",
+                path.display(),
+                repository.display()
+            );
+            eprintln!(
+                "oslo secret: move it (`key file` in secrets.conf, or $OSLO_SECRET_IDENTITY), \
+                 or the next commit publishes it"
+            );
+        }
     }
 }
 

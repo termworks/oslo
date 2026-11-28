@@ -5,11 +5,15 @@
 //! The store is under `$XDG_DATA_HOME` and is meant to be committable: everything in it is sealed,
 //! and the whole point of encrypting it is that it can live in a dotfiles repository. The key is
 //! under `$XDG_STATE_HOME` and must never be — which is why it is not kept beside the thing it
-//! opens, and why [`identity_in_a_repository`] exists to say so when somebody's state directory has
-//! ended up inside a repository anyway.
+//! opens, and why [`in_a_repository`] exists to say so when a key file has ended up inside a
+//! repository anyway.
+//!
+//! Both trees are private: a store directory oslo chose, `$XDG_STATE_HOME/oslo` and its
+//! `profiles/` are made at `0700` and tightened to it when oslo next writes there. A `directory`
+//! somebody named in `secrets.conf` is made `0700` when missing and otherwise left alone, with a
+//! warning when other users can list it.
 
 use super::{PLUGIN, Store, USER};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// `$XDG_DATA_HOME/oslo`, or `~/.local/share/oslo`.
@@ -58,8 +62,8 @@ pub(super) fn named_identity() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Where the private key is: `$OSLO_SECRET_IDENTITY`, else `$XDG_STATE_HOME/oslo/identity`, else
-/// `~/.local/state/oslo/identity`.
+/// Where the key a store with no `key` line uses is: `$OSLO_SECRET_IDENTITY`, else this profile's
+/// key, `$XDG_STATE_HOME/oslo/profiles/NAME.key`.
 ///
 /// **Deliberately not under [`directory`].** The store is meant to be committable, and a key inside
 /// it would be committed with it.
@@ -67,17 +71,16 @@ pub fn identity_path() -> Option<PathBuf> {
     if let Some(named) = named_identity() {
         return Some(named);
     }
-    Some(state_directory()?.join("key"))
+    crate::track::profile::key::path(&crate::track::profile::current())
 }
 
-/// The repository the identity is inside, when it is inside one.
+/// The repository `path` is inside, when it is inside one.
 ///
 /// A key under a `.git` is a key one `git add -A` away from being published, and the person it
 /// happens to is never the person who chose it — it is somebody who moved their state directory
 /// into a dotfiles repository a year later. Walking up costs one `exists` per parent and is only
 /// done when a secret is used.
-pub fn identity_in_a_repository() -> Option<PathBuf> {
-    let path = identity_path()?;
+pub fn in_a_repository(path: &Path) -> Option<PathBuf> {
     let mut here = path.parent()?;
     loop {
         if is_repository(&here.join(".git")) {
@@ -89,21 +92,27 @@ pub fn identity_in_a_repository() -> Option<PathBuf> {
 
 pub(super) use crate::repo::is_repository;
 
-/// Write bytes where only this user can read them, before anything is in them.
+/// Make `store`'s directory ready to write into, and say so when it is not private.
 ///
-/// **Bytes, and nothing appended.** It writes ciphertext as well as identities, and a newline added
-/// to the end of a sealed file is a file the format does not accept back.
-pub(super) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))
+/// The directory oslo chose for the store is made, or tightened to, `0700`. One named in
+/// `secrets.conf`, or reached through a symbolic link, is only made when missing: changing the
+/// mode of somebody's own directory is theirs to do, so a loose one gets a warning instead.
+pub(super) fn prepare(store: &Store) -> Result<(), String> {
+    let chosen = default_directory(&store.name).ok() != Some(store.directory.clone());
+    match chosen {
+        true => crate::private::directory(&store.directory)?,
+        false => crate::private::own_directory(&store.directory)?,
+    }
+    if crate::private::loose(&store.directory) {
+        crate::messages::warn(
+            "secret",
+            format!(
+                "{}: other users can list this store's names; `chmod 700` it",
+                store.directory.display()
+            ),
+        );
+    }
+    Ok(())
 }
 
 /// Where one secret lives in the `user` store.

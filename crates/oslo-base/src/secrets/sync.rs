@@ -30,9 +30,21 @@
 //! Deleting writes a header with `dead` and no body. The name stays visible to a sync and invisible
 //! to everything else, which is what makes the deletion travel — see [`crate::track::stamp`] for why
 //! removing the file instead would let the other machine hand it back.
+//!
+//! # A damaged header is refused, not guessed at
+//!
+//! A header must have its three fields, a state of `live` or `dead`, 32 hex characters, and a
+//! revision no higher than [`MAX_REVISION`]. Anything else is reported as damaged: a revision near
+//! `u64::MAX` would otherwise pin a name, since nothing could ever be written over it.
+//!
+//! # Concurrent writers
+//!
+//! Every read-modify-write here holds the store's `.lock` (see [`crate::private::lock`]), so two
+//! `set`s, a `set` and a `rm`, or a write and a sync cannot interleave.
 
 use super::{KEPT, Store};
-pub use crate::track::stamp::Stamp;
+use crate::private::{Links, read};
+pub use crate::track::stamp::{MAX_REVISION, Stamp};
 use crate::track::stamp::{Verdict, settle};
 use std::path::Path;
 
@@ -84,38 +96,52 @@ pub fn wrap(kept: &Kept) -> Vec<u8> {
 }
 
 /// The other way. A file with no header of ours is a body written before there were stamps, and
-/// gets revision one — which is the truth about it: it has never been synced.
-pub fn unwrap(bytes: &[u8]) -> Kept {
-    let unstamped = |sealed: &[u8]| Kept {
-        stamp: Stamp::first().unwrap_or(Stamp {
-            revision: 1,
-            deleted: false,
-            tie_breaker: [0; 16],
-        }),
-        sealed: sealed.to_vec(),
+/// gets revision one — which is the truth about it: it has never been synced. A header that is
+/// there and malformed is an error, naming what is wrong with it.
+pub fn unwrap(bytes: &[u8]) -> Result<Kept, String> {
+    let Some(rest) = bytes.strip_prefix(HEADER.as_bytes()) else {
+        return Ok(Kept {
+            stamp: Stamp::first().unwrap_or(Stamp {
+                revision: 1,
+                deleted: false,
+                tie_breaker: [0; 16],
+            }),
+            sealed: bytes.to_vec(),
+        });
     };
-    if !bytes.starts_with(HEADER.as_bytes()) {
-        return unstamped(bytes);
-    }
-    let Some(end) = bytes.iter().position(|byte| *byte == b'\n') else {
-        return unstamped(bytes);
+    let end = rest
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or("a header with no end")?;
+    let header = std::str::from_utf8(&rest[..end]).map_err(|_| "a header that is not text")?;
+    let fields: Vec<&str> = header.split(' ').collect();
+    let [revision, state, tie] = fields[..] else {
+        return Err(format!("a header of {} fields, not 3", fields.len()));
     };
-    let Ok(header) = std::str::from_utf8(&bytes[HEADER.len()..end]) else {
-        return unstamped(bytes);
+    let revision = revision
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision <= MAX_REVISION)
+        .ok_or_else(|| format!("revision {} is not one from 0 to 2^53", clipped(revision)))?;
+    let deleted = match state {
+        "live" => false,
+        "dead" => true,
+        _ => return Err(format!("state {} is neither live nor dead", clipped(state))),
     };
-    let mut fields = header.split(' ');
-    let stamp = match (fields.next(), fields.next(), fields.next()) {
-        (Some(revision), Some(state), Some(tie)) => Stamp {
-            revision: revision.parse().unwrap_or(1),
-            deleted: state == "dead",
-            tie_breaker: unhex(tie).unwrap_or([0; 16]),
+    let tie_breaker = unhex(tie).ok_or("a tie-breaker that is not 32 hex characters")?;
+    Ok(Kept {
+        stamp: Stamp {
+            revision,
+            deleted,
+            tie_breaker,
         },
-        _ => return unstamped(bytes),
-    };
-    Kept {
-        stamp,
-        sealed: bytes[end + 1..].to_vec(),
-    }
+        sealed: rest[end + 1..].to_vec(),
+    })
+}
+
+/// A field from a header as an error may print it: quoted, escaped, and short.
+fn clipped(field: &str) -> String {
+    format!("{:?}", field.chars().take(24).collect::<String>())
 }
 
 fn hex(bytes: &[u8; 16]) -> String {
@@ -134,30 +160,43 @@ fn unhex(text: &str) -> Option<[u8; 16]> {
 }
 
 /// What is in `path`, or `None` when there is no file there.
-pub fn read_kept(path: &Path) -> Option<Kept> {
-    std::fs::read(path).ok().map(|bytes| unwrap(&bytes))
-}
-
-/// Write one, privately, through a rename so a reader sees the old file or the new one.
-pub fn write_kept(path: &Path, kept: &Kept) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+///
+/// Never through a symbolic link, only from a regular file, and at most [`super::LARGEST`] bytes:
+/// a store is a directory other people's commits reach, so a link to `/dev/zero` or a FIFO named
+/// like a secret is refused rather than read.
+pub fn read_kept(path: &Path) -> Result<Option<Kept>, String> {
+    match read(path, super::LARGEST, Links::Refuse)? {
+        Some(bytes) => unwrap(&bytes)
+            .map(Some)
+            .map_err(|e| format!("{}: damaged header: {e}", path.display())),
+        None => Ok(None),
     }
-    let scratch = path.with_extension("new");
-    super::write_private(&scratch, &wrap(kept))?;
-    std::fs::rename(&scratch, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Every name a store holds, tombstones included.
+/// Write one, privately, through a fsynced scratch file and a rename, so a reader sees the old file
+/// or the new one and a machine that stops leaves one of them whole.
+///
+/// The caller holds the store's lock, which is also what made its directory.
+pub fn write_kept(path: &Path, kept: &Kept) -> Result<(), String> {
+    crate::private::replace(path, &wrap(kept))
+}
+
+/// Every name a store holds, tombstones included: each regular `NAME.sealed` whose name is usable.
+///
+/// Entries are looked at without following links, and anything that is not a regular file — a
+/// link, a FIFO, a device, a directory — is passed over without being opened.
 pub fn every_name(store: &Store) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(&store.directory) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
         .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            name.strip_suffix(KEPT).map(str::to_string)
+            let name = entry.file_name().into_string().ok()?;
+            let name = name.strip_suffix(KEPT)?;
+            super::name::check(name).ok()?;
+            Some(name.to_string())
         })
         .collect();
     names.sort();
@@ -172,17 +211,32 @@ pub fn every_name(store: &Store) -> Vec<String> {
 /// The two stores must be the same store on two machines: their files are sealed to a key derived
 /// from the profile key, so a merge across two *different* profiles would deliver bytes the far end
 /// cannot open. `oslo sync` checks the fingerprints before it gets here.
+///
+/// **Both stores are locked, and every file is read before any is written**, so a damaged header on
+/// either side stops the merge with nothing changed, and a `set` cannot land in the middle of it.
 pub fn merge(left: &Store, right: &Store, dry_run: bool) -> Result<SecretReport, String> {
     let mut report = SecretReport::default();
+    let mut held = Vec::new();
+    if !dry_run {
+        held.push(left.lock()?);
+        if right.directory != left.directory {
+            held.push(right.lock()?);
+        }
+    }
 
     let mut every = every_name(left);
     every.extend(every_name(right));
     every.sort();
     every.dedup();
 
+    let mut both = Vec::with_capacity(every.len());
     for name in every {
-        let ours = left.path(&name).ok().and_then(|path| read_kept(&path));
-        let theirs = right.path(&name).ok().and_then(|path| read_kept(&path));
+        let ours = read_kept(&left.path(&name)?)?;
+        let theirs = read_kept(&right.path(&name)?)?;
+        both.push((name, ours, theirs));
+    }
+
+    for (name, ours, theirs) in both {
         match settle(
             ours.as_ref().map(|kept| &kept.stamp),
             theirs.as_ref().map(|kept| &kept.stamp),
@@ -204,6 +258,7 @@ pub fn merge(left: &Store, right: &Store, dry_run: bool) -> Result<SecretReport,
             }
         }
     }
+    drop(held);
     Ok(report)
 }
 

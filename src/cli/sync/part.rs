@@ -205,6 +205,7 @@ fn merge_into(
                 keys: mine.keys.clone(),
                 recipients: mine.recipients.clone(),
                 crypto: mine.crypto.clone(),
+                timeout: mine.timeout,
             };
             let report = oslo::secrets::sync::merge(&mine, &other, dry)?;
             Ok(Moved::from_secrets(&report))
