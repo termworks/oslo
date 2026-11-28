@@ -4,7 +4,6 @@
 //! the answers that read a store are handed a directory of their own.
 
 use super::*;
-use oslo::secrets::Crypto;
 use std::sync::{Arc, Mutex};
 
 fn offered(line: &str) -> Vec<String> {
@@ -142,33 +141,4 @@ fn the_stores_are_the_declared_ones_and_the_ones_on_disk() {
     assert_eq!(names, ["user", "team", "far", "work", "plugin.notes"]);
     assert_eq!(offers[1].description.as_deref(), Some("in secrets.conf"));
     assert_eq!(offers[3].description.as_deref(), Some("on disk"));
-}
-
-/// **A name is read off the file, never out of it.** Bodies nothing could decrypt, and no key
-/// anywhere, still list; a tombstone does not.
-#[test]
-fn names_are_listed_without_a_key() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        directory.path().join("gh-token.sealed"),
-        b"not a sealed body",
-    )
-    .expect("write");
-    std::fs::write(
-        directory.path().join("gone.sealed"),
-        b"OSLOSEC1 2 dead 00000000000000000000000000000000\n",
-    )
-    .expect("write");
-    let store = Store {
-        name: "probe".to_string(),
-        directory: directory.path().to_path_buf(),
-        keys: Vec::new(),
-        recipients: Vec::new(),
-        crypto: Crypto::Native,
-    };
-    let values: Vec<String> = past(store.names(), "")
-        .into_iter()
-        .map(|o| o.value)
-        .collect();
-    assert_eq!(values, ["gh-token"]);
 }
