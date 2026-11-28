@@ -47,10 +47,15 @@ impl Environment {
         self.vars.get(name)
     }
 
-    /// What `$*` joins positional parameters with: the first character of IFS, or nothing at all
-    /// when IFS is set but empty. An unset IFS means the default, whose first character is a space.
+    /// What `$*` joins positional parameters with: the first character of IFS, its first byte in
+    /// the C locale, or nothing at all when IFS is set but empty. An unset IFS means the default,
+    /// whose first character is a space.
     pub fn ifs_separator(&self) -> String {
         match self.get_var("IFS") {
+            Some(ifs) if !crate::expand::locale::is_utf8(self) => {
+                let bytes = oslo_base::lossless::decode(ifs);
+                oslo_base::lossless::from_bytes(&bytes[..bytes.len().min(1)])
+            }
             Some(ifs) => ifs.chars().next().map(String::from).unwrap_or_default(),
             None => " ".to_string(),
         }

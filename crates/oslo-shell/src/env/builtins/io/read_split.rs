@@ -9,7 +9,7 @@
 
 use super::read_input::InputLine;
 use crate::env::scope::Environment;
-use crate::expand::fields::{ifs_of, split_field};
+use crate::expand::fields::{ifs_of, split_field_in};
 use crate::expand::word::{Origin, Run, field_text};
 
 /// One `IFS` delimiter matched in the line.
@@ -23,10 +23,38 @@ struct Delim {
 /// A line plus the `IFS` it is being read under.
 struct Splitter<'a> {
     ifs: &'a str,
+    /// Each `IFS` character as the bytes it matches and whether it is whitespace.
+    units: Vec<(Vec<u8>, bool)>,
+    /// The C locale, where each byte of `IFS` is a character of its own.
+    bytes: bool,
     line: &'a InputLine,
 }
 
-impl Splitter<'_> {
+impl<'a> Splitter<'a> {
+    fn new(env: &'a Environment, line: &'a InputLine) -> Self {
+        let ifs = ifs_of(env);
+        let bytes = !crate::expand::locale::is_utf8(env);
+        let units = match bytes {
+            true => oslo_base::lossless::decode(ifs)
+                .into_iter()
+                .map(|b| (vec![b], b.is_ascii() && char::from(b).is_whitespace()))
+                .collect(),
+            false => ifs
+                .chars()
+                .map(|ch| {
+                    let encoded = oslo_base::lossless::decode(ch.encode_utf8(&mut [0u8; 4]));
+                    (encoded, ch.is_whitespace())
+                })
+                .collect(),
+        };
+        Splitter {
+            ifs,
+            units,
+            bytes,
+            line,
+        }
+    }
+
     fn len(&self) -> usize {
         self.line.bytes.len()
     }
@@ -39,16 +67,13 @@ impl Splitter<'_> {
         if i >= self.len() || self.line.escaped[i] {
             return None;
         }
-        for ch in self.ifs.chars() {
-            let encoded = oslo_base::lossless::decode(ch.encode_utf8(&mut [0u8; 4]));
-            if self.line.bytes[i..].starts_with(&encoded) {
-                return Some(Delim {
-                    len: encoded.len(),
-                    whitespace: ch.is_whitespace(),
-                });
-            }
-        }
-        None
+        self.units
+            .iter()
+            .find(|(encoded, _)| self.line.bytes[i..].starts_with(encoded))
+            .map(|(encoded, whitespace)| Delim {
+                len: encoded.len(),
+                whitespace: *whitespace,
+            })
     }
 
     fn skip_whitespace(&self, mut pos: usize) -> usize {
@@ -131,7 +156,7 @@ impl Splitter<'_> {
         if start >= end {
             return Vec::new();
         }
-        split_field(self.ifs, self.runs(start, end))
+        split_field_in(self.ifs, self.runs(start, end), self.bytes)
             .iter()
             .map(|f| field_text(f))
             .collect()
@@ -158,8 +183,7 @@ impl Splitter<'_> {
 ///
 /// `names` must not be empty; the caller handles `REPLY` and `-N`, neither of which splits.
 pub fn assign_fields(env: &mut Environment, names: &[String], line: &InputLine) -> bool {
-    let ifs = ifs_of(env);
-    let splitter = Splitter { ifs, line };
+    let splitter = Splitter::new(env, line);
 
     let mut pos = 0;
     let leading = names
@@ -185,8 +209,7 @@ pub fn assign_fields(env: &mut Environment, names: &[String], line: &InputLine) 
 
 /// Every field the line splits into, for `read -a`.
 pub fn all_fields(env: &Environment, line: &InputLine) -> Vec<String> {
-    let ifs = ifs_of(env);
-    let splitter = Splitter { ifs, line };
+    let splitter = Splitter::new(env, line);
     splitter.fields_in(0, splitter.len())
 }
 
