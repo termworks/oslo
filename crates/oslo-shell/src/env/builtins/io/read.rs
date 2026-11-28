@@ -317,7 +317,7 @@ pub fn builtin_read(env: &mut Environment, args: &[String]) -> Result<i32> {
     {
         let _ = nix::unistd::write(
             unsafe { std::os::fd::BorrowedFd::borrow_raw(2) },
-            prompt.as_bytes(),
+            &oslo_base::lossless::decode(prompt),
         );
     }
 

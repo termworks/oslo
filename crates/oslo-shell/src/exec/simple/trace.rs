@@ -105,7 +105,7 @@ fn trace_line(env: &mut Environment, body: &str) {
     let mut line = prefix(env);
     line.push_str(body);
     line.push('\n');
-    let _ = std::io::stderr().write_all(line.as_bytes());
+    let _ = std::io::stderr().write_all(&oslo_base::lossless::restore_bytes(line.as_bytes()));
 }
 
 /// The trace prefix: `$PS4` expanded, its first character repeated once per level.

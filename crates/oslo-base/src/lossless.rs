@@ -18,7 +18,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 const BASE: u32 = 0x10FF00;
 
-fn is_raw(ch: char) -> bool {
+/// Whether `ch` carries a byte that is not UTF-8.
+pub fn is_raw(ch: char) -> bool {
     (BASE..=BASE + 0xFF).contains(&(ch as u32))
 }
 

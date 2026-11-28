@@ -134,7 +134,7 @@ fn utf8_locale() -> bool {
 fn printable(ch: char, utf8: bool) -> bool {
     match ch.is_ascii() {
         true => (' '..='~').contains(&ch),
-        false => utf8 && !ch.is_control(),
+        false => utf8 && !ch.is_control() && !oslo_base::lossless::is_raw(ch),
     }
 }
 
@@ -168,8 +168,7 @@ fn ansi_c_quote(word: &str) -> String {
             }
             None if printable(ch, utf8) => out.push(ch),
             None => {
-                let mut bytes = [0u8; 4];
-                for byte in ch.encode_utf8(&mut bytes).bytes() {
+                for byte in oslo_base::lossless::decode(ch.encode_utf8(&mut [0u8; 4])) {
                     out.push_str(&format!("\\{byte:03o}"));
                 }
             }

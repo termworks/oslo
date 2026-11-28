@@ -77,7 +77,7 @@ fn query(
             out = menu(words, columns(env));
         }
         out.push_str(prompt);
-        let _ = std::io::stderr().write_all(out.as_bytes());
+        let _ = std::io::stderr().write_all(&oslo_base::lossless::restore_bytes(out.as_bytes()));
 
         let status = crate::env::builtins::builtin_read(env, &["read".to_string()])?;
         if status != 0 {
