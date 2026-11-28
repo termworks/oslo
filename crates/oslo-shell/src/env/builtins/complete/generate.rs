@@ -145,7 +145,7 @@ fn commands(env: &Environment, word: &str) -> Vec<String> {
         let mut found: Vec<String> = entries(dir)
             .into_iter()
             .filter(|name| name.starts_with(word))
-            .filter(|name| is_executable(&std::path::Path::new(dir).join(name)))
+            .filter(|name| is_executable(&real_path(dir, name)))
             .collect();
         found.sort();
         out.extend(found);
@@ -158,12 +158,17 @@ fn is_executable(path: &std::path::Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// `name` in `dir`, by the bytes both carry.
+fn real_path(dir: &str, name: &str) -> std::path::PathBuf {
+    std::path::Path::new(&oslo_base::lossless::to_os(dir)).join(oslo_base::lossless::to_os(name))
+}
+
 /// The names in `dir`, without `.` and `..`.
 fn entries(dir: &str) -> Vec<String> {
-    std::fs::read_dir(dir)
+    std::fs::read_dir(oslo_base::lossless::to_os(dir))
         .map(|it| {
             it.flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .map(|entry| oslo_base::lossless::encode(&entry.file_name()))
                 .collect()
         })
         .unwrap_or_default()
@@ -187,7 +192,7 @@ pub(in crate::env::builtins) fn paths(word: &str, dirs_only: bool) -> Vec<String
     let mut names: Vec<String> = entries(lookup)
         .into_iter()
         .filter(|name| name.starts_with(base))
-        .filter(|name| !dirs_only || std::path::Path::new(lookup).join(name).is_dir())
+        .filter(|name| !dirs_only || real_path(lookup, name).is_dir())
         .map(|name| format!("{dir}{name}"))
         .collect();
     names.sort();
