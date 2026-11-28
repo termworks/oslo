@@ -185,9 +185,11 @@ fn warn_about_repositories(store: &Store) {
     }
 }
 
-/// Take `--store NAME` out of the arguments wherever it is before a `--`, so it can be written
-/// before or after the command the way a person expects a global option to be. Everything from the
-/// `--` on is kept as written: it is the command `run` and `cipher` hand on.
+/// Take `--store NAME` out of the arguments wherever it is, so it can be written before or after
+/// the command the way a person expects a global option to be.
+///
+/// Only before a `--`: everything from it on is kept as written, as the command `run` and
+/// `cipher` hand on.
 fn store_argument(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
     let mut name = None;
     let mut rest = Vec::with_capacity(args.len());
