@@ -37,6 +37,10 @@ pub struct Stamp {
     pub tie_breaker: [u8; 16],
 }
 
+/// The highest revision a record may carry: 2^53, the largest integer a Lua number or a JSON reader
+/// holds exactly. A stored revision above it is damage, and a change that would pass it is refused.
+pub const MAX_REVISION: u64 = 1 << 53;
+
 impl Stamp {
     /// The stamp a record is born with.
     pub fn first() -> Option<Stamp> {
@@ -52,9 +56,16 @@ impl Stamp {
     /// **Rerolled rather than kept**, because the tie-breaker settles which of two *different* edits
     /// survives. Carrying the old one forward would let a machine that edited first keep winning
     /// every later tie against the same record.
+    ///
+    /// `None`, with the stamp unchanged, when the revision is already [`MAX_REVISION`] or the
+    /// system has no randomness to give.
     pub fn advance(&mut self) -> Option<()> {
-        self.revision = self.revision.checked_add(1)?;
+        let next = self
+            .revision
+            .checked_add(1)
+            .filter(|next| *next <= MAX_REVISION)?;
         self.tie_breaker = roll()?;
+        self.revision = next;
         Some(())
     }
 
@@ -199,5 +210,22 @@ mod tests {
         stamp.bury().expect("randomness");
         assert!(stamp.deleted);
         assert!(stamp.wins_over(&edited));
+    }
+
+    /// A revision cannot be pushed past the bound, and a refused change leaves the stamp as it was.
+    #[test]
+    fn a_revision_stops_at_the_bound() {
+        let mut last = at(MAX_REVISION - 1, false, 5);
+        last.advance().expect("one more");
+        assert_eq!(last.revision, MAX_REVISION);
+
+        let pinned = last;
+        assert!(last.advance().is_none());
+        assert!(last.bury().is_none());
+        assert_eq!(last, pinned);
+
+        let mut absurd = at(u64::MAX, false, 0);
+        assert!(absurd.advance().is_none());
+        assert_eq!(absurd.revision, u64::MAX);
     }
 }
