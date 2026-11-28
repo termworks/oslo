@@ -66,13 +66,37 @@ The mechanism is the one that decides **where a store can be used**, so it is wo
 
 ## The built-in mechanism
 
-**A sealed box: a key you keep, recipients you publish.** One random *file key* encrypts the value,
-and that file key is wrapped once per recipient against their public half, each wrap using a fresh
-ephemeral X25519 keypair.
+**A sealed box: a key you keep, recipients you publish, and a writer every reader checks.** One
+random *file key* encrypts the value, and that file key is wrapped once per recipient against their
+public half. The key of each wrap comes from two X25519 exchanges with the recipient's public half:
+one with a fresh ephemeral secret, and one with the writer's own secret. This is the construction
+HPKE calls Auth mode (RFC 9180 §5.1.3). The second exchange can only be computed by someone who holds
+the writer's secret or the recipient's, so a published half is not enough to write a file that
+opens.
 
 ```
-OSLO2 │ n │ n × [ ephemeral public (32) │ wrapped file key (48) ] │ nonce (24) │ ciphertext ‖ tag
+OSLO3 │ writer (32) │ n │ n × [ ephemeral (32) │ wrapped file key (48) ] │ nonce (24) │ ciphertext ‖ tag
 ```
+
+The wrapping key is HKDF-SHA256 over both exchanges, with the three public halves (ephemeral,
+recipient, writer) in its info. Each AEAD also authenticates the header and what the file is *for*:
+
+```
+each wrap   OSLO3 ‖ writer ‖ n ‖ every stanza's ephemeral half ‖ context
+the body    OSLO3 ‖ writer ‖ n ‖ every stanza, whole            ‖ context
+context     0x01 ‖ u32 len ‖ store ‖ u32 len ‖ name             a secret in a store
+            0x02 ‖ "oslo.secret.seal"                           a seal from Lua, with no name
+```
+
+A wrap cannot cover its own ciphertext, so the wraps cover the ephemeral halves and the body covers
+the stanzas whole. That is why a file renamed, swapped for another, moved to another store, given a
+different count, or with a stanza stripped or added does not open.
+
+**A reader accepts a file only from a writer it lists.** The writer is the key the store writes with,
+and its public half is in the header. A file opens only when that writer is one of the store's
+recipients *as this machine lists them*, or is the key that is opening it. Somebody who knows only a
+published half can still seal a file to it, but they have to seal it as themselves, and the reader
+refuses it and names the key that wrote it.
 
 **The secret half is the profile's, not a file of its own.** A store derives its key from the
 [profile key](profiles-and-histories.md#why-a-key-and-not-just-the-name) — HKDF over the profile's
@@ -92,15 +116,23 @@ OSLO-PUB-1:zyzEW4hwVZdjajit/OwLB+o2647dl8YfoWY+mdCS+QM=    what you hand out
 ```
 
 Pasting one where the other belongs is refused rather than quietly accepted — a published half read
-as a key would make the store openable by everybody who has it.
+as a key would make the store openable by everybody who has it. An error never repeats a private
+key: `recipient add OSLO-KEY-1:…` names it by its prefix alone, and so does every other message that
+might be handed one (`OSLO-KEY-1:`, `OSLO-PROFILE-1:`, `AGE-SECRET-KEY-`).
+
+**A low-order point is never a recipient.** There are a few X25519 public values that every secret
+key shares the same exchange with, so anything sealed to one is readable by anybody.
+`OSLO-PUB-1:AAAA…=` is one of them. They are refused wherever a public half comes in: on the command
+line, in a `--from` file, in a `recipient` line of `secrets.conf`, and as a file's writer. Sealing
+fails if an exchange comes out as zero, and opening skips a stanza whose exchange does.
 
 That indirection is what a single symmetric key cannot have: **a store can be readable by several
 keys without any of them being shared.**
 
 ```sh
-oslo profile key init                     # on the other machine, if it has no key yet
-oslo secret recipient                     # there: prints its OSLO-PUB-1 half
-oslo secret recipient add OSLO-PUB-1:…    # here
+oslo profile key init                     # on a machine that has no key yet
+oslo secret recipient                     # on each machine: prints its OSLO-PUB-1 half
+oslo secret recipient add OSLO-PUB-1:…    # on each machine: the other one's half
 oslo secret rotate                        # so what already exists reaches them too
 ```
 
@@ -108,20 +140,99 @@ oslo secret rotate                        # so what already exists reaches them 
 that takes the profile's key it says so and points at `oslo profile key init`.
 
 Your laptop keeps one secret, the server keeps another, and the store lists two recipients. Nobody
-hands anybody a private key, and taking a machine off the list is one `recipient rm` and a `rotate`.
+hands anybody a private key. Taking a machine off the list is a `rotate`, a `recipient rm` and
+another `rotate`: a file that machine wrote no longer opens once it is off the list, so the first
+`rotate` rewrites everything as this machine's own while it still does.
+**Sharing is listed on both sides**, because a reader accepts only writers it lists: until the server
+lists the laptop, it refuses what the laptop wrote, and says which key wrote it. Two machines that
+share a profile derive the same store key, so they need no list at all.
 **Adding a recipient does not re-encrypt anything** — they can read what is written after today, and
 `rotate` is the separate, deliberate step, because *who could read this before I changed it* has a
 permanent answer.
 
-`X`ChaCha for the payload, so the 192-bit nonce can be drawn at random on every write with nobody
-counting. The wrapping key comes from HKDF-SHA256 over the shared curve point, salted with both
-public halves: an X25519 output is a curve point rather than a uniform key, and the salt binds a
-wrap to the pair it came from. Everything random — nonces, file keys, ephemeral secrets — comes from
-`getrandom`, never a seeded generator.
+**Writing needs the writer's own key.** Every write is sealed as this store's key, so a store with
+recipients but no key of its own on this machine makes one on the first write (from the profile, or
+in its key file), and a store whose key is a `key command` runs that command to write. With
+`$OSLO_SECRET_NO_EXEC` set, such a store cannot be written.
 
-Two consequences of it being an AEAD: a file that has been edited is refused rather than decrypted
-into rubbish — including an edit to the recipient list — and the same value written twice produces
-two different files, so nobody holding your backups can tell which secrets changed between them.
+`X`ChaCha for the payload, so the 192-bit nonce can be drawn at random on every write with nobody
+counting. An X25519 output is a curve point rather than a uniform key, so it always goes through
+HKDF. Everything random — nonces, file keys, ephemeral secrets — comes from `getrandom`, never a
+seeded generator. The same value written twice produces two different files, so nobody holding your
+backups can tell which secrets changed between them.
+
+### What is authenticated, and what is not
+
+| | authenticated? | so an edit to it |
+|---|---|---|
+| the value | yes, by the body's tag | is refused: *the body fails its check* |
+| `OSLO3`, the writer, the count, every stanza | yes, by the body, and the ephemeral halves by every wrap too | is refused |
+| the store's name and the secret's name | yes, as the context of every wrap and the body | a swapped, renamed or moved file is refused |
+| who wrote it | as *one of the keys this reader lists* | a writer nobody listed is refused, by name |
+| the sync header, `OSLOSEC1 …` | **no** | can roll a revision back or flip a tombstone |
+| that this is the newest copy | **no** | an older genuine copy of the same name in the same store opens |
+| a seal from `oslo.secret.seal` | bound to a fixed label, **not** to a store or a name | opens with any store whose key it was sealed to |
+
+**The sync header stays unauthenticated on purpose.** Sync carries files between machines without
+holding the key, so it must be able to read and write the stamp without one; see
+[Between machines](#between-machines).
+
+**A recipient is also a writer.** Anybody on the list can write a file every other reader on the
+list accepts; there is no read-only recipient. And a reader can always make a file that it alone
+would accept as written by any key it lists, because the writer's exchange is the same number from
+either side. That only ever fools the reader who made it.
+
+**The writer's public half is in every file**, so whoever can read the store can see which key wrote
+each secret. They cannot see who it was written *for*: the stanzas name no recipient.
+
+A file that does not open says which of four things went wrong, and never prints the value:
+
+| | |
+|---|---|
+| `no key opened it … sealed for other keys, or under another name or store, or its header was changed` | no stanza opens with any key of this store |
+| `… sealed by OSLO-PUB-1:…, which is not one of the recipients this reader accepts` | it opens, and its writer is not listed here |
+| `… the body fails its check: the file was changed or damaged after it was written` | a stanza opens, and the body does not |
+| `not a sealed file this oslo reads: …` | truncated, or not this format |
+
+### Files from before: `OSLO2`
+
+The format before this one had no writer and no AAD:
+
+```
+OSLO2 │ n │ n × [ ephemeral public (32) │ wrapped file key (48) ] │ nonce (24) │ ciphertext ‖ tag
+```
+
+Anybody with a recipient's public half could write an `OSLO2` file that opened, and one could be
+renamed, moved, or have a stanza stripped. **It is read until the store is rotated, and refused
+after.**
+
+* A read of an `OSLO2` file works, and prints one warning per process naming it.
+* `oslo secret rotate` rewrites every file as `OSLO3`, then writes `refuse OSLO2` into that store's
+  section of `secrets.conf`. From then on an `OSLO2` file in that store is refused.
+* **Nothing can tell a forged `OSLO2` file from a real one**, so `rotate` upgrades whatever is there.
+  It names every `OSLO2` file it rewrote; check those values, because one you do not recognise was
+  planted before the upgrade.
+* An `OSLO2` file that arrives later, from a machine still running an older oslo, is refused.
+  Upgrade oslo there first. Deleting the `refuse OSLO2` line reads them again until the next
+  `rotate`.
+
+A store that has never held an `OSLO2` file can be made strict at once: `rotate` on it rewrites
+nothing and writes the line.
+
+### Keys in memory
+
+Store keys, profile keys, file keys, wrapping keys, ephemeral secrets and the decrypted value are
+held in buffers that are zeroed when they are dropped, on the native path and on `get`, `run` and
+`set`. `x25519-dalek` and `chacha20poly1305` zero their own copies. `oslo secret` makes its process
+non-dumpable before it does anything, so it writes no core file and no other process can `ptrace` it
+or read its memory. Nothing is restored, because the process exits or execs, and an exec'd command
+is dumpable again. In a long-lived shell, a seal or an unseal from Lua makes the process non-dumpable
+only for that call and then restores it, because a shell that stayed non-dumpable would hide
+`/proc/PID/cwd` from the terminal, which uses it to open a tab in the same directory.
+
+What is not wiped: the value once it is a Lua string, which lives until the collector frees it; the
+environment of the command `run` execs; `hkdf`'s internal state, which has no `zeroize` feature in
+the version used here; and the masked prompt's own line buffer.
 
 ### What it deliberately is not
 
@@ -167,6 +278,7 @@ key command pass show oslo/key
 key timeout 30s                               # how long a command here may take
 recipient OSLO-PUB-1:jmtSV18HQJ/Ph1RXFGFTX8vbjNYpveSlwm1n9AwJySY=   # you
 recipient OSLO-PUB-1:zyzEW4hwVZdjajit/OwLB+o2647dl8YfoWY+mdCS+QM=   # the build server
+refuse OSLO2                                 # written by `rotate`: no file from before is read
 
 [team]
 directory /home/you/src/team/secrets
@@ -293,8 +405,11 @@ oslo secret get stripe
    │                                   no control character — refused, not sanitised
    ├─ read secrets/stripe.sealed      never through a link, only a regular file, at most 16 MiB
    ├─ not there, or a buried stamp? ─► no such secret
+   ├─ OSLO2, and `refuse OSLO2`? ─► refused     before any key is touched
    ├─ file keys, in the order written
    │     └─ none opened it? ─► program keys    only then is anything run
+   ├─ a stanza opens under user/stripe          the name and store are its context
+   ├─ its writer listed, or this key? ─► else refused, naming the writer
    ▼
 XChaCha20-Poly1305 ─► the value on stdout, with nothing added
 ```
@@ -506,6 +621,12 @@ oslo.env.set("SESSION", computed, { secret = true })         -- or by being aske
 somewhere else of its own; a plugin does the same with `oslo.secret.mine()`. Base64 because a
 sealed file is binary and a Lua string is UTF-8.
 
+**A seal is not bound to a name.** It has no store name and no secret name to bind to, so it is
+bound to the fixed label `oslo.secret.seal` instead: it opens with whichever store's key it was
+sealed to, and a caller that needs it tied to something has to keep that binding itself. The label
+does keep the two apart: a seal does not open as a stored secret, and an `OSLO3` file from a store
+does not open through `unseal`.
+
 ### What a plugin may reach
 
 A plugin gets **its own encrypted store**, with no name to pass because the name is not the
@@ -546,9 +667,9 @@ included:
 
 * `get`, `set` and `forget` refuse a name that was not granted;
 * `list` answers only the granted names that are there;
-* `seal` and `unseal` are refused outright, because `unseal` opens any file sealed to the store's
-  key, whatever its name. `mine():seal` and `mine():unseal` stay available, on the plugin's own
-  store.
+* `seal` and `unseal` are refused outright. `unseal` opens no `OSLO3` file of a store, which is
+  bound to its store and its name, but it does open an `OSLO2` file sealed to the store's key,
+  whatever its name. `mine():seal` and `mine():unseal` stay available, on the plugin's own store.
 
 A handle made during the load keeps that filter for as long as it lives, even when it is stashed in
 a global and used later.
@@ -564,8 +685,9 @@ do.** The rule above is attribution while a plugin loads, not a sandbox.
   [declines to sandbox plugins by name](plugins.md#trust);
 * a plugin can defer any call into a hook, a timer or a completion callback, as above;
 * with `$OSLO_SECRET_IDENTITY` set, every store — a plugin's included — opens with that one key
-  file, so a plugin can read a sealed file of yours with `oslo.fs.read` and open it with
-  `mine():unseal`;
+  file, so a plugin can read an `OSLO2` file of yours with `oslo.fs.read` and open it with
+  `mine():unseal`, until `rotate` rewrites it. An `OSLO3` file does not open that way: it is bound
+  to its own store and name;
 * a plugin can `oslo.secret.define` a store's storage, and so decide what `oslo.secret.open` of
   that name answers in this shell.
 
@@ -702,6 +824,11 @@ An earlier version of `crypt` was one symmetric key at 36 KB and 10 packages. It
 and could not let two machines read one store without copying a private key between them, which is
 most of what a secrets store is for.
 
+`OSLO3` — the writer's exchange, the AAD, the `OSLO2` reader beside it, the low-order checks, the
+`zeroize` features and the dumpable guard — measured **+16,384 bytes** on the static musl release
+binary (5,891,808 to 5,908,192), and one package, `zeroize`, which the crypto crates bring anyway
+once their own `zeroize` feature is on.
+
 What a read costs, interleaved, min of five runs of three hundred, against the same binary doing a
 `secret list` — same process, same directory, no key opened and nothing decrypted:
 
@@ -741,6 +868,13 @@ deleted.
   cannot reach a copy of the store they already have. Deleting a key makes everything sealed only to
   it unreadable.
 - **At most 255 recipients**, which is one byte in the header and more than anybody has.
+- **An older copy is not refused.** Nothing in a file says it is the newest, so somebody who can write
+  to your store can put back an earlier genuine version of the same secret, and it opens.
+- **A writer on the list is trusted completely.** Every recipient can write, and one that wanted to
+  could give two recipients two different values in one file, since the file key is not committed
+  to. Listing a key means trusting what it writes.
+- **`OSLO2` files present before the first `rotate` were trusted as they were.** `rotate` names them;
+  it cannot tell which, if any, were forged.
 - **A value is not hidden from the process that asked for it.** If you export it, every child gets
   it. `run` is the narrower door, and it is still an environment.
 - **No `git`-aware anything.** The repository check is one warning about where the *key* is.
@@ -808,7 +942,10 @@ tar.
 | `crates/oslo-base/src/secrets/child.rs` | running a key or cipher command: stderr inherited, a deadline, a cap |
 | `crates/oslo-base/src/secrets/place.rs` | where the store is, where the key is, and why those differ |
 | `crates/oslo-base/src/secrets/sync.rs` | the file header, and merging two stores without a key |
-| `crates/oslo-base/src/secrets/native.rs` | the sealed box: the wrap, the key file, the format |
+| `crates/oslo-base/src/secrets/native.rs` | the sealed box: the writer, the wrap, the AAD, the key file, the format |
+| `crates/oslo-base/src/secrets/native/legacy.rs` | reading `OSLO2`, the format before writers were authenticated |
+| `crates/oslo-base/src/secrets/natively.rs` | a store's part: which key writes, which writers it accepts, which refusal it reports |
+| `crates/oslo-base/src/secrets/dumpable.rs` | no core file and no `ptrace` while a key is in memory |
 | `crates/oslo-base/src/secrets/recipient.rs` | who a store is written for, and what a build makes of one |
 | `crates/oslo-base/src/secrets/conf.rs` | `secrets.conf`: parsed, and edited line-wise |
 | `crates/oslo-base/src/secrets/key.rs` | `KeySource`: the profile, a file, or a program — and what fences the program |

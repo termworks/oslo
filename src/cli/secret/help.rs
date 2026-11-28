@@ -83,7 +83,8 @@ const SUBCOMMANDS: &[Sub] = &[
         note: "The deliberate second step after adding a recipient: adding one gives them what is \
                written from then on, and this gives them the rest. Separate because it rewrites \
                every file, and because \"who could read this before I changed it\" is a question \
-               with a permanent answer.",
+               with a permanent answer. Every file is written as OSLO3; the OSLO2 ones are named, \
+               and OSLO2 is refused in this store from then on.",
     },
     // These three lead to menus of their own: `--help` on one answers with that menu, so the row
     // says what it is and nothing more. Anything written twice is a thing that can disagree with
@@ -212,16 +213,17 @@ const RECIPIENTS: &[Sub] = &[
         args: "RECIPIENT | --from FILE",
         about: "write future files for them too",
         flags: &[("--from FILE", "read them out of a file, one per line")],
-        note: "They can read what is written after today. `oslo secret rotate` gives them the \
-               rest, and is separate on purpose.",
+        note: "They can read what is written after today, and what they write opens here. \
+               `oslo secret rotate` gives them the rest, and is separate on purpose.",
     },
     Sub {
         name: "rm",
         args: "RECIPIENT | --from FILE",
         about: "stop writing for them",
         flags: &[("--from FILE", "read them out of a file, one per line")],
-        note: "Future files only. Every file already written is still readable by them, which is \
-               what `rotate` is for — and what nothing at all can do about the copies they have.",
+        note: "Future files only, and what they wrote no longer opens here, so `rotate` before \
+               this too. Every file already written is still readable by them, which is what \
+               `rotate` after it is for — and what nothing can do about the copies they have.",
     },
 ];
 

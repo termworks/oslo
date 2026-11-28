@@ -65,7 +65,8 @@ is not something a `/bin/sh` does. In `oslo-minimal` the word `plugin` falls thr
 **[Secrets](secrets.md) are `oslo` only**, and are two cargo features rather than one. `secrets` is
 the filing — stores, names, `oslo secret run`, the lazy variable, `oslo.secret`, the hooks — at
 108 KB and one package, with no crypto of its own; `crypt` is the built-in mechanism — a sealed box,
-a key you keep and recipients you publish — at 72 KB and seventeen more. A distribution can ship the first alone and name the machine's own tool. In `oslo-minimal`
+a key you keep, recipients you publish and a writer every reader checks — measured at 72 KB and
+seventeen more packages before the writer was authenticated, which added 16 KB and `zeroize`. A distribution can ship the first alone and name the machine's own tool. In `oslo-minimal`
 there is neither.
 
 **[Arguments in comments](argc.md) is `oslo` only**, behind the `argc` cargo feature and the largest
