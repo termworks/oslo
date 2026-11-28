@@ -826,7 +826,7 @@ most of what a secrets store is for.
 
 `OSLO3` — the writer's exchange, the AAD, the `OSLO2` reader beside it, the low-order checks, the
 `zeroize` features and the dumpable guard — measured **+16,384 bytes** on the static musl release
-binary (5,891,808 to 5,908,192), and one package, `zeroize`, which the crypto crates bring anyway
+binary (5,949,152 to 5,965,536), and one package, `zeroize`, which the crypto crates bring anyway
 once their own `zeroize` feature is on.
 
 What a read costs, interleaved, min of five runs of three hundred, against the same binary doing a
