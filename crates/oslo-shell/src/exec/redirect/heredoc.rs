@@ -11,11 +11,12 @@ use std::io::{Seek, SeekFrom, Write};
 /// would block the shell writing it, since nothing reads the far end yet, so it goes into an
 /// anonymous file instead, which has no capacity limit.
 pub(super) fn heredoc_body(content: &str) -> Result<File> {
-    if let Some(pipe) = piped(content.as_bytes()) {
+    let content = oslo_base::lossless::decode(content);
+    if let Some(pipe) = piped(&content) {
         return Ok(pipe);
     }
     let mut file = anonymous_file()?;
-    file.write_all(content.as_bytes())
+    file.write_all(&content)
         .map_err(|e| ShellError::ExecutionError(format!("heredoc: {}", reason(&e))))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ShellError::ExecutionError(format!("heredoc: {}", reason(&e))))?;
