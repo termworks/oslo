@@ -110,6 +110,16 @@ pub(super) fn whole_array(
 
         // `${#a[@]}` is the number of elements, and a single field whichever subscript asked.
         ParamExpansion::Length => {
+            // Under `set -u` bash counts only an array that is set, and abandons the line
+            // otherwise — a scalar included.
+            let counted = env
+                .variable(name)
+                .is_some_and(|v| v.is_set() && (v.indexed().is_some() || v.assoc().is_some()));
+            if env.nounset() && !counted {
+                return Err(ShellError::ExpansionError(format!(
+                    "{name}: unbound variable"
+                )));
+            }
             return Ok(vec![vec![Run::new(values.len().to_string(), origin)]]);
         }
 
