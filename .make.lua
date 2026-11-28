@@ -40,7 +40,7 @@ local BIN = ("target/%s/release/%s"):format(TARGET, NAME)
 local OURS = { "--workspace", "--exclude", "argc" }
 
 -- Every `.rs` the build depends on, for the recipes that declare staleness.
-local SOURCES = { "src/**/*.rs", "crates/**/*.rs", "Cargo.toml", "Cargo.lock" }
+local SOURCES = { "src/**/*.rs", "crates/**/*.rs", "Cargo.toml", "crates/*/Cargo.toml", "Cargo.lock" }
 
 -- `cargo(...)` with lists spliced in wherever they appear.
 --
