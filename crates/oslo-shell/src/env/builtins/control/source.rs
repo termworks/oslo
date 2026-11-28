@@ -24,8 +24,10 @@ fn sourced_path(env: &Environment, name: &str) -> Option<String> {
 
 pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     if args.len() < 2 {
-        eprintln!("{}source: filename argument required", origin_now());
-        return Ok(1);
+        let name = args.first().map_or("source", String::as_str);
+        eprintln!("{}{name}: filename argument required", origin_now());
+        eprintln!("{name}: usage: {name} [-p path] filename [arguments]");
+        return Ok(2);
     }
 
     let Some(found) = sourced_path(env, &args[1]) else {

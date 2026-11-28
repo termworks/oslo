@@ -14,6 +14,20 @@ pub fn builtin_builtin(env: &mut Environment, args: &[String]) -> Result<i32> {
         // bash treats a bare `builtin` as a no-op success rather than a usage error.
         return Ok(0);
     };
+    // `builtin` takes no options; `--` ends them.
+    if name == "--" {
+        return builtin_builtin(env, &args[1..]);
+    }
+    if name.len() > 1 && name.starts_with('-') {
+        crate::env::complain_with_usage(
+            args,
+            name,
+            &format!("builtin: {name}: invalid option"),
+            "builtin takes no options",
+            "builtin: usage: builtin [shell-builtin [arg ...]]",
+        );
+        return Ok(2);
+    }
 
     // The registry is consulted directly, so neither an alias (already expanded by the caller,
     // but never re-applied here) nor a function of the same name can intercept the call. `args`

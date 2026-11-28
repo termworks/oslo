@@ -29,6 +29,14 @@ struct Invocation<'a> {
 }
 
 pub fn builtin_kill(_env: &mut Environment, args: &[String]) -> Result<i32> {
+    // `kill -s` with nothing after it: bash names the option and answers 1, with no usage line.
+    if let [_, flag] = args
+        && matches!(flag.as_str(), "-s" | "-n")
+    {
+        let body = format!("kill: {flag}: option requires an argument");
+        crate::env::complain(args, flag, &body, "needs a signal", None);
+        return Ok(1);
+    }
     let Some(inv) = parse_args(args.get(1..).unwrap_or(&[])) else {
         return Ok(usage());
     };
