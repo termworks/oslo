@@ -296,9 +296,13 @@ fn random_is_a_sequence() {
 /// oslo's own table, or every nested shell reads the grandparent's depth.
 #[test]
 fn shlvl_counts_nesting() {
-    // Both read in one process tree, so the harness's own nesting cancels out.
+    // Both read in one process tree, so the harness's own nesting cancels out. Not the program's
+    // last command, which would replace the shell and lower the level first, as in bash.
     let bin = common::oslo_bin();
-    let r = run(&format!("echo $SHLVL\n{} -c 'echo $SHLVL'", bin.display()));
+    let r = run(&format!(
+        "echo $SHLVL\n{} -c 'echo $SHLVL'\ntrue",
+        bin.display()
+    ));
     let mut lines = r.out().lines();
     let outer: u32 = lines.next().expect("outer").parse().expect("a number");
     let nested: u32 = lines.next().expect("nested").parse().expect("a number");

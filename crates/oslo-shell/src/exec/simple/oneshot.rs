@@ -14,6 +14,9 @@ thread_local! {
     static TAIL: Cell<usize> = const { Cell::new(0) };
     /// The simple command running now is that one, and is not a function call.
     static CURRENT: Cell<bool> = const { Cell::new(false) };
+    /// Whether the marked command stands in for the whole process, so `$SHLVL` drops by one as
+    /// `exec` drops it: the end of a list, not a pipeline stage or a background job.
+    static LOWERS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Which list a process ends with, which decides whether its last command may redirect.
@@ -44,6 +47,7 @@ pub(crate) fn take_tail_list() -> Option<Tail> {
 /// The process ends with `simple`: a pipeline stage or a background job.
 pub(crate) fn mark(simple: &SimpleCommand) {
     TAIL.with(|tail| tail.set(address(simple)));
+    LOWERS.with(|lowers| lowers.set(false));
 }
 
 /// Mark the command `item`, the last of a list of `kind`, ends with, when bash would not fork it:
@@ -74,6 +78,7 @@ pub(crate) fn arm(env: &Environment, item: &ListItem, kind: Tail, alone: bool) {
         return;
     }
     mark(simple);
+    LOWERS.with(|lowers| lowers.set(true));
 }
 
 thread_local! {
@@ -125,4 +130,9 @@ pub(super) fn end() {
 /// Whether the command running now is the one its process ends with.
 pub(super) fn current() -> bool {
     CURRENT.with(Cell::get)
+}
+
+/// Whether the command running now, being its process's last, lowers `$SHLVL` as it replaces it.
+pub(super) fn lowers_level() -> bool {
+    current() && LOWERS.with(Cell::get)
 }

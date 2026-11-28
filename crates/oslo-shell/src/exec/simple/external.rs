@@ -109,8 +109,14 @@ pub(crate) fn run_external(
 
     // The command this process ends with replaces it rather than becoming its child, unless a
     // process substitution is still open for it to clean up afterwards.
-    if super::oneshot::current() && env.procsubs.is_empty() {
+    if super::oneshot::current() {
         crate::exec::compound::flush_stdout();
+        // An implicit `exec`, which lowers the level as an explicit one does.
+        if super::oneshot::lowers_level() {
+            let level = env.get_var("SHLVL").and_then(|v| v.parse::<i64>().ok());
+            let lowered = level.unwrap_or(0).saturating_sub(1).max(0);
+            env.set_var("SHLVL", &lowered.to_string(), true);
+        }
         exec_program(env, path, cmd_name, &c_path, &c_args, redirections);
     }
 
@@ -189,6 +195,8 @@ fn exec_program(
     if let Err(e) = guard.apply(env, redirections) {
         std::process::exit(report_redirect_failure(&env.origin(), &e));
     }
+    // The program finds its own path in `$_`, as bash puts it in every command's environment.
+    env.set_var("_", &oslo_base::lossless::encode(path.as_os_str()), true);
     // Including the shell-script fallback for a file with no `#!` line; see there.
     let failure = crate::env::builtins::spawn::exec_or_interpret(c_path, c_args, None);
     // A file that is there but answers ENOENT names an interpreter that is not.
