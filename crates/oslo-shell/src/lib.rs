@@ -25,6 +25,28 @@
 //! of config-supplied tools moved to [`data::custom`], which the pipeline reads and the API writes;
 //! and "the interpreter parked on this thread" moved into `oslo-lua`, which owns the type.
 
+/// `print!` for this crate: carried bytes are written as themselves; see [`out`].
+macro_rules! print {
+    ($($arg:tt)*) => { $crate::out::print(format_args!($($arg)*)) };
+}
+
+/// `println!` for this crate: carried bytes are written as themselves; see [`out`].
+macro_rules! println {
+    () => { $crate::out::print(format_args!("\n")) };
+    ($($arg:tt)*) => { $crate::out::print(format_args!("{}\n", format_args!($($arg)*))) };
+}
+
+/// `eprint!` for this crate: carried bytes are written as themselves; see [`out`].
+macro_rules! eprint {
+    ($($arg:tt)*) => { $crate::out::eprint(format_args!($($arg)*)) };
+}
+
+/// `eprintln!` for this crate: carried bytes are written as themselves; see [`out`].
+macro_rules! eprintln {
+    () => { $crate::out::eprint(format_args!("\n")) };
+    ($($arg:tt)*) => { $crate::out::eprint(format_args!("{}\n", format_args!($($arg)*))) };
+}
+
 /// `argc` — a script's arguments, parsed from the comments that declare them.
 #[cfg(feature = "argc")]
 pub mod argc;
@@ -46,6 +68,7 @@ pub mod names;
 /// cargo feature is `nix`; only the module wears the longer name.
 #[cfg(feature = "nix")]
 pub mod nix_shell;
+pub mod out;
 #[cfg(feature = "scratch")]
 pub mod scratch;
 /// Sourcing a file whose language is not shell.
