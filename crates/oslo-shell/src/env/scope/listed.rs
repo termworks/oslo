@@ -52,7 +52,7 @@ impl Environment {
             "BASH_ARGV0" => dynamic::remember(name, &self.shell_name),
             "LINENO" | "HISTCMD" => {
                 let value = self.vars.get(name).and_then(Var::text).unwrap_or_default();
-                dynamic::remember(name, &value.to_string());
+                dynamic::remember(name, value);
             }
             "BASH_ALIASES" | "BASH_CMDS" if self.is_assoc(name) => {
                 let mut map = AssocArray::default();
@@ -67,7 +67,7 @@ impl Environment {
                     }
                     _ => {
                         for (command, path) in crate::env::builtins::hash_entries() {
-                            map.set(&command, &oslo_base::lossless::encode(path.as_os_str()));
+                            map.set(&command, oslo_base::lossless::encode(path.as_os_str()));
                         }
                     }
                 }
