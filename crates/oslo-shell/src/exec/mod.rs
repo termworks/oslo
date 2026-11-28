@@ -5,6 +5,7 @@
 //! `$(...)`, [`redirect`] applies redirections, and [`job`] holds job-control state.
 
 pub mod argv;
+pub mod chunks;
 pub mod compound;
 mod coproc;
 pub mod funsub;

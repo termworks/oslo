@@ -79,18 +79,18 @@ pub fn builtin_source(env: &mut Environment, args: &[String]) -> Result<i32> {
     // And the file itself, so a failure inside it names it rather than the script that sourced it.
     env.enter_source_file(file_path);
     let traced = crate::exec::simple::trace::Nested::enter();
-    let mut result =
-        match crate::syntax::parse_with_aliases(&content, !env.get_aliases().is_empty(), &|n| {
-            env.get_alias(n).map(str::to_string)
-        }) {
-            Ok(ast) => crate::exec::eval_command_unit(env, &ast),
-            // As with `eval`: the sourced file failing to parse leaves `source` with status 2 and
-            // the calling script still running.
-            Err(e) => {
-                eprintln!("{}{}: {}", origin_now(), file_path, e);
-                Ok(2)
-            }
-        };
+    let parsed = crate::syntax::parse_with_aliases(&content, !env.get_aliases().is_empty(), &|n| {
+        env.get_alias(n).map(str::to_string)
+    });
+    // As with `eval`: the lines before a syntax error run, and `source` ends there with status 2.
+    let mut result = match parsed {
+        Ok(ast) if !crate::exec::chunks::needs_chunks(env, &content) => {
+            crate::exec::eval_command_unit(env, &ast)
+        }
+        _ => crate::exec::chunks::run_unit_chunks(env, "source", &content, &mut |_, e| {
+            eprintln!("{}{}: {}", origin_now(), file_path, e)
+        }),
+    };
     drop(traced);
     if matches!(result, Ok(_) | Err(ShellError::Return(_)))
         && let Err(e) = super::super::process::run_return_trap(env)
