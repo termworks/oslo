@@ -35,7 +35,23 @@ pub fn builtin_test(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     }
 
-    report(name, grammar::evaluate(env, expr))
+    let expr = resolve_set_tests(env, expr)?;
+    report(name, grammar::evaluate(env, &expr))
+}
+
+/// The operands of `-v` with an element's subscript expanded and evaluated, as bash evaluates
+/// `-v 'a[i+1]'`, so the tests themselves never need to evaluate anything.
+fn resolve_set_tests(env: &mut Environment, expr: &[String]) -> Result<Vec<String>> {
+    let mut resolved = expr.to_vec();
+    for at in 1..resolved.len() {
+        if resolved[at - 1] == "-v"
+            && let Some(element) =
+                crate::env::builtins::arrays::resolve_element(env, &resolved[at])?
+        {
+            resolved[at] = element;
+        }
+    }
+    Ok(resolved)
 }
 
 /// `[[ ... ]]` — the extended test.
@@ -60,10 +76,14 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
         expr = &expr[1..];
     }
 
+    let resolved = match expr.len() {
+        2 => resolve_set_tests(env, expr)?,
+        _ => Vec::new(),
+    };
     let outcome: TestResult<bool> = match expr.len() {
         0 => Ok(false),
         1 => Ok(!expr[0].is_empty()),
-        2 => operators::eval_unary(env, &expr[0], &expr[1]),
+        2 => operators::eval_unary(env, &resolved[0], &resolved[1]),
         // `=~` is routed before the shared table because it is the one operator that *writes*:
         // it publishes `BASH_REMATCH`, so it needs `&mut Environment`, which the POSIX `test`
         // grammar sharing `eval_binary` does not have. That split is also the enforcement of

@@ -62,6 +62,22 @@ pub fn key_for(env: &mut Environment, name: &str, text: &str) -> Result<Key> {
     Ok(Key::Index(index_of(env, text)?))
 }
 
+/// `-v name[subscript]` with the subscript expanded and evaluated as an element write would be,
+/// written back as `name[key]`; `None` when the operand names no array element to resolve.
+pub(crate) fn resolve_element(env: &mut Environment, operand: &str) -> Result<Option<String>> {
+    let Some(Target::Element { name, subscript }) = parse_target(operand) else {
+        return Ok(None);
+    };
+    if matches!(subscript, "@" | "*") {
+        return Ok(None);
+    }
+    let text = expand_subscript_text(env, subscript)?;
+    Ok(Some(match key_for(env, name, &text)? {
+        Key::Index(index) => format!("{name}[{index}]"),
+        Key::Name(key) => format!("{name}[{key}]"),
+    }))
+}
+
 /// The index a subscript of an indexed array evaluates to: a blank one is 0.
 pub(super) fn index_of(env: &mut Environment, text: &str) -> Result<i64> {
     match text.trim() {
