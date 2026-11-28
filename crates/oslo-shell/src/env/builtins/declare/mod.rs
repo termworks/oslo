@@ -17,7 +17,7 @@ pub(crate) use print::{assignment, print_matching, set_line};
 pub(crate) use quote::key as quote_key;
 #[cfg(feature = "universal")]
 pub(crate) use quote::set_style;
-pub(crate) use written::{Written, forget_written, note_written};
+pub(crate) use written::{Written, forget_written, note_written, written_shapes};
 
 use super::arrays::{self, assign_literal, literal_items};
 use crate::env::scope::nameref::is_reference_name;
@@ -430,6 +430,9 @@ fn assign_value(
     let array = op.compound || env.get_array(name).is_some() || env.is_assoc(name);
     if let Some(body) = array_literal_body(value).filter(|_| array) {
         let items = literal_items(env, body)?;
+        if op.compound {
+            crate::exec::simple::trace::trace_list(env, name, append, &items);
+        }
         return match assign_literal(env, name, items, append) {
             Ok(done) => Ok(done),
             Err(e) => {

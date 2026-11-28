@@ -7,7 +7,7 @@
 
 mod literal;
 
-pub use literal::{assign_literal, literal_items, literal_items_from_ast};
+pub use literal::{LiteralItem, assign_literal, literal_items, literal_items_from_ast};
 
 use crate::env::Environment;
 use crate::env::scope::is_valid_identifier;

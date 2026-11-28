@@ -379,7 +379,9 @@ impl Environment {
         // Published here because this is the only way in, so one write covers every builtin and
         // every private helper under it — see `origin::here`.
         let _origin = origin::Published::new(self.origin());
-        Some(func(self, args))
+        let result = func(self, args);
+        crate::exec::simple::trace::flush_deferred(self);
+        Some(result)
     }
     pub fn set_positional(&mut self, params: Vec<String>) {
         self.positional = params;

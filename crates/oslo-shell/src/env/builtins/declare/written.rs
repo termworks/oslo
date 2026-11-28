@@ -39,6 +39,11 @@ pub(crate) fn note_written(shapes: Vec<bool>) {
     WRITTEN.with(|written| *written.borrow_mut() = Some(shapes));
 }
 
+/// The record the builtin about to run will take, for `set -x`.
+pub(crate) fn written_shapes() -> Option<Vec<bool>> {
+    WRITTEN.with(|written| written.borrow().clone())
+}
+
 /// Drop a record no builtin took, when a function of that name runs instead.
 pub(crate) fn forget_written() {
     WRITTEN.with(|written| written.borrow_mut().take());
