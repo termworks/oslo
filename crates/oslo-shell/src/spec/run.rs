@@ -314,6 +314,7 @@ mod tests {
             value: "part".into(),
             flags,
             dir: String::new(),
+            ..Query::default()
         };
         let script = preamble(&query);
         assert!(script.contains("C_VALUE='part'"), "{script}");

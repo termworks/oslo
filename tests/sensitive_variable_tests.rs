@@ -4,7 +4,6 @@
 mod common;
 
 use common::oslo_bin;
-use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -139,6 +138,7 @@ fn a_variable_nobody_marked_prints_as_bash_prints_it() {
 #[test]
 #[cfg(feature = "crypt")]
 fn a_lazy_secret_is_hidden_from_its_own_materialisation() {
+    use std::io::Write;
     let home = tempfile::tempdir().expect("tempdir");
     let env = |command: &mut Command| {
         command
