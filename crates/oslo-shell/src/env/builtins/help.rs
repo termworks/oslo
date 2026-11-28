@@ -103,6 +103,13 @@ pub(crate) fn long_option(name: &str, args: &[String]) -> Option<Result<i32>> {
         return None;
     }
     let topic = all().find(|topic| topic.name == name)?;
+    // `bind` warns before it reads any option, `--help` included.
+    if name == "bind" && !crate::exec::pipeline::is_interactive() {
+        eprintln!(
+            "{}bind: warning: line editing not enabled",
+            crate::env::origin_now()
+        );
+    }
     println!("{}: {}", topic.name, topic.synopsis);
     println!("    {}", topic.description);
     Some(Err(oslo_base::error::ShellError::utility_error(name, 2)))
