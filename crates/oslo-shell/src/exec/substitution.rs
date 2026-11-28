@@ -24,12 +24,12 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
     // `version=$(<VERSION)` got an empty version and no indication anything had gone wrong.
     if let Some(target) = only_reads_a_file(&ast) {
         let path = crate::expand::expand_word_to_string(env, target)?;
-        return match std::fs::read_to_string(&path) {
+        return match std::fs::read(oslo_base::lossless::to_os(&path)) {
             // Returned raw: the caller strips trailing newlines, as POSIX says, and doing it
             // twice here would differ from every other substitution.
-            Ok(text) => {
+            Ok(bytes) => {
                 env.note_substitution_status(0);
-                Ok(text)
+                Ok(captured_text(env, bytes))
             }
             // bash reports the failure, expands to nothing, and leaves `$?` at 1 without ending
             // the script — so `x=$(<maybe) || fallback` works the way it is written.
@@ -85,20 +85,27 @@ pub fn eval_command_substitution(env: &mut Environment, cmd_str: &str) -> Result
                 // substitution in it (`x=$(exit 5)` leaves `$?` at 5), and this is the only place
                 // that number exists. `Environment::take_substitution_status` consumes it.
                 env.note_substitution_status(wait_for_status(child));
-                // A shell word is a C string, so it cannot carry a NUL. bash drops NUL bytes
-                // from substitution output rather than truncating or aborting; keeping them
-                // would push a NUL into argv and kill the `CString` conversion at exec time.
-                // The warning is bash's too: silently losing bytes is worth telling someone.
-                let len_with_nuls = output.len();
-                output.retain(|&b| b != 0);
-                if output.len() != len_with_nuls {
-                    eprintln!("oslo: warning: command substitution: ignored null byte in input");
-                }
-                Ok(String::from_utf8_lossy(&output).into_owned())
+                Ok(captured_text(env, output))
             }
             Err(e) => Err(ShellError::ExecutionError(format!("Fork failed: {}", e))),
         }
     }
+}
+
+/// What a substitution captured, as the shell carries it.
+///
+/// A shell word is a C string, so it cannot carry a NUL: bash drops each one with a warning, and
+/// keeps every other byte, UTF-8 or not.
+pub(crate) fn captured_text(env: &Environment, mut output: Vec<u8>) -> String {
+    let len_with_nuls = output.len();
+    output.retain(|&b| b != 0);
+    if output.len() != len_with_nuls {
+        eprintln!(
+            "{}warning: command substitution: ignored null byte in input",
+            env.origin()
+        );
+    }
+    oslo_base::lossless::from_bytes(&output)
 }
 
 /// The file `$(<file)` names, when that is all the substitution is.

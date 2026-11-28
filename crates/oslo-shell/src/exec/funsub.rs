@@ -40,8 +40,7 @@ pub fn eval_function_substitution(
     let mut output = Vec::new();
     capture.rewind()?;
     capture.read_to_end(&mut output)?;
-    output.retain(|&b| b != 0);
-    Ok(String::from_utf8_lossy(&output).into_owned())
+    Ok(crate::exec::substitution::captured_text(env, output))
 }
 
 /// `${| cmd; }`: run the body with a fresh `REPLY`, then put the old one back.
