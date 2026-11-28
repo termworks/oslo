@@ -6,6 +6,7 @@ use crate::env::builtins::run_exit_trap;
 use crate::exec::compound::flush_stdout;
 use crate::exec::job;
 use crate::exec::pipeline::status_of;
+use crate::exec::simple::oneshot::Enclosure;
 use nix::unistd::{ForkResult, Pid, close, dup2, fork, pipe};
 use oslo_base::ast::{Command, Pipeline};
 use oslo_base::error::{Result, ShellError};
@@ -59,6 +60,7 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
                     close_all(&pipes);
                     let counted = super::stage::stage_is_nested(env, cmd);
                     env.enter_pipeline_stage(counted);
+                    crate::exec::simple::oneshot::enclose(Enclosure::Pipe);
                     job::enter_child(!counted);
                     if idx + 1 < num_cmds {
                         super::quiet_deaths();
@@ -68,7 +70,7 @@ pub(super) fn run_byte_stages(env: &mut Environment, pipeline: &Pipeline) -> Res
                     }
                     // A simple command is the stage itself: a program it names replaces it.
                     if let Command::Simple(simple) = cmd {
-                        crate::exec::simple::oneshot::mark(simple);
+                        crate::exec::simple::oneshot::mark(simple, None);
                     }
                     // `echo x | exit 3` exits the stage with 3, not with 1.
                     let status = status_of(eval_command(env, cmd));

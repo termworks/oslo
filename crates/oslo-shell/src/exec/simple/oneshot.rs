@@ -14,20 +14,48 @@ thread_local! {
     static TAIL: Cell<usize> = const { Cell::new(0) };
     /// The simple command running now is that one, and is not a function call.
     static CURRENT: Cell<bool> = const { Cell::new(false) };
-    /// Whether the marked command stands in for the whole process, so `$SHLVL` drops by one as
-    /// `exec` drops it: the end of a list, not a pipeline stage or a background job.
-    static LOWERS: Cell<bool> = const { Cell::new(false) };
+    /// What the marked command ends: a list or a background job, or `None` for a pipeline stage.
+    static KIND: Cell<Option<Tail>> = const { Cell::new(None) };
+    /// What kind of child this process is, as bash's `subshell_environment` records it.
+    static ENCLOSURE: Cell<Enclosure> = const { Cell::new(Enclosure::Shell) };
+    /// Whether the `-c` program has reached its last line, so nothing is left to read.
+    static LAST_LINE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The kind of process a command runs in, for whether `exec` lowers `$SHLVL`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Enclosure {
+    /// The shell itself, a background job, or a substitution of either.
+    Shell,
+    /// A `( … )` or a coprocess, or a substitution inside one: `exec` keeps the level.
+    Paren,
+    /// A pipeline stage, or a substitution inside one: the last command keeps the level.
+    Pipe,
+}
+
+/// This process became a child of `kind`; command and process substitutions keep their parent's.
+pub(crate) fn enclose(kind: Enclosure) {
+    ENCLOSURE.with(|enclosure| enclosure.set(kind));
+}
+
+/// Whether `exec` with a program lowers `$SHLVL` here, which it does outside a `( … )`.
+pub(crate) fn exec_lowers_level() -> bool {
+    ENCLOSURE.with(Cell::get) != Enclosure::Paren
 }
 
 /// Which list a process ends with, which decides whether its last command may redirect.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tail {
-    /// A `-c` program or a command substitution: the command may not redirect.
+    /// A `-c` program: the command may not redirect.
     Program,
+    /// A command substitution, whose command may not redirect either.
+    Substitution,
     /// A `( … )` body, whose command may redirect when it is the only one.
     Subshell,
     /// A process substitution, whose last command may redirect.
     ProcSub,
+    /// A background job's lone command, or the end of the function body it calls.
+    Async,
 }
 
 fn address(simple: &SimpleCommand) -> usize {
@@ -44,10 +72,29 @@ pub(crate) fn take_tail_list() -> Option<Tail> {
     TAIL_LIST.with(Cell::take)
 }
 
-/// The process ends with `simple`: a pipeline stage or a background job.
-pub(crate) fn mark(simple: &SimpleCommand) {
+/// The `-c` program is running a command on its last line.
+pub(crate) fn reach_last_line() {
+    LAST_LINE.with(|last| last.set(true));
+}
+
+/// The process ends with `simple`, the end of `kind`, or a pipeline stage when `None`.
+pub(crate) fn mark(simple: &SimpleCommand, kind: Option<Tail>) {
     TAIL.with(|tail| tail.set(address(simple)));
-    LOWERS.with(|lowers| lowers.set(false));
+    KIND.with(|cell| cell.set(kind));
+}
+
+/// Whether a trap keeps bash from replacing the process: EXIT or ERR, RETURN inside a function,
+/// or a signal caught rather than ignored.
+fn trapped(env: &Environment) -> bool {
+    env.get_traps()
+        .iter()
+        .any(|(name, action)| match name.as_str() {
+            _ if action == "-" => false,
+            "EXIT" | "ERR" => true,
+            "RETURN" => env.in_function(),
+            "DEBUG" => false,
+            _ => !action.is_empty(),
+        })
 }
 
 /// Mark the command `item`, the last of a list of `kind`, ends with, when bash would not fork it:
@@ -63,22 +110,53 @@ pub(crate) fn arm(env: &Environment, item: &ListItem, kind: Tail, alone: bool) {
         return;
     };
     let redirects = match kind {
-        Tail::Program => false,
+        Tail::Program | Tail::Substitution | Tail::Async => false,
         Tail::Subshell => alone && item.and_or.rest.is_empty(),
         Tail::ProcSub => true,
     };
-    let trapped = env.get_traps().values().any(|action| action != "-");
     if env.interactive()
         || item.op == ListOp::Background
         || pipeline.negated
         || pipeline.timed
-        || trapped
+        || trapped(env)
         || (!redirects && !simple.redirections.is_empty())
     {
         return;
     }
-    mark(simple);
-    LOWERS.with(|lowers| lowers.set(true));
+    mark(simple, Some(kind));
+}
+
+/// The list a function body ends its process with, when the call is the last command of a
+/// substitution or a background job: a `{ … }` whose last command follows `;`, `&&` or `||`, or
+/// is its only one. A background job's lone command waits for the last line of a `-c` program,
+/// and its joined one does too there.
+pub(super) fn function_tail(env: &Environment, body: &Command) -> Option<Tail> {
+    let kind = KIND.with(Cell::get).filter(|_| current())?;
+    let Command::Compound {
+        kind: CompoundCommand::Group(list),
+        ..
+    } = body
+    else {
+        return None;
+    };
+    let joined = match list.items.as_slice() {
+        [] => return None,
+        [only] => !only.and_or.rest.is_empty(),
+        [.., before, last] => {
+            if before.op == ListOp::Background || !last.and_or.rest.is_empty() {
+                return None;
+            }
+            true
+        }
+    };
+    let program = env.option(crate::env::options::ShellOption::CommandString);
+    let ready = match kind {
+        Tail::Substitution | Tail::ProcSub => true,
+        Tail::Async if program => LAST_LINE.with(Cell::get),
+        Tail::Async => joined,
+        Tail::Program | Tail::Subshell => false,
+    };
+    ready.then_some(kind)
 }
 
 thread_local! {
@@ -132,7 +210,18 @@ pub(super) fn current() -> bool {
     CURRENT.with(Cell::get)
 }
 
+/// Set the running command aside while a trap runs commands of its own, and say whether it was
+/// the last; [`resume`] puts it back.
+pub(crate) fn suspend() -> bool {
+    CURRENT.with(|current| current.replace(false))
+}
+
+/// The command [`suspend`] set aside is running again.
+pub(crate) fn resume(last: bool) {
+    CURRENT.with(|current| current.set(last));
+}
+
 /// Whether the command running now, being its process's last, lowers `$SHLVL` as it replaces it.
 pub(super) fn lowers_level() -> bool {
-    current() && LOWERS.with(Cell::get)
+    current() && KIND.with(Cell::get).is_some() && ENCLOSURE.with(Cell::get) != Enclosure::Pipe
 }

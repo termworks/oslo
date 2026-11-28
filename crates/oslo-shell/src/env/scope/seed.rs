@@ -53,11 +53,7 @@ impl Environment {
         // `$SHLVL` counts how deep a shell is nested. Incremented from whatever we inherited, so
         // a shell inside a shell reads 2 — which is what a prompt showing nesting depth needs, and
         // what starship asks for by `--shlvl`.
-        let shlvl = std::env::var("SHLVL")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(0)
-            .saturating_add(1);
+        let shlvl = super::level::next_level(std::env::var("SHLVL").ok().as_deref(), 1);
         // Written through to the real environment as well as the table: a child gets its
         // environment from `execve`, so a value that lives only in oslo's map would leave every
         // nested shell reading the *grandparent's* depth.

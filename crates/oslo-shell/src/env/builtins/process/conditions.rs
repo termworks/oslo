@@ -65,7 +65,9 @@ pub fn run_debug_trap(env: &mut Environment) {
     };
     let action = text.to_string();
     IN_DEBUG.with(|d| d.set(true));
+    let last = crate::exec::simple::oneshot::suspend();
     let outcome = run_handler(env, &action, TRAPSIG_DEBUG);
+    crate::exec::simple::oneshot::resume(last);
     IN_DEBUG.with(|d| d.set(false));
     if let Err(e) = outcome {
         eprintln!("{}trap: DEBUG: {e}", origin_now());

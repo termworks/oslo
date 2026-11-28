@@ -113,9 +113,7 @@ pub(crate) fn run_external(
         crate::exec::compound::flush_stdout();
         // An implicit `exec`, which lowers the level as an explicit one does.
         if super::oneshot::lowers_level() {
-            let level = env.get_var("SHLVL").and_then(|v| v.parse::<i64>().ok());
-            let lowered = level.unwrap_or(0).saturating_sub(1).max(0);
-            env.set_var("SHLVL", &lowered.to_string(), true);
+            env.adjust_shell_level(-1);
         }
         exec_program(env, path, cmd_name, &c_path, &c_args, redirections);
     }

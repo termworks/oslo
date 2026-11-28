@@ -129,7 +129,18 @@ pub fn builtin_exec(env: &mut Environment, args: &[String]) -> Result<i32> {
     }
 
     let name = &inv.operands[0];
-    let Some(program) = resolve_program(name) else {
+    let program = resolve_program(name);
+    // A program found, or a path tried, takes this shell's place one level down, outside `( … )`.
+    let lowers = !inv.clear_env
+        && crate::exec::simple::oneshot::exec_lowers_level()
+        && (program.is_some() || name.contains('/'));
+    if lowers {
+        env.adjust_shell_level(-1);
+    }
+    let Some(program) = program else {
+        if lowers {
+            env.adjust_shell_level(1);
+        }
         eprintln!("{}{}", origin_now(), unavailable(name));
         // Something is there but cannot run — a directory, a file without the execute bit.
         let found = name.contains('/') && std::fs::metadata(name).is_ok();
@@ -171,7 +182,9 @@ pub fn builtin_exec(env: &mut Environment, args: &[String]) -> Result<i32> {
     ));
 
     // Only reachable when the exec failed; on success this process no longer exists.
-    //
+    if lowers {
+        env.adjust_shell_level(1);
+    }
     // Named the same way [`unavailable`] names it, so `exec /etc` and `exec /etc/passwd` do not
     // disagree about whether a path gets an `exec: ` in front of it. bash draws the line in the
     // same place: the builtin puts its name on a *word* it searched for and failed to find, and

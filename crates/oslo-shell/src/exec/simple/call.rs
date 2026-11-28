@@ -34,14 +34,15 @@ pub(super) fn call_function_command(
     words: &[String],
     redirections: &[Redirection],
 ) -> Result<i32> {
-    // A function body is never the program's last command, whatever called it.
+    // A function body is the program's last command only at the end of a substitution or job.
+    let tail = super::oneshot::function_tail(env, body);
     super::oneshot::end();
     // Checked before anything is set up, so a refused call has nothing to unwind: `f() { f; }`
     // would otherwise overflow the stack.
     env.enter_function_named(words.first().map_or("", String::as_str))?;
     let traps = env.enter_function_traps(crate::env::builtins::in_debug_trap());
     let loops = env.take_loops();
-    let res = call_function(env, body, words, redirections);
+    let res = call_function(env, body, words, redirections, tail);
     env.restore_loops(loops);
     env.leave_trap_frame(traps);
     env.exit_function();
@@ -69,6 +70,7 @@ fn call_function(
     body: &Command,
     words: &[String],
     redirections: &[Redirection],
+    tail: Option<super::oneshot::Tail>,
 ) -> Result<i32> {
     let mut guard = RedirectGuard::new();
     if let Err(e) = guard.apply(env, redirections) {
@@ -80,7 +82,11 @@ fn call_function(
     env.push_scope();
     // A DEBUG trap the body inherits (`-T`) fires once more as the body starts.
     crate::env::builtins::run_debug_trap(env);
+    if let Some(kind) = tail {
+        super::oneshot::tail_list_next(kind);
+    }
     let mut res = eval_command(env, body);
+    super::oneshot::take_tail_list();
     if matches!(res, Ok(_) | Err(ShellError::Return(_)))
         && let Err(e) = crate::env::builtins::run_return_trap(env)
     {

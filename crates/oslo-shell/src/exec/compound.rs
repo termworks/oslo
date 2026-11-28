@@ -437,10 +437,13 @@ pub(crate) fn eval_compound_command(
             body,
         } => eval_arithmetic_for(env, init.as_deref(), cond.as_deref(), step.as_deref(), body),
         CompoundCommand::Subshell(body) => {
-            use crate::exec::simple::oneshot::{Tail, mark_lone_subshell, tail_list_next};
+            use crate::exec::simple::oneshot::{
+                Enclosure, Tail, enclose, mark_lone_subshell, tail_list_next,
+            };
             // `( ( … ) )`: the inner one is this process already.
             if crate::exec::simple::oneshot::runs_in_place(body) {
                 env.enter_subshell();
+                enclose(Enclosure::Paren);
                 mark_lone_subshell(body);
                 tail_list_next(Tail::Subshell);
                 return eval_command_list(env, body);
@@ -459,6 +462,7 @@ pub(crate) fn eval_compound_command(
                         // aliases, positionals, `$?` and export flags all survive, and nothing
                         // private is force-exported. Only subshell-local state is refreshed.
                         env.enter_subshell();
+                        enclose(Enclosure::Paren);
                         crate::exec::job::enter_child(false);
                         mark_lone_subshell(body);
                         tail_list_next(Tail::Subshell);

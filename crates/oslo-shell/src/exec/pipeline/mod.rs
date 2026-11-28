@@ -37,6 +37,7 @@ use crate::env::Environment;
 use crate::exec::compound::{eval_compound_command, flush_stdout};
 use crate::exec::job;
 use crate::exec::redirect::RedirectGuard;
+use crate::exec::simple::oneshot::Tail;
 use crate::exec::simple::{eval_simple_command, report_redirect_failure};
 use interrupt::ListFrame;
 pub use interrupt::eval_command_unit;
@@ -120,6 +121,10 @@ fn run_list_items(env: &mut Environment, cmd_list: &CommandList, catches: Catche
             if reading {
                 crate::expand::prompt::count_command_read();
             }
+        }
+        if tail == Some(Tail::Program) && cmd_list.items.last().is_some_and(|l| l.line == item.line)
+        {
+            crate::exec::simple::oneshot::reach_last_line();
         }
         if index + 1 == cmd_list.items.len()
             && let Some(kind) = tail
