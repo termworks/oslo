@@ -10,10 +10,12 @@ use crate::env::options::ShellOption;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod declared;
 mod quote;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use declared::{flush as flush_deferred, trace_list};
 pub use quote::{assignment_text, list_assignment_text, quote_word};
 
 /// How many levels of `eval`, `source`, trap or command substitution enclose the command.
@@ -65,16 +67,26 @@ pub fn trace_command(env: &mut Environment, assignments: &[String], words: &[Str
         trace_line(env, &body);
         return;
     }
+    // A declaration builtin given `name=(…)` traces each list first; see `declared`.
+    let shapes = crate::env::builtins::declare::written_shapes();
+    let reduced = shapes.and_then(|shapes| declared::reduced(words, &shapes));
+    let words = reduced.as_deref().unwrap_or(words);
     let body: Vec<String> = words.iter().map(|word| quote_word(word)).collect();
-    trace_line(env, &body.join(" "));
+    let mut lines = vec![body.join(" ")];
     if matches!(name.as_str(), "export" | "readonly") {
         for operand in &words[1..] {
             if let Some((lhs, value)) = operand.split_once('=')
                 && crate::env::scope::is_valid_identifier(lhs)
             {
-                trace_line(env, &assignment_text(lhs, false, value));
+                lines.push(assignment_text(lhs, false, value));
             }
         }
+    }
+    if reduced.is_some() {
+        return declared::defer(lines);
+    }
+    for line in lines {
+        trace_line(env, &line);
     }
 }
 
@@ -124,20 +136,15 @@ fn prefix(env: &mut Environment) -> String {
     out
 }
 
-/// Expand `$PS4` as a prompt string, with the trace off so its own substitutions are not traced.
+/// Expand `$PS4` as a prompt string — its backslash escapes, then its expansions — with the
+/// trace off so its own substitutions are not traced.
 fn expand_ps4(env: &mut Environment, ps4: &str) -> String {
     if !ps4.contains(['$', '`', '\\']) {
         return ps4.to_string();
     }
-    let Ok(body) = crate::lexer::parse_heredoc_body(ps4) else {
-        return ps4.to_string();
-    };
-    let word = oslo_base::ast::Word {
-        parts: vec![oslo_base::ast::WordPart::DoubleQuoted(body.parts)],
-    };
     let status = env.last_status;
     env.set_option(ShellOption::XTrace, false);
-    let expanded = crate::expand::expand_word_to_string(env, &word);
+    let expanded = crate::expand::prompt::expand(env, ps4);
     env.set_option(ShellOption::XTrace, true);
     env.last_status = status;
     expanded.unwrap_or_else(|_| ps4.to_string())
