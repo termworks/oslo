@@ -90,6 +90,10 @@ pub(super) fn eval_regex_match(
     };
 
     let utf8 = crate::expand::locale::is_utf8(env);
+    let source = match utf8 {
+        true => unicode_classes(&source),
+        false => source,
+    };
     let re = compile(&byte_pattern(&source, utf8), utf8)?;
     let subject = oslo_base::lossless::decode(subject);
 
@@ -108,6 +112,50 @@ pub(super) fn eval_regex_match(
         .map(|i| oslo_base::lossless::from_bytes(caps.get(i).map_or(&[][..], |m| m.as_bytes())));
     env.set_array("BASH_REMATCH", ShellArray::from_values(groups));
     Ok(true)
+}
+
+/// The POSIX classes of a bracket expression as a UTF-8 locale's `regcomp` reads them, for every
+/// character: the regex crate's own `[[:alpha:]]` is ASCII alone. Built from the Unicode classes
+/// the crate is compiled with, `\w`, `\d` and `\s`.
+fn unicode_classes(source: &str) -> String {
+    const CLASSES: [(&str, &str); 3] = [
+        ("[:alpha:]", r"[\w--[\d_]]"),
+        ("[:alnum:]", r"[\w--_]"),
+        ("[:space:]", r"\s"),
+    ];
+    let mut out = String::with_capacity(source.len());
+    let (mut rest, mut bracket) = (source, false);
+    while let Some(ch) = rest.chars().next() {
+        let class = CLASSES.iter().find(|(class, _)| rest.starts_with(class));
+        if let (true, Some((class, with))) = (bracket, class) {
+            out.push_str(with);
+            rest = &rest[class.len()..];
+            continue;
+        }
+        let mut take = ch.len_utf8();
+        match ch {
+            // An escape and what it escapes travel together.
+            '\\' => take += rest[1..].chars().next().map_or(0, char::len_utf8),
+            // A class this does not widen is copied whole, so its `]` does not close anything.
+            '[' if bracket && rest.starts_with("[:") => {
+                take = rest.find(":]").map_or(take, |end| end + 2);
+            }
+            // A `]` or `^]` right after the opening bracket is a member, not its end.
+            '[' if !bracket => {
+                bracket = true;
+                let after = &rest[1..];
+                take += [&"^]"[..], "]", "^"]
+                    .iter()
+                    .find(|lead| after.starts_with(*lead))
+                    .map_or(0, |lead| lead.len());
+            }
+            ']' if bracket => bracket = false,
+            _ => {}
+        }
+        out.push_str(&rest[..take]);
+        rest = &rest[take..];
+    }
+    out
 }
 
 /// `source` for a regex over the subject's bytes.
