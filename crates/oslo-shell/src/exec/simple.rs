@@ -308,7 +308,12 @@ fn run_command_word(
     }
 
     if let Some(func_body) = env.shared_function(name) {
+        let declared = match is_declaration_builtin(name) {
+            true => declare::compounds_before_a_function(env, words),
+            false => None,
+        };
         crate::env::builtins::declare::forget_written();
+        let words = declared.as_deref().unwrap_or(words);
         return call::call_function_command(env, &func_body, words, redirections);
     }
 

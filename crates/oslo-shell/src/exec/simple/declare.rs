@@ -63,6 +63,65 @@ pub(super) fn written_as_compound(word: &Word) -> bool {
         .is_some_and(|(_, rest)| rest.starts_with('('))
 }
 
+/// A function named after a declaration builtin, given `name=(…)` operands.
+///
+/// bash performs each compound assignment while it expands the words, with an internal `declare`
+/// in the caller's scope, and passes the function the bare name. Answers the words the function
+/// receives, or `None` when nothing was written as a compound.
+pub(super) fn compounds_before_a_function(
+    env: &mut crate::env::Environment,
+    words: &[String],
+) -> Option<Vec<String>> {
+    let shapes = crate::env::builtins::declare::written_shapes()?;
+    if !shapes.iter().skip(1).any(|&compound| compound) {
+        return None;
+    }
+    let mut out = words.to_vec();
+    let mut global = matches!(words[0].as_str(), "export" | "readonly");
+    let (mut assoc, mut array) = (false, false);
+    for i in 1..out.len() {
+        let word = out[i].clone();
+        if !shapes.get(i).copied().unwrap_or(false) {
+            if word.len() > 1 && word.starts_with('-') && !word.contains('=') {
+                assoc |= word.contains('A');
+                array |= word.contains('a');
+                global |= word.contains('g');
+            }
+            continue;
+        }
+        let mut args = vec!["declare".to_string()];
+        let mut on = String::new();
+        if assoc {
+            on.push('A');
+        } else if array {
+            on.push('a');
+        }
+        if global {
+            on.push('g');
+        }
+        let mut off = String::new();
+        // The value-transforming attributes of the options that lead the operands.
+        for option in &out[1..i] {
+            let sign = option.chars().next();
+            if !matches!(sign, Some('-' | '+')) || option.len() == 1 || option == "--" {
+                break;
+            }
+            let into = if sign == Some('-') { &mut on } else { &mut off };
+            into.extend(option.chars().skip(1).filter(|c| "Iiluc".contains(*c)));
+        }
+        args.extend((!on.is_empty()).then(|| format!("-{on}")));
+        args.extend((!off.is_empty()).then(|| format!("+{off}")));
+        args.push(word.clone());
+        let mut written = vec![false; args.len()];
+        written[args.len() - 1] = true;
+        crate::env::builtins::declare::note_written(written);
+        let _ = super::execute_builtin(env, "declare", &args);
+        let name = word.split_once('=').map_or(word.as_str(), |(name, _)| name);
+        out[i] = name.strip_suffix('+').unwrap_or(name).to_string();
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
