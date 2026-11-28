@@ -1083,8 +1083,8 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rune"
-version = "0.1.6"
-source = "git+https://github.com/onix-os/rune?tag=v0.1.6#916a439e401e988ea2fcffcfda0164adcdf56e79"
+version = "0.1.7"
+source = "git+https://github.com/onix-os/rune?tag=v0.1.7#18690b7d4fce319ba3dea1796d0de7dfcc8f4306"
 
 [[package]]
 name = "rustc-hash"
