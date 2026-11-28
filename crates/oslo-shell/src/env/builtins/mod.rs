@@ -35,7 +35,7 @@ mod exec;
 mod getopts;
 mod glob;
 mod hash;
-mod help;
+pub(crate) mod help;
 mod io;
 mod jobs;
 mod keep;

@@ -96,6 +96,19 @@ pub fn builtin_help(env: &mut Environment, args: &[String]) -> Result<i32> {
     Ok(status)
 }
 
+/// `cd --help`: bash prints the builtin's help to stdout and fails it as a usage error, which is
+/// fatal for a special builtin in POSIX mode. The builtins that take no options are exempt.
+pub(crate) fn long_option(name: &str, args: &[String]) -> Option<Result<i32>> {
+    const NO_OPTIONS: [&str; 6] = [":", "[", "echo", "false", "test", "true"];
+    if args.get(1).map(String::as_str) != Some("--help") || NO_OPTIONS.contains(&name) {
+        return None;
+    }
+    let topic = all().find(|topic| topic.name == name)?;
+    println!("{}: {}", topic.name, topic.synopsis);
+    println!("    {}", topic.description);
+    Some(Err(oslo_base::error::ShellError::utility_error(name, 2)))
+}
+
 /// Print every topic `pattern` names: exact and glob matches, else prefix matches.
 fn show(env: &Environment, pattern: &str, flags: &Flags) -> bool {
     let glob = oslo_base::glob::ShellPattern::from_unquoted(pattern);
