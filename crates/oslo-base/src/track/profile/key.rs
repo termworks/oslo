@@ -69,6 +69,8 @@ pub fn read(name: &str) -> Result<Option<ProfileKey>, String> {
     let Some(bytes) = crate::private::read(&path, SMALL, Links::Follow)?.map(Zeroizing::new) else {
         return Ok(None);
     };
+    // A key made by an older oslo sits in directories others may list; tightening is best-effort.
+    let _ = prepare(&path);
     std::str::from_utf8(&bytes)
         .map_err(|_| "not text".to_string())
         .and_then(decode)

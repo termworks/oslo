@@ -317,6 +317,15 @@ fn the_directories_are_private_and_tightened() {
     std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     secret(store.path(), &["set", "other"], b"value");
     assert_eq!(mode("oslo/secrets"), 0o700);
+    // A key an older oslo left in loose directories: a read tightens them.
+    for path in ["state/oslo", "state/oslo/profiles"] {
+        let loose = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(store.path().join(path), loose).expect("chmod");
+    }
+    secret(store.path(), &["get", "token"], b"");
+    for path in ["state/oslo", "state/oslo/profiles"] {
+        assert_eq!(mode(path), 0o700, "{path} after a read");
+    }
 }
 
 /// `where` names the key this store really reads: the profile's, at its real path.
