@@ -116,11 +116,12 @@ fn the_key_is_not_where_the_secrets_are() {
 
     let secrets = store.path().join("oslo/secrets");
     assert!(secrets.join("token.sealed").exists(), "the store is here");
+    // The `.lock` a write holds is the only other thing there, and it is empty.
     let stray: Vec<_> = std::fs::read_dir(&secrets)
         .expect("a store")
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.ends_with(".sealed"))
+        .filter(|name| !name.ends_with(".sealed") && name != ".lock")
         .collect();
     assert!(
         stray.is_empty(),
@@ -228,4 +229,186 @@ fn a_name_cannot_reach_out_of_the_store() {
     let (_, err, status) = secret(store.path(), &["set", "../elsewhere"], b"value");
     assert_eq!(status, 1, "{err}");
     assert!(!store.path().join("oslo/elsewhere.age").exists());
+}
+
+/// `get`, `rm` and `run` on a name that is not there say so, never the raw error with the path.
+#[test]
+fn a_missing_name_reads_as_no_such_secret() {
+    let store = tempfile::tempdir().expect("tempdir");
+    for args in [
+        &["get", "nope"][..],
+        &["rm", "nope"],
+        &["run", "X=nope", "--", "true"],
+    ] {
+        let (_, err, status) = secret(store.path(), args, b"");
+        assert_eq!(status, 1, "{args:?}: {err}");
+        assert!(err.contains("nope: no such secret"), "{args:?}: {err}");
+        assert!(!err.contains("os error"), "{args:?}: {err}");
+    }
+}
+
+/// A name that would write to the terminal is refused on the way in, and a file somebody put in
+/// the store under one is never listed.
+#[test]
+#[cfg(feature = "crypt")]
+fn a_name_cannot_carry_an_escape_sequence() {
+    let store = tempfile::tempdir().expect("tempdir");
+    let (_, err, status) = secret(store.path(), &["set", "\x1b[2Jwiped"], b"value");
+    assert_eq!(status, 1, "{err}");
+    assert!(!err.contains('\x1b'), "the escape reached stderr: {err:?}");
+
+    secret(store.path(), &["set", "fine"], b"value");
+    let planted = store.path().join("oslo/secrets/\x1b]0;owned\x07.sealed");
+    std::fs::copy(store.path().join("oslo/secrets/fine.sealed"), planted).expect("copy");
+    let (out, _, _) = secret(store.path(), &["list"], b"");
+    assert_eq!(out, "fine\n");
+}
+
+/// The audit's h8, across processes: first `set`s racing to make the profile key agree on one key,
+/// and writers racing on one name leave it whole. Every value written is readable after.
+#[test]
+#[cfg(feature = "crypt")]
+fn racing_writers_leave_every_secret_readable() {
+    let store = tempfile::tempdir().expect("tempdir");
+    let racers: Vec<_> = (0..8)
+        .map(|n| (format!("first-{n}"), format!("value-{n}")))
+        .chain((0..8).map(|n| ("shared".to_string(), format!("shared-{n}"))))
+        .collect();
+    std::thread::scope(|scope| {
+        for (name, value) in &racers {
+            let home = store.path();
+            scope.spawn(move || {
+                let (_, err, status) = secret(home, &["set", name], value.as_bytes());
+                assert_eq!(status, 0, "{name}: {err}");
+            });
+        }
+    });
+    for n in 0..8 {
+        let (out, err, status) = secret(store.path(), &["get", &format!("first-{n}")], b"");
+        assert_eq!(status, 0, "first-{n} is unreadable: {err}");
+        assert_eq!(out, format!("value-{n}"));
+    }
+    let (out, err, status) = secret(store.path(), &["get", "shared"], b"");
+    assert_eq!(status, 0, "{err}");
+    assert!(out.starts_with("shared-"), "{out:?}");
+}
+
+/// The store, `$XDG_STATE_HOME/oslo` and `profiles/` are private, and a loose store oslo made is
+/// tightened on the next write.
+#[test]
+#[cfg(feature = "crypt")]
+fn the_directories_are_private_and_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+    let store = tempfile::tempdir().expect("tempdir");
+    let mode = |path: &str| {
+        std::fs::metadata(store.path().join(path))
+            .expect(path)
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    secret(store.path(), &["set", "token"], b"value");
+    for path in ["oslo/secrets", "state/oslo", "state/oslo/profiles"] {
+        assert_eq!(mode(path), 0o700, "{path}");
+    }
+    let secrets = store.path().join("oslo/secrets");
+    std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    secret(store.path(), &["set", "other"], b"value");
+    assert_eq!(mode("oslo/secrets"), 0o700);
+}
+
+/// `where` names the key this store really reads: the profile's, at its real path.
+#[test]
+#[cfg(feature = "crypt")]
+fn where_names_the_key_in_use() {
+    let store = tempfile::tempdir().expect("tempdir");
+    let (out, err, status) = secret(store.path(), &["where"], b"");
+    assert_eq!(status, 0, "{err}");
+    let key = store.path().join("state/oslo/profiles/default.key");
+    assert!(out.contains(&key.display().to_string()), "{out}");
+    assert!(!out.contains("state/oslo/key "), "{out}");
+}
+
+/// Run `oslo secret …` with a `secrets.conf` of the test's own and `$HOME` at the store.
+fn configured(home: &std::path::Path, conf: &str, args: &[&str]) -> (String, String, i32) {
+    let state = home.join("state/oslo");
+    std::fs::create_dir_all(&state).expect("mkdir");
+    std::fs::write(state.join("secrets.conf"), conf).expect("write");
+    let out = Command::new(oslo_bin())
+        .arg("secret")
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_DATA_HOME", home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env_remove("OSLO_SECRET_IDENTITY")
+        .env_remove("OSLO_SECRET_CONF")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn oslo");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+/// A relative `key file` or `directory` is refused; `~/` means `$HOME`, not a directory called `~`.
+#[test]
+#[cfg(feature = "crypt")]
+fn a_conf_path_is_absolute_or_from_home() {
+    let home = tempfile::tempdir().expect("tempdir");
+    for line in ["key file keys/work", "directory secrets/work"] {
+        let (_, err, status) = configured(home.path(), &format!("[work]\n{line}\n"), &["list"]);
+        assert_ne!(status, 0, "{line} was accepted");
+        assert!(err.contains("relative"), "{line}: {err}");
+    }
+    let conf = "[work]\nkey file ~/keys/work\ndirectory ~/kept\n";
+    let (out, err, status) = configured(home.path(), conf, &["--store", "work", "where"]);
+    assert_eq!(status, 0, "{err}");
+    let key = home.path().join("keys/work");
+    assert!(out.contains(&key.display().to_string()), "{out}");
+    assert!(
+        out.contains(&home.path().join("kept").display().to_string()),
+        "{out}"
+    );
+    assert!(!out.contains('~'), "{out}");
+}
+
+/// A key file inside a repository is called out, whichever source names it.
+#[test]
+#[cfg(feature = "crypt")]
+fn a_key_file_inside_a_repository_is_called_out() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(home.path().join("dots/.git")).expect("mkdir");
+    std::fs::write(home.path().join("dots/.git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+    let conf = format!(
+        "[work]\nkey file {}\n",
+        home.path().join("dots/k").display()
+    );
+    let (_, err, _) = configured(home.path(), &conf, &["--store", "work", "list"]);
+    assert!(err.contains("inside the git repository"), "{err}");
+}
+
+/// A `key command` that stalls is stopped at `key timeout`, and what it says on standard error
+/// reaches the terminal rather than being swallowed.
+#[test]
+#[cfg(feature = "crypt")]
+fn a_stalled_key_command_is_stopped_and_heard() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().expect("tempdir");
+    let stall = home.path().join("touch.sh");
+    // `exec`, so the program killed is the one holding standard error open.
+    std::fs::write(
+        &stall,
+        "#!/bin/sh\necho 'touch your key' >&2\nexec sleep 20\n",
+    )
+    .expect("write");
+    std::fs::set_permissions(&stall, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let conf = format!("[yk]\nkey command {}\nkey timeout 1s\n", stall.display());
+    let started = std::time::Instant::now();
+    let (_, err, status) = configured(home.path(), &conf, &["--store", "yk", "set", "x"]);
+    assert_ne!(status, 0);
+    assert!(err.contains("touch your key"), "{err}");
+    assert!(err.contains("no answer after 1s"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
 }

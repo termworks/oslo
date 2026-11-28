@@ -296,7 +296,7 @@ fn a_store_can_hand_its_crypto_to_another_program() {
     // A program that fails is an error, never an empty value quietly written down.
     secret(
         home.path(),
-        &["--store", "broken", "cipher", "encrypt", "--", "/bin/false"],
+        &["--store", "broken", "cipher", "encrypt", "--", "false"],
         b"",
     );
     let (_, err, status) = secret(home.path(), &["--store", "broken", "set", "x"], b"v");
