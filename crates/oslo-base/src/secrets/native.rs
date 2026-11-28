@@ -25,7 +25,7 @@
 //! covers the stanzas whole. A reader accepts a file only when its writer is in the list it is
 //! handed, or is the reader's own key.
 //!
-//! `OSLO2`, the format before this one, is still read by [`legacy`]: no writer, and no AAD.
+//! `OSLO2`, the format before this one, is still read by `native/legacy.rs`: no writer, and no AAD.
 //!
 //! # What is deliberately not here
 //!
@@ -51,7 +51,7 @@ const MAGIC: &[u8] = b"OSLO";
 /// The version this writes.
 const CURRENT: u8 = b'3';
 
-/// The version [`legacy`] reads.
+/// The version `legacy` reads.
 const OLD: u8 = b'2';
 
 /// The nonce XChaCha takes.
