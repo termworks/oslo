@@ -246,10 +246,7 @@ pub(super) fn run(
     // followed by structured stages: the external cannot hand over rows, so its *output* is what
     // the first structured stage is given. Everything up to the first tool runs exactly as it
     // always did, forked and on descriptors, and only its bytes cross into this half.
-    let first_tool = pipeline
-        .commands
-        .iter()
-        .position(|c| runnable_here(env, c));
+    let first_tool = pipeline.commands.iter().position(|c| runnable_here(env, c));
     let mut bytes: Option<String> = None;
     let start = match first_tool {
         Some(0) | None => {

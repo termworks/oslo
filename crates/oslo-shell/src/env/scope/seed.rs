@@ -153,7 +153,11 @@ impl Environment {
     pub(super) fn seed_working_directory(&mut self) {
         // `OLDPWD` survives only when it names a directory; otherwise it is declared, exported and
         // without a value, which is what `declare -x` shows of it in bash.
-        let previous = self.vars.get("OLDPWD").and_then(Var::text).map(str::to_string);
+        let previous = self
+            .vars
+            .get("OLDPWD")
+            .and_then(Var::text)
+            .map(str::to_string);
         if !previous.is_some_and(|dir| std::path::Path::new(&dir).is_dir()) {
             self.vars
                 .insert("OLDPWD".to_string(), Var::unset(Attrs::EXPORT));

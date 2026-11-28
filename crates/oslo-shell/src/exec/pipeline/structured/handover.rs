@@ -69,7 +69,11 @@ pub(super) fn runnable_here(env: &Environment, command: &Command) -> bool {
 /// Asked before anything runs, because the answer decides whether the tool half's own output has to
 /// be captured. `None` when every stage from `start` is a tool, or when the very first one is not —
 /// nothing has run then, and the byte path can still have the whole pipeline as it always did.
-pub(super) fn byte_suffix_at(env: &Environment, pipeline: &Pipeline, start: usize) -> Option<usize> {
+pub(super) fn byte_suffix_at(
+    env: &Environment,
+    pipeline: &Pipeline,
+    start: usize,
+) -> Option<usize> {
     let at = pipeline
         .commands
         .iter()
