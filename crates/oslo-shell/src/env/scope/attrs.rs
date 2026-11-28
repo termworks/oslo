@@ -17,6 +17,9 @@ impl Environment {
 
     /// Turn attributes on and off for the binding `name` itself, never following a nameref.
     pub fn modify_binding_attrs(&mut self, name: &str, on: Attrs, off: Attrs) {
+        if on.has(Attrs::EXPORT) || on.has(Attrs::READONLY) {
+            self.adopt_temp_binding(name);
+        }
         let was_exported = self.chain_exports(name);
         let var = self
             .vars

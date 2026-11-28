@@ -53,6 +53,28 @@ impl Environment {
         self.scope_stack.push(ScopeFrame::new(ScopeKind::Temp));
     }
 
+    /// End a prefix assignment's scope keeping what it bound, as a special builtin in POSIX mode
+    /// does.
+    pub fn keep_temp_scope(&mut self) {
+        if self
+            .scope_stack
+            .last()
+            .is_some_and(|f| f.kind == ScopeKind::Temp)
+        {
+            self.scope_stack.pop();
+        }
+    }
+
+    /// Keep `name`'s binding past the prefix assignment's scope that made it: `x=1 export x`
+    /// leaves `x` set, as bash does when an attribute is given to such a variable.
+    pub(super) fn adopt_temp_binding(&mut self, name: &str) {
+        if let Some(at) = self.owner_frame(name)
+            && self.scope_stack[at].kind == ScopeKind::Temp
+        {
+            self.scope_stack[at].saved.remove(name);
+        }
+    }
+
     pub fn pop_scope(&mut self) {
         let Some(frame) = self.scope_stack.pop() else {
             return;
@@ -131,7 +153,13 @@ impl Environment {
         let Some(innermost) = self.scope_stack.len().checked_sub(1) else {
             return true;
         };
-        if self.scope_stack[innermost].saved.contains_key(name) {
+        // `v=1 local v=2`: the local belongs to the function, not to the prefix's frame above it.
+        let target = self
+            .scope_stack
+            .iter()
+            .rposition(|f| f.kind == ScopeKind::Function)
+            .unwrap_or(innermost);
+        if self.scope_stack[target].saved.contains_key(name) {
             return true;
         }
         let shadowed = self.vars.get(name);
@@ -154,7 +182,17 @@ impl Environment {
             Some(outer) if outer.exported() => Var::unset(Attrs::EXPORT),
             _ => Var::unset(Attrs::empty()),
         };
-        self.save_for_restore(name);
+        // What the prefix frames above shadowed is what the function's frame restores.
+        let mut below = None;
+        for frame in &mut self.scope_stack[target + 1..] {
+            if let Some(saved) = frame.saved.remove(name) {
+                below.get_or_insert(saved);
+            }
+        }
+        let original = below.unwrap_or_else(|| self.vars.get(name).cloned());
+        self.scope_stack[target]
+            .saved
+            .insert(name.to_string(), original);
         self.vars.insert(name.to_string(), local);
         true
     }

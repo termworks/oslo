@@ -19,6 +19,8 @@ mod external;
 /// bash's unforked last command of a `-c` program.
 pub(crate) mod oneshot;
 mod posix;
+/// The assignments in front of a command word.
+mod prefix;
 pub(crate) mod trace;
 
 pub use autocd::set_autocd;
@@ -141,44 +143,10 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
     let cmd_name = words[0].trim()[backslashes..].to_string();
     words[0] = cmd_name.clone();
 
-    let is_declaration = is_declaration_builtin(&cmd_name);
-
-    // A prefix assignment on a *declaration* builtin is really that builtin's argument:
-    // `export FOO=bar` must reach `export`, not be applied behind its back.
-    let mut prefix_assignments = Vec::new();
-    for assign in &simple.assignments {
-        // A prefix assignment lasts exactly as long as the command, and oslo undoes it by
-        // restoring a *scalar* from the scope frame. `a=(1 2) cmd` and `a[1]=x cmd` have no such
-        // undo, so they are refused rather than left behind after the command finishes.
-        let (AssignmentTarget::Name(name), AssignmentValue::Scalar(value)) =
-            (&assign.target, &assign.value)
-        else {
-            return Err(ShellError::SyntaxError(format!(
-                "{}: an array assignment cannot be a command prefix",
-                assign.name()
-            )));
-        };
-        let val_str = expand_word_to_string(env, value)?;
-        if is_declaration {
-            words.push(format!("{}={}", name, val_str));
-        } else {
-            prefix_assignments.push((name.clone(), val_str));
-        }
-    }
-    prefix_assignments.extend(keyword_assignments);
-
-    let traced: Vec<String> = prefix_assignments
-        .iter()
-        .map(|(name, value)| trace::assignment_text(name, false, value))
-        .collect();
-    trace::trace_command(env, &traced, &words);
-
-    // `FOO=bar cmd` exports FOO for the duration of `cmd` only.
-    //
-    // The scope is pushed only when there is something to put in it. Pushing unconditionally
-    // would give `local` a throwaway frame to write into, so `local V=x` would be undone the
-    // moment the command finished.
-    if prefix_assignments.is_empty() {
+    // `FOO=bar cmd` exports FOO for the duration of `cmd` only. The scope is pushed only when there
+    // is something to put in it, or `local V=x` would write into a throwaway frame.
+    if simple.assignments.is_empty() && keyword_assignments.is_empty() {
+        trace::trace_command(env, &[], &words);
         let result = run_command_word(env, &cmd_name, &words, &simple.redirections, escape);
         // A `[[ … ]]` leaves `$_` as it was.
         if !testing {
@@ -186,28 +154,12 @@ fn eval_simple_command_inner(env: &mut Environment, simple: &SimpleCommand) -> R
         }
         return result;
     }
-
-    // **A here-document is expanded without the prefix assignments in scope**, which is what bash
-    // and dash both do:
-    //
-    // ```text
-    // x=1 cat <<EOF     bash, dash: []
-    // [$x]              oslo, before this: [1]
-    // EOF
-    // ```
-    //
-    // The body used to be expanded down in `redirect::apply`, which runs after the scope below is
-    // pushed — so the document saw a variable that belongs to the command's environment and not to
-    // the shell's. Expanded here instead, and carried down as a literal: the parser already uses
-    // that shape for a quoted delimiter, so nothing expands it a second time.
-    let redirections = heredocs_expanded(env, &simple.redirections)?;
-
-    env.push_temp_scope();
-    for (name, value) in &prefix_assignments {
-        env.set_local_exported_var(name, value);
-    }
-    let result = run_command_word(env, &cmd_name, &words, &redirections, escape);
-    env.pop_scope();
+    let command = prefix::Command {
+        name: &cmd_name,
+        words: &words,
+        escape,
+    };
+    let result = prefix::run(env, simple, keyword_assignments, command);
     remember_last_argument(env, &words);
     result
 }
