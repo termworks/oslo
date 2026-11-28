@@ -84,6 +84,8 @@ pub(super) fn run(env: &mut Environment, pipeline: &Pipeline) -> Result<i32> {
         if last {
             break;
         }
+        // A stage before the last reports no death, as in a concurrent pipeline.
+        super::forget_death();
         // Both halves of the stage, pushed together so `{0}` and `{%0}` name the same one. The
         // words are taken from the *rewritten* command, so a stage that itself read a coordinate
         // reports what it actually ran rather than what was typed.
@@ -182,6 +184,8 @@ fn run_in_child(
                 let _ = close(reader.into_raw_fd());
                 let _ = dup2(writer.as_raw_fd(), 1);
                 let _ = close(writer.into_raw_fd());
+                // A captured stage is not the last, and reports no death, as bash's do not.
+                super::quiet_deaths();
             }
             env.enter_subshell();
             let status = status_of(eval_command(env, command));

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.1] - 2026-11-28
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Quiet an upstream stage's death
+
+### <!-- 6 -->🧪 Testing
+
+- Keep the new job and level reports
+
 ## [0.8.0] - 2026-11-28
 
 ### <!-- 0 -->⛰️  Features
