@@ -209,8 +209,8 @@ fn links_and_fifos_in_a_store_are_passed_over() {
     assert!(store.get("ff").expect_err("opened").contains("FIFO"));
 }
 
-/// The audit's h9: a write never lands through a link planted in the store. A link at the old
-/// scratch name is ignored; a link at the secret's own name is refused, and named.
+/// The audit's h9: a write never lands through a link planted in the store. A link at
+/// `NAME.new` is ignored; a link at the secret's own name is refused, and named.
 #[test]
 fn a_planted_link_does_not_carry_a_write_elsewhere() {
     let dir = tempfile::tempdir().expect("dir");
