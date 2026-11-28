@@ -19,7 +19,7 @@ use crate::env::scope::Environment;
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// What a shell says when asked to move to nowhere. `cd ""` is a usage mistake rather than a
 /// missing directory, so it does not get the `{operand}: {errno}` shape the others do.
@@ -43,7 +43,13 @@ pub enum PathMode {
 /// `pwd` lie about a directory this shell never visited, so it is validated against `getcwd()`
 /// before it is trusted, exactly as bash validates it at startup.
 pub fn logical_pwd(env: &Environment) -> String {
-    let physical = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    // A directory removed from under the shell has no `getcwd()`, and bash keeps `$PWD` then.
+    let Ok(physical) = env::current_dir() else {
+        return match env.get_var("PWD") {
+            Some(pwd) if Path::new(pwd).is_absolute() => pwd.to_string(),
+            _ => "/".to_string(),
+        };
+    };
     if let Some(pwd) = env.get_var("PWD")
         && Path::new(pwd).is_absolute()
         && fs::canonicalize(oslo_base::lossless::to_os(pwd)).is_ok_and(|real| real == physical)
@@ -97,7 +103,7 @@ fn lexical_canon(path: &str) -> String {
 
 /// Try to move to `operand`, interpreted relative to `base`. Nothing is printed and no shell
 /// variable is touched; only the process's working directory changes.
-fn attempt(base: &str, operand: &str, mode: PathMode) -> io::Result<Landing> {
+fn attempt(base: &str, operand: &str, mode: PathMode, posix: bool) -> io::Result<Landing> {
     let absolute = absolute_against(base, operand);
     let logical = lexical_canon(&absolute);
 
@@ -123,12 +129,27 @@ fn attempt(base: &str, operand: &str, mode: PathMode) -> io::Result<Landing> {
                     display: logical,
                 })
             } else {
-                env::set_current_dir(oslo_base::lossless::to_os(&absolute))?;
+                // The operand as written is bash's second try, which still reaches the `.` and
+                // `..` of a directory removed from under the shell.
+                if let Err(e) = env::set_current_dir(oslo_base::lossless::to_os(&absolute)) {
+                    if posix {
+                        return Err(e);
+                    }
+                    env::set_current_dir(oslo_base::lossless::to_os(operand))?;
+                }
                 // A path that stat() refused but chdir() accepted is too strange to describe
                 // logically; fall back to what the kernel says.
-                let pwd = env::current_dir()
-                    .map(|here| oslo_base::lossless::encode(here.as_os_str()))
-                    .unwrap_or_else(|_| logical.clone());
+                let pwd = match env::current_dir() {
+                    Ok(here) => oslo_base::lossless::encode(here.as_os_str()),
+                    Err(e) => {
+                        eprintln!(
+                            "cd: error retrieving current directory: getcwd: cannot access \
+                             parent directories: {}",
+                            oslo_base::error::reason(&e)
+                        );
+                        absolute
+                    }
+                };
                 Ok(Landing {
                     pwd,
                     display: logical,
@@ -188,7 +209,7 @@ pub fn attempt_directory(
             } else {
                 format!("{}/{}", entry, operand)
             };
-            if let Ok(found) = attempt(&origin, &candidate, mode) {
+            if let Ok(found) = attempt(&origin, &candidate, mode, env.posix()) {
                 // POSIX: when a *non-empty* CDPATH element supplies the directory, the new
                 // directory is written to stdout, so a script can tell it did not land where
                 // the bare operand would have taken it. An empty element is the current
@@ -204,7 +225,7 @@ pub fn attempt_directory(
 
     let landing = match landing {
         Some(found) => found,
-        None => attempt(&origin, operand, mode)?,
+        None => attempt(&origin, operand, mode, env.posix())?,
     };
 
     // **`pre-change-dir` may refuse the move**, and this is the only place it could: every `cd`,
