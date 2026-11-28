@@ -96,11 +96,8 @@ pub fn open(
         }
         Ok(ForkResult::Parent { child }) => {
             let _ = close(theirs);
-            // **Moved out of the script's own range first.** `pipe()` hands back the lowest free
-            // numbers, which is 3 in a plain shell — and 3..9 belongs to the script: `cat <(echo
-            // hi) 3>/dev/null` had the command's own redirection land on top of the substitution
-            // it was reading, so it silently read nothing. bash allocates from 63 downward for
-            // this reason; here the floor the rest of the shell already respects is enough.
+            // **Moved out of the script's own range first**, to the highest free number below 64
+            // as bash does, so a script sees the same `/dev/fd/63`, then 62.
             let ours = above_the_scripts_range(ours);
             // `/dev/fd/N` is opened by the *program*, which is a different process image after
             // `exec` — so the descriptor has to survive it. Rust opens everything `O_CLOEXEC`,
@@ -121,17 +118,21 @@ pub fn open(
     }
 }
 
-/// Move a descriptor above the range a script is entitled to redirect, if it is not already there.
+/// Move a descriptor to the highest free number from 63 down, bash's `move_to_high_fd`.
 ///
-/// The original is closed on success. On failure the original is kept: a substitution on a low
-/// number still works for every command that does not redirect that number, which is a great deal
-/// better than refusing to run.
+/// The original is closed on success. With nothing free above 3 the original is kept: a
+/// substitution on a low number still works for every command that does not redirect it.
 fn above_the_scripts_range(fd: RawFd) -> RawFd {
-    use crate::exec::redirect::SAVE_FD_FLOOR;
-    if fd >= SAVE_FD_FLOOR {
+    let Some(free) = (4..64)
+        .rev()
+        .find(|&n| fcntl(n, FcntlArg::F_GETFD).is_err())
+    else {
+        return fd;
+    };
+    if free == fd {
         return fd;
     }
-    match fcntl(fd, FcntlArg::F_DUPFD(SAVE_FD_FLOOR)) {
+    match nix::unistd::dup2(fd, free) {
         Ok(moved) => {
             let _ = close(fd);
             moved
