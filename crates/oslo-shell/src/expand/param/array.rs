@@ -59,6 +59,11 @@ pub fn expand_array_ref(
 fn element_key(env: &mut Environment, name: &str, word: &Word) -> Result<Option<Key>> {
     // An indexed array's subscript is arithmetic text, whose single quotes are not quotes.
     if !env.is_assoc(name) {
+        if word.is_unwritten() {
+            return Err(ShellError::ExpansionError(format!(
+                "{name}: bad array subscript"
+            )));
+        }
         let text = crate::expand::arithmetic::expand_expression_word(env, word)?;
         return indexed_key(env, name, &text);
     }
@@ -72,7 +77,7 @@ fn element_key(env: &mut Environment, name: &str, word: &Word) -> Result<Option<
 
 /// The index an indexed array's subscript text evaluates to, a negative one counted from the end.
 fn indexed_key(env: &mut Environment, name: &str, text: &str) -> Result<Option<Key>> {
-    let index = eval_index(name, text, env)?;
+    let index = eval_index(text, env)?;
     if index < 0 {
         let resolved = match env.get_array(name) {
             Some(array) => array.resolve(index),
@@ -193,15 +198,12 @@ pub(super) fn seam_list(
 }
 
 /// Evaluate a subscript as arithmetic, which is what bash does for an indexed array: `${a[i+1]}`
-/// reads `i`, and `${a[x]}` with `x` unset reads element 0.
-fn eval_index(name: &str, text: &str, env: &mut Environment) -> Result<i64> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err(ShellError::ExpansionError(format!(
-            "{name}: bad array subscript"
-        )));
+/// reads `i`, and `${a[x]}` with `x` unset, like a blank subscript, reads element 0.
+fn eval_index(text: &str, env: &mut Environment) -> Result<i64> {
+    match text.trim() {
+        "" => Ok(0),
+        text => crate::expand::arithmetic::eval_expanded_subscript(env, text),
     }
-    crate::expand::arithmetic::eval_subscript(env, text)
 }
 
 /// `set -u` applies to an element that was never assigned, exactly as it does to a plain variable.

@@ -99,6 +99,16 @@ pub(crate) fn eval_subscript(env: &mut Environment, expr: &str) -> Result<i64> {
     eval_arithmetic(env, expr).map_err(|e| in_subscript(env, e))
 }
 
+/// [`eval_subscript`] for a subscript its word has already expanded, read as it stands: the `$1`
+/// that `a[\$1]` leaves is an operand error, as it is in bash.
+pub(crate) fn eval_expanded_subscript(env: &mut Environment, expr: &str) -> Result<i64> {
+    let evaluated = Evaluation::enter().and_then(|_evaluation| {
+        let ast = parser::parse(&tokenize(expr)?)?;
+        eval(env, &ast, 0)
+    });
+    evaluated.map_err(|e| in_subscript(env, e))
+}
+
 /// Expand, scan, parse and evaluate one piece of expression text.
 ///
 /// `depth` counts how many variable values deep this text was found; it is what stops a cycle of

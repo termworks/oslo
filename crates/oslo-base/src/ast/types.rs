@@ -159,6 +159,13 @@ impl Word {
             parts: vec![WordPart::Literal(s.to_string())],
         }
     }
+
+    /// Whether the word was written as nothing at all: no parts, or only empty literals.
+    pub fn is_unwritten(&self) -> bool {
+        self.parts
+            .iter()
+            .all(|part| matches!(part, WordPart::Literal(text) if text.is_empty()))
+    }
 }
 
 /// What an assignment writes to.

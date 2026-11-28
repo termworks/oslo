@@ -87,8 +87,7 @@ fn assigned(env: &mut Environment, assign: &Assignment) -> Result<Outcome> {
 
         (AssignmentTarget::Element { name, index }, AssignmentValue::Scalar(word)) => {
             let lhs = format!("{name}[{}]", format_word(index));
-            let text = expand_word_to_string(env, index)?;
-            let key = arrays::key_for(env, name, &text);
+            let key = arrays::assigned_key(env, name, index);
             let key = abandoning(env, key)?;
             let value = expand_word_to_string(env, word)?;
             trace_assignment(env, &assignment_text(&lhs, assign.append, &value));

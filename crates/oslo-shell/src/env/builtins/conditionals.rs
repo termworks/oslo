@@ -35,18 +35,19 @@ pub fn builtin_test(env: &mut Environment, args: &[String]) -> Result<i32> {
         }
     }
 
-    let expr = resolve_set_tests(env, expr)?;
+    let expr = resolve_set_tests(env, expr, true)?;
     report(name, grammar::evaluate(env, &expr))
 }
 
-/// The operands of `-v` with an element's subscript expanded and evaluated, as bash evaluates
-/// `-v 'a[i+1]'`, so the tests themselves never need to evaluate anything.
-fn resolve_set_tests(env: &mut Environment, expr: &[String]) -> Result<Vec<String>> {
+/// The operands of `-v` with an element's subscript evaluated, as bash evaluates `-v 'a[i+1]'`,
+/// so the tests themselves never need to evaluate anything. `test` expands the subscript first;
+/// `[[ ]]` has expanded its operand already and reads the subscript as it stands.
+fn resolve_set_tests(env: &mut Environment, expr: &[String], expand: bool) -> Result<Vec<String>> {
     let mut resolved = expr.to_vec();
     for at in 1..resolved.len() {
         if resolved[at - 1] == "-v"
             && let Some(element) =
-                crate::env::builtins::arrays::resolve_element(env, &resolved[at])?
+                crate::env::builtins::arrays::resolve_element(env, &resolved[at], expand)?
         {
             resolved[at] = element;
         }
@@ -77,7 +78,7 @@ pub fn builtin_extended_test(env: &mut Environment, args: &[String]) -> Result<i
     }
 
     let resolved = match expr.len() {
-        2 => resolve_set_tests(env, expr)?,
+        2 => resolve_set_tests(env, expr, false)?,
         _ => Vec::new(),
     };
     let outcome: TestResult<bool> = match expr.len() {

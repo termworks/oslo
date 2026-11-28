@@ -62,17 +62,56 @@ pub fn key_for(env: &mut Environment, name: &str, text: &str) -> Result<Key> {
     Ok(Key::Index(index_of(env, text)?))
 }
 
-/// `-v name[subscript]` with the subscript expanded and evaluated as an element write would be,
-/// written back as `name[key]`; `None` when the operand names no array element to resolve.
-pub(crate) fn resolve_element(env: &mut Environment, operand: &str) -> Result<Option<String>> {
+/// The key an assignment's `name[subscript]` names. An indexed array's subscript is expanded once
+/// as arithmetic text and read as it stands, as `${name[subscript]}` reads it.
+pub fn assigned_key(
+    env: &mut Environment,
+    name: &str,
+    index: &oslo_base::ast::Word,
+) -> Result<Key> {
+    if env.is_assoc(name) {
+        let text = crate::expand::expand_word_to_string(env, index)?;
+        return key_for(env, name, &text);
+    }
+    if index.is_unwritten() {
+        return Err(bad_subscript(&format!("{name}[]")));
+    }
+    let text = crate::expand::arithmetic::expand_expression_word(env, index)?;
+    match text.trim() {
+        "" => Ok(Key::Index(0)),
+        trimmed => Ok(Key::Index(
+            crate::expand::arithmetic::eval_expanded_subscript(env, trimmed)?,
+        )),
+    }
+}
+
+/// `-v name[subscript]` with the subscript evaluated as an element write would be, expanded first
+/// when `expand`, written back as `name[key]`; `None` when the operand names no array element.
+pub(crate) fn resolve_element(
+    env: &mut Environment,
+    operand: &str,
+    expand: bool,
+) -> Result<Option<String>> {
     let Some(Target::Element { name, subscript }) = parse_target(operand) else {
         return Ok(None);
     };
     if matches!(subscript, "@" | "*") {
         return Ok(None);
     }
-    let text = expand_subscript_text(env, subscript)?;
-    Ok(Some(match key_for(env, name, &text)? {
+    let key = match expand {
+        true => {
+            let text = expand_subscript_text(env, subscript)?;
+            key_for(env, name, &text)?
+        }
+        false if env.is_assoc(name) => key_for(env, name, subscript)?,
+        false => match subscript.trim() {
+            "" => Key::Index(0),
+            text => Key::Index(crate::expand::arithmetic::eval_expanded_subscript(
+                env, text,
+            )?),
+        },
+    };
+    Ok(Some(match key {
         Key::Index(index) => format!("{name}[{index}]"),
         Key::Name(key) => format!("{name}[{key}]"),
     }))

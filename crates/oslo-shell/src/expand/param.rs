@@ -25,7 +25,7 @@ mod whole;
 use crate::env::Environment;
 use crate::env::builtins::arrays::Key;
 use crate::expand::word::{Field, Origin, Run};
-use oslo_base::ast::ParamExpansion;
+use oslo_base::ast::{ParamExpansion, Subscript};
 use oslo_base::error::{Result, ShellError};
 
 pub use array::expand_array_ref;
@@ -153,6 +153,21 @@ pub fn expand_param(
         && let Some(fields) = indirect::fields(env, name, inner, in_quotes)?
     {
         return Ok(fields);
+    }
+
+    // A reference to an element reads it as `${a[sub]}` would, its subscript expanded.
+    if env.nameref_target(name).is_some()
+        && let Some(crate::env::scope::nameref::Target::Element {
+            name: array,
+            subscript,
+        }) = env.deref(name)
+    {
+        let index = match subscript.as_str() {
+            "@" => Subscript::All,
+            "*" => Subscript::Joined,
+            text => Subscript::Index(crate::lexer::parse_single_word(text)?),
+        };
+        return array::expand_array_ref(env, &array, &index, expansion_type, in_quotes);
     }
 
     if let Some(fields) = payload_fields(env, name, expansion_type, in_quotes)? {
