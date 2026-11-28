@@ -39,12 +39,14 @@ fn corpus_scripts() -> Vec<PathBuf> {
 }
 
 /// How many structured edges a run reported, or `None` if it did not report at all.
+///
+/// The report may follow a prompt left without its newline, such as `select`'s `#? `.
 fn structured_edges(stderr: &str) -> Option<u64> {
     stderr
         .lines()
         .rev()
-        .find_map(|line| line.strip_prefix("oslo-audit: structured-edges="))
-        .and_then(|n| n.trim().parse().ok())
+        .find_map(|line| line.rsplit_once("oslo-audit: structured-edges="))
+        .and_then(|(_, n)| n.trim().parse().ok())
 }
 
 /// Whether a script hands its process over to another program, leaving no oslo to report.

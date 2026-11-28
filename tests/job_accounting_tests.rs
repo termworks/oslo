@@ -96,13 +96,12 @@ fn a_pipeline_reports_its_last_stage_whatever_the_reap_order() {
     assert_eq!(foreground.out(), "got=9", "{}", foreground.err());
 }
 
-/// A status is reported once, and the second `wait` says there is nothing left — the POSIX rule the
-/// differential corpus is held to. The repairs above must not turn it into "remembered for ever".
+/// A second `wait` for the same pid answers the same status, as bash 5.3's does.
 #[test]
-fn a_status_is_consumed_at_most_once() {
+fn a_second_wait_answers_the_same_status() {
     let r = run(r#"sh -c "exit 7" & p=$!
            sleep 0.3
            wait $p; echo "first=$?"
            wait $p 2>/dev/null; echo "second=$?""#);
-    assert_eq!(r.lines(), vec!["first=7", "second=127"], "{}", r.err());
+    assert_eq!(r.lines(), vec!["first=7", "second=7"], "{}", r.err());
 }

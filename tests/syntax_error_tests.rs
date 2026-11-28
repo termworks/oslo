@@ -22,10 +22,7 @@ use common::{run, run_in};
 fn a_heredoc_body_is_never_executed_when_the_script_fails_to_parse() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("heredoc_executed_marker");
-    let script = format!(
-        "coproc echo x\ncat <<EOF\ntouch {}\nEOF\n",
-        marker.to_string_lossy()
-    );
+    let script = format!("fi\ncat <<EOF\ntouch {}\nEOF\n", marker.to_string_lossy());
 
     let r = run_in(dir.path(), &script);
 
@@ -44,10 +41,7 @@ fn a_heredoc_body_is_never_executed_when_the_script_fails_to_parse() {
 fn a_heredoc_body_is_not_executed_when_a_later_line_fails_to_parse() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("later_marker");
-    let script = format!(
-        "cat <<EOF\ntouch {}\nEOF\ncoproc foo {{ true; }}\n",
-        marker.to_string_lossy()
-    );
+    let script = format!("cat <<EOF\ntouch {}\nEOF\nfi\n", marker.to_string_lossy());
 
     let r = run_in(dir.path(), &script);
 
@@ -96,34 +90,22 @@ fn a_syntax_error_names_the_unclosed_construct() {
     );
 }
 
-/// Constructs the adapter cannot represent must name themselves. Before the fallback was deleted
-/// they silently rerouted the program; a bare "syntax error" would now be almost as unhelpful.
+/// `coproc` and `select` are bash's constructs and run as they do there.
 #[test]
-fn unsupported_constructs_are_named_in_the_diagnostic() {
-    for (script, needle) in [
-        ("coproc foo { true; }", "coproc"),
-        ("coproc echo hi", "coproc"),
-        // R8.6: `select` is absent from brush's grammar, so without the source-text check this
-        // would surface as "syntax error at line 1 col 8" — a diagnostic that reads like a typo.
-        ("select x in a b; do echo $x; done", "select"),
-    ] {
-        let r = run(script);
-        assert_ne!(r.status, 0, "{script:?} must not succeed");
-        assert!(
-            r.stderr.contains(needle) && r.stderr.contains("not supported"),
-            "{script:?}: stderr should name the construct, got {:?}",
-            r.stderr
-        );
-    }
+fn coproc_and_select_run() {
+    let r = run("coproc foo { echo hi; }; read -r line <&\"${foo[0]}\"; echo \"$line\"");
+    assert_eq!(r.out(), "hi", "stderr: {}", r.stderr);
+    let r = run("select x in a b; do echo $x; done </dev/null; echo \"after=$?\"");
+    assert!(r.out().ends_with("after=1"), "{:?}", r.out());
 }
 
-/// A rejected construct rejects the whole program, so nothing after it runs either.
+/// A syntax error stops the program there, so nothing after it runs.
 #[test]
-fn a_rejected_construct_stops_the_whole_script() {
+fn a_syntax_error_stops_the_rest_of_the_script() {
     for script in [
-        "select x in a b; do echo $x; done\necho NOT_REACHED",
-        "coproc foo { true; }\necho NOT_REACHED",
-        "coproc echo hi\necho NOT_REACHED",
+        "fi\necho NOT_REACHED",
+        "echo a; )\necho NOT_REACHED",
+        "if true; then\necho NOT_REACHED",
     ] {
         let r = run(script);
         assert_ne!(r.status, 0, "{script:?}");

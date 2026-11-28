@@ -207,9 +207,9 @@ fn a_syntax_error_says_so_once() {
 
     // And a message that does *not* open with the category still gets one.
     assert!(
-        with_dash_c("coproc x { true; }").starts_with("oslo: syntax error: "),
+        with_dash_c("fi").starts_with("oslo: syntax error: "),
         "{}",
-        with_dash_c("coproc x { true; }")
+        with_dash_c("fi")
     );
 }
 /// **A script that does not parse keeps its line numbers.**

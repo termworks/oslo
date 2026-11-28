@@ -401,7 +401,9 @@ fn a_capture_interrupted_by_a_signal_is_not_truncated() {
         { printf 'first\n'; sleep 0.4; printf 'last\n'; } | echo "[{*:0}]"
         wait
     "#;
+    // Interactive, because coordinates are prompt syntax.
     let out = std::process::Command::new(common::oslo_bin())
+        .arg("-i")
         .arg("-c")
         .arg(script)
         .output()
