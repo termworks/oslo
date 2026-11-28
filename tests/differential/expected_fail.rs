@@ -82,6 +82,7 @@ pub const EXPECTED_FAIL: &[(&str, &str, &str)] = &[
     // inside a heredoc body, `printf`'s missing `%*` width, and the errexit exemption being lost
     // when a short-circuited AND-OR list was the last command of a compound.
     ("loop_break_in_condition.sh", "UNFILED", "a function named parse is dispatched to the structured parse tool when it receives several arguments"),
+    ("bytes_script_file.sh", "UNFILED", "src/main.rs reads the script, stdin and argv lossily, so a byte that is not UTF-8 becomes U+FFFD"),
 ];
 
 /// Corpus file and why bash cannot arbitrate it. Empty is the healthy state.
