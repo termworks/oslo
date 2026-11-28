@@ -18,7 +18,7 @@ description = "The Lua VM oslo runs on: luna."
 # This was a commit hash while luna had no releases. The exact commit is recorded in `Cargo.lock`
 # either way — so what the tag buys is a name a human can read in a diff. The flake pins the same
 # tag's hash in `outputHashes`, and moves with it.
-luna = { git = "https://github.com/onix-os/luna", tag = "v0.6.1" }
+luna = { git = "https://github.com/onix-os/luna", tag = "v0.7.0" }
 # The value type the shell speaks. The whole point of this crate is converting between the two.
 oslo-base = { path = "../oslo-base" }
 
