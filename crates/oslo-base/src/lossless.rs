@@ -24,7 +24,11 @@ fn is_raw(ch: char) -> bool {
 
 /// A name as the shell carries it: valid UTF-8 unchanged, each other byte as its private-use twin.
 pub fn encode(name: &OsStr) -> String {
-    let bytes = name.as_bytes();
+    from_bytes(name.as_bytes())
+}
+
+/// Bytes read from outside the shell, as the shell carries them; see [`encode`].
+pub fn from_bytes(bytes: &[u8]) -> String {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return text.to_string();
     }
@@ -32,15 +36,45 @@ pub fn encode(name: &OsStr) -> String {
     for chunk in bytes.utf8_chunks() {
         out.push_str(chunk.valid());
         for &byte in chunk.invalid() {
-            out.extend(char::from_u32(BASE + u32::from(byte)));
+            out.push(raw_char(byte));
         }
     }
     out
 }
 
+/// The character that carries `byte`, whether or not it would be valid UTF-8 on its own.
+pub fn raw_char(byte: u8) -> char {
+    char::from_u32(BASE + u32::from(byte)).unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
+/// A file's contents as the shell carries them.
+pub fn read_file(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
+    Ok(from_bytes(&std::fs::read(path)?))
+}
+
 /// Whether `text` carries any byte that [`encode`] had to escape.
 pub fn has_raw(text: &str) -> bool {
-    text.chars().any(is_raw)
+    text.as_bytes()
+        .windows(3)
+        .any(|w| w[0] == 0xF4 && w[1] == 0x8F && w[2] >= 0xBC)
+}
+
+/// The number of bytes `text` stands for, counting each carried byte once.
+pub fn byte_len(text: &str) -> usize {
+    match has_raw(text) {
+        true => text.chars().map(|ch| if is_raw(ch) { 1 } else { ch.len_utf8() }).sum(),
+        false => text.len(),
+    }
+}
+
+/// `text` with every run of carried bytes that spells valid UTF-8 turned back into characters.
+///
+/// Two halves of one character can arrive separately, as in `x=$'\xc3'; y=$'\xa9'; z=$x$y`.
+pub fn normalize(text: String) -> String {
+    match has_raw(&text) {
+        true => from_bytes(&decode(&text)),
+        false => text,
+    }
 }
 
 /// The original bytes of `text`.
@@ -111,6 +145,22 @@ mod tests {
             &*restore_bytes("plain é\n".as_bytes()),
             "plain é\n".as_bytes()
         );
+    }
+
+    #[test]
+    fn a_carried_byte_counts_as_one_byte() {
+        let carried = from_bytes(b"a\xff\xc3\xa9");
+        assert_eq!(carried.chars().count(), 3);
+        assert_eq!(byte_len(&carried), 4);
+        assert_eq!(byte_len("plain"), 5);
+    }
+
+    #[test]
+    fn halves_of_one_character_are_joined() {
+        let halves = format!("{}{}", from_bytes(b"\xc3"), from_bytes(b"\xa9"));
+        assert!(has_raw(&halves));
+        assert_eq!(normalize(halves), "é");
+        assert_eq!(normalize(from_bytes(b"\xff")), from_bytes(b"\xff"));
     }
 
     #[test]
